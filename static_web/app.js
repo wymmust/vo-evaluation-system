@@ -2,7 +2,10 @@ const state = {
   pyodide: null,
   evaluateJson: null,
   report: null,
+  loadingStep: "",
 };
+
+const PYODIDE_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
 
 const els = {
   status: document.getElementById("runtimeStatus"),
@@ -28,7 +31,7 @@ async function init() {
     els.status.classList.add("ready");
     updateRunButton();
   } catch (error) {
-    showMessage(`运行环境加载失败：${error.message}`, "error");
+    showMessage(`运行环境加载失败：${describeRuntimeError(error)}`, "error");
     els.status.textContent = "加载失败";
   }
 }
@@ -43,11 +46,22 @@ function wireEvents() {
 }
 
 async function initPyodide() {
+  if (window.location.protocol === "file:") {
+    throw new Error("local_file_protocol");
+  }
+  if (typeof loadPyodide !== "function") {
+    throw new Error("pyodide_script_missing");
+  }
+
+  state.loadingStep = "pyodide";
   els.status.textContent = "加载 Pyodide...";
-  state.pyodide = await loadPyodide();
+  state.pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX_URL });
+
+  state.loadingStep = "packages";
   els.status.textContent = "加载 numpy/pandas...";
   await state.pyodide.loadPackage(["numpy", "pandas"]);
 
+  state.loadingStep = "local_python";
   const [evaluatorCode, runnerCode] = await Promise.all([
     fetchText("./py/evaluator.py"),
     fetchText("./py/browser_runner.py"),
@@ -66,11 +80,41 @@ from browser_runner import evaluate_json
 }
 
 async function fetchText(url) {
-  const response = await fetch(url);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new Error(`local_fetch_failed:${url}:${error.message}`);
+  }
   if (!response.ok) {
-    throw new Error(`无法加载 ${url}`);
+    throw new Error(`local_fetch_status:${url}:${response.status}`);
   }
   return response.text();
+}
+
+function describeRuntimeError(error) {
+  const message = error?.message || String(error);
+  if (message === "local_file_protocol") {
+    return "当前页面是直接打开的本地 index.html。请进入 static_web 目录后运行 python3 -m http.server 8765，再访问 http://localhost:8765/；公网部署时也必须通过 http/https URL 访问。";
+  }
+  if (message === "pyodide_script_missing") {
+    return "Pyodide 脚本没有加载成功。请检查网络是否能访问 cdn.jsdelivr.net，或部署时改用可访问的 Pyodide CDN/本地镜像。";
+  }
+  if (message.startsWith("local_fetch_failed:")) {
+    const [, url] = message.split(":");
+    return `无法读取静态资源 ${url}。如果你打开的是 localhost，请确认静态服务器还在运行；如果是公网部署，请确认 static_web/py 目录也一起上传了。`;
+  }
+  if (message.startsWith("local_fetch_status:")) {
+    const [, url, status] = message.split(":");
+    return `无法读取静态资源 ${url}，HTTP 状态码 ${status}。请确认 static_web/py 目录已经和 index.html 一起部署。`;
+  }
+  if (message.includes("Failed to fetch") && state.loadingStep === "packages") {
+    return "无法下载 numpy/pandas 运行包。请检查当前网络是否能访问 Pyodide CDN，或部署时使用可访问的镜像资源。";
+  }
+  if (message.includes("Failed to fetch")) {
+    return "浏览器无法获取运行资源。请确认页面是通过 http/https 打开的、静态服务器没有停止，并且 CDN 网络可访问。";
+  }
+  return message;
 }
 
 function updateRunButton() {
