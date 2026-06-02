@@ -374,7 +374,7 @@ e_{ij}^{seg,t}
 平移误差百分比：
 
 ```math
-E_{ij}^{seg,t,\%}
+E_{ij}^{seg,t,pct}
 =
 100
 \cdot
@@ -452,7 +452,7 @@ v_{ij}
 每个子轨迹的平移误差百分比为：
 
 ```math
-E_{ij}^{seg,t,\%}
+E_{ij}^{seg,t,pct}
 =
 100
 \cdot
@@ -468,7 +468,7 @@ Mean_{bin}
 =
 \frac{1}{M}
 \sum_{m=1}^{M}
-E_m^{seg,t,\%}
+E_m^{seg,t,pct}
 ```
 
 每个速度箱内的 p95：
@@ -478,7 +478,7 @@ P95_{bin}
 =
 P_{95}
 (
-E_m^{seg,t,\%}
+E_m^{seg,t,pct}
 )
 ```
 
@@ -512,7 +512,7 @@ E_{end}
 终点漂移占总路程比例：
 
 ```math
-E_{end}^{\%}
+E_{end,pct}
 =
 100
 \cdot
@@ -591,7 +591,7 @@ D_j-D_i
 子轨迹尺度漂移百分比：
 
 ```math
-ScaleDrift_{ij}^{\%}
+ScaleDrift_{ij,pct}
 =
 (ScaleRatio_{ij}-1)
 \times
@@ -637,7 +637,7 @@ N_{vo}
 百分比形式：
 
 ```math
-Coverage_{gt}^{\%}
+Coverage_{gt,pct}
 =
 100
 \cdot
@@ -649,7 +649,7 @@ N_{gt}
 ```
 
 ```math
-Coverage_{vo}^{\%}
+Coverage_{vo,pct}
 =
 100
 \cdot
@@ -665,8 +665,8 @@ N_{vo}
 - $N_{matched}$ 为成功匹配的位姿数量；
 - $N_{gt}$ 为 Ground Truth 总位姿数量；
 - $N_{vo}$ 为 VO 输出总位姿数量；
-- 页面中的 “GT 覆盖率” 对应 $Coverage_{gt}^{\%}$；
-- 页面中的 “VO匹配率” 对应 $Coverage_{vo}^{\%}$；
+- 页面中的 “GT 覆盖率” 对应 $Coverage_{gt,pct}$；
+- 页面中的 “VO匹配率” 对应 $Coverage_{vo,pct}$；
 - 页面中的 “匹配位姿” 对应 $N_{matched}$。
 
 ---
