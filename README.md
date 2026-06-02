@@ -61,23 +61,23 @@ streamlit run app.py
 
 GT 累计路程：
 
-```text
+```math
 D_0=0
 ```
 
-```text
+```math
 D_i=\sum_{k=1}^{i}\left\|\mathbf{p}_k^{gt}-\mathbf{p}_{k-1}^{gt}\right\|_2
 ```
 
 三维位置误差：
 
-```text
+```math
 e_i^{3D}=\left\|\hat{\mathbf{p}}_i^{vo}-\mathbf{p}_i^{gt}\right\|_2
 ```
 
 水平误差：
 
-```text
+```math
 e_i^{horizontal}=
 \sqrt{
 (\hat{x}_i^{vo}-x_i^{gt})^2+
@@ -103,25 +103,25 @@ e_i^{horizontal}=
 
 Ground Truth 高度：
 
-```text
+```math
 z_i^{gt}
 ```
 
 VO 对齐后高度：
 
-```text
+```math
 \hat{z}_i^{vo}
 ```
 
 垂直误差：
 
-```text
+```math
 e_i^{vertical}=\hat{z}_i^{vo}-z_i^{gt}
 ```
 
 垂直误差 RMSE：
 
-```text
+```math
 RMSE_{vertical}
 =
 \sqrt{
@@ -146,7 +146,7 @@ ATE 用于统计整条轨迹在对齐后的整体位置误差。
 
 单点 ATE 误差：
 
-```text
+```math
 e_i^{ATE}
 =
 \left\|
@@ -158,7 +158,7 @@ e_i^{ATE}
 
 ATE RMSE：
 
-```text
+```math
 ATE_{RMSE}
 =
 \sqrt{
@@ -170,7 +170,7 @@ ATE_{RMSE}
 
 ATE mean：
 
-```text
+```math
 ATE_{mean}
 =
 \frac{1}{N}
@@ -180,7 +180,7 @@ e_i^{ATE}
 
 ATE median：
 
-```text
+```math
 ATE_{median}
 =
 median(e_i^{ATE})
@@ -188,7 +188,7 @@ median(e_i^{ATE})
 
 ATE p95：
 
-```text
+```math
 ATE_{p95}
 =
 P_{95}(e_i^{ATE})
@@ -196,7 +196,7 @@ P_{95}(e_i^{ATE})
 
 ATE p99：
 
-```text
+```math
 ATE_{p99}
 =
 P_{99}(e_i^{ATE})
@@ -204,7 +204,7 @@ P_{99}(e_i^{ATE})
 
 ATE max：
 
-```text
+```math
 ATE_{max}
 =
 \max(e_i^{ATE})
@@ -223,13 +223,13 @@ ATE_{max}
 
 RPE 用于评估固定帧间隔下的局部运动误差。设固定帧间隔为 `\Delta`，则：
 
-```text
+```math
 j=i+\Delta
 ```
 
 无姿态时，RPE 平移误差计算为：
 
-```text
+```math
 e_{ij}^{RPE,t}
 =
 \left\|
@@ -241,14 +241,14 @@ e_{ij}^{RPE,t}
 
 有姿态时，先计算相对位移：
 
-```text
+```math
 \mathbf{t}_{ij}^{gt}
 =
 (\mathbf{R}_i^{gt})^T
 (\mathbf{p}_j^{gt}-\mathbf{p}_i^{gt})
 ```
 
-```text
+```math
 \mathbf{t}_{ij}^{vo}
 =
 (\hat{\mathbf{R}}_i^{vo})^T
@@ -257,7 +257,7 @@ e_{ij}^{RPE,t}
 
 RPE 平移误差为：
 
-```text
+```math
 e_{ij}^{RPE,t}
 =
 \left\|
@@ -269,7 +269,7 @@ e_{ij}^{RPE,t}
 
 RPE RMSE：
 
-```text
+```math
 RPE_{RMSE}
 =
 \sqrt{
@@ -281,28 +281,28 @@ RPE_{RMSE}
 
 如果输入包含姿态，还可以计算 RPE 旋转误差：
 
-```text
+```math
 \mathbf{R}_{ij}^{gt}
 =
 (\mathbf{R}_i^{gt})^T
 \mathbf{R}_j^{gt}
 ```
 
-```text
+```math
 \mathbf{R}_{ij}^{vo}
 =
 (\hat{\mathbf{R}}_i^{vo})^T
 \hat{\mathbf{R}}_j^{vo}
 ```
 
-```text
+```math
 \mathbf{R}_{ij}^{err}
 =
 (\mathbf{R}_{ij}^{gt})^T
 \mathbf{R}_{ij}^{vo}
 ```
 
-```text
+```math
 e_{ij}^{RPE,r}
 =
 \arccos
@@ -327,31 +327,31 @@ e_{ij}^{RPE,r}
 
 设目标子轨迹长度为：
 
-```text
+```math
 L
 ```
 
 例如：
 
-```text
+```math
 L\in \{50,100,200,500,1000,2000,5000\}\ m
 ```
 
 对每个起点 `i`，寻找终点 `j`，使得：
 
-```text
+```math
 D_j-D_i\approx L
 ```
 
 实际子轨迹长度为：
 
-```text
+```math
 L_{ij}^{actual}=D_j-D_i
 ```
 
 长度容差判断：
 
-```text
+```math
 \left|
 L_{ij}^{actual}-L
 \right|
@@ -361,7 +361,7 @@ L_{ij}^{actual}-L
 
 子轨迹平移误差：
 
-```text
+```math
 e_{ij}^{seg,t}
 =
 \left\|
@@ -373,7 +373,7 @@ e_{ij}^{seg,t}
 
 平移误差百分比：
 
-```text
+```math
 E_{ij}^{seg,t,\%}
 =
 100
@@ -385,13 +385,13 @@ e_{ij}^{seg,t}
 
 如果输入包含姿态，子轨迹旋转误差为：
 
-```text
+```math
 e_{ij}^{seg,r,deg}
 ```
 
 单位距离旋转误差为：
 
-```text
+```math
 E_{ij}^{seg,r}
 =
 \frac{
@@ -401,13 +401,13 @@ e_{ij}^{seg,r,deg}
 
 单位为：
 
-```text
+```math
 deg/m
 ```
 
 每个目标长度下，对所有有效子轨迹统计 mean 和 p95：
 
-```text
+```math
 Mean_L
 =
 \frac{1}{M}
@@ -415,7 +415,7 @@ Mean_L
 E_m
 ```
 
-```text
+```math
 P95_L
 =
 P_{95}(E_m)
@@ -437,7 +437,7 @@ P_{95}(E_m)
 
 子轨迹平均速度：
 
-```text
+```math
 v_{ij}
 =
 \frac{L}{t_j-t_i}
@@ -445,13 +445,13 @@ v_{ij}
 
 速度分箱示例：
 
-```text
+```math
 [0,5),[5,10),[10,15),[15,20),[20,30),[30,\infty)
 ```
 
 每个子轨迹的平移误差百分比为：
 
-```text
+```math
 E_{ij}^{seg,t,\%}
 =
 100
@@ -463,7 +463,7 @@ e_{ij}^{seg,t}
 
 每个速度箱内的 mean：
 
-```text
+```math
 Mean_{bin}
 =
 \frac{1}{M}
@@ -473,7 +473,7 @@ E_m^{seg,t,\%}
 
 每个速度箱内的 p95：
 
-```text
+```math
 P95_{bin}
 =
 P_{95}
@@ -499,7 +499,7 @@ E_m^{seg,t,\%}
 
 终点漂移：
 
-```text
+```math
 E_{end}
 =
 \left\|
@@ -511,7 +511,7 @@ E_{end}
 
 终点漂移占总路程比例：
 
-```text
+```math
 E_{end}^{\%}
 =
 100
@@ -535,7 +535,7 @@ E_{end}
 
 VO 原始路程：
 
-```text
+```math
 L_{vo}^{raw}
 =
 \sum_{i=1}^{N-1}
@@ -548,7 +548,7 @@ L_{vo}^{raw}
 
 Ground Truth 路程：
 
-```text
+```math
 L_{gt}
 =
 \sum_{i=1}^{N-1}
@@ -561,7 +561,7 @@ L_{gt}
 
 Raw 尺度比：
 
-```text
+```math
 ScaleRatio_{raw}
 =
 \frac{
@@ -573,7 +573,7 @@ L_{gt}
 
 子轨迹尺度比：
 
-```text
+```math
 ScaleRatio_{ij}
 =
 \frac{
@@ -590,7 +590,7 @@ D_j-D_i
 
 子轨迹尺度漂移百分比：
 
-```text
+```math
 ScaleDrift_{ij}^{\%}
 =
 (ScaleRatio_{ij}-1)
@@ -612,7 +612,7 @@ ScaleDrift_{ij}^{\%}
 
 GT 覆盖率：
 
-```text
+```math
 Coverage_{gt}
 =
 \frac{
@@ -624,7 +624,7 @@ N_{gt}
 
 VO 匹配率：
 
-```text
+```math
 Coverage_{vo}
 =
 \frac{
@@ -636,7 +636,7 @@ N_{vo}
 
 百分比形式：
 
-```text
+```math
 Coverage_{gt}^{\%}
 =
 100
@@ -648,7 +648,7 @@ N_{gt}
 }
 ```
 
-```text
+```math
 Coverage_{vo}^{\%}
 =
 100
@@ -677,7 +677,7 @@ N_{vo}
 
 动态发散阈值：
 
-```text
+```math
 T_i
 =
 \max
@@ -693,7 +693,7 @@ T_{rel}
 
 发散判断：
 
-```text
+```math
 diverged
 =
 \exists i,
@@ -705,7 +705,7 @@ T_i
 
 首次发散点：
 
-```text
+```math
 k
 =
 \min
@@ -720,13 +720,13 @@ T_i
 
 首次发散距离：
 
-```text
+```math
 D_{div}=D_k
 ```
 
 首次发散误差：
 
-```text
+```math
 E_{div}=e_k^{ATE}
 ```
 
@@ -745,7 +745,7 @@ E_{div}=e_k^{ATE}
 
 支持的字段包括：
 
-```text
+```math
 process_time_ms
 processing_time_ms
 frame_time_ms
@@ -760,7 +760,7 @@ fps
 
 RMSE：
 
-```text
+```math
 RMSE
 =
 \sqrt{
@@ -772,7 +772,7 @@ x_i^2
 
 mean：
 
-```text
+```math
 Mean
 =
 \frac{1}{N}
@@ -782,7 +782,7 @@ x_i
 
 median：
 
-```text
+```math
 Median
 =
 median(x_i)
@@ -790,7 +790,7 @@ median(x_i)
 
 std：
 
-```text
+```math
 Std
 =
 \sqrt{
@@ -802,13 +802,13 @@ Std
 
 p95：
 
-```text
+```math
 P95=P_{95}(x_i)
 ```
 
 p99：
 
-```text
+```math
 P99=P_{99}(x_i)
 ```
 
