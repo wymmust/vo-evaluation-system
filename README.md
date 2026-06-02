@@ -745,16 +745,16 @@ E_{div}=e_k^{ATE}
 
 支持的字段包括：
 
-```text
-process_time_ms
-processing_time_ms
-frame_time_ms
-latency_ms
-cpu_percent
-memory_percent
-memory_mb
-fps
-```
+| 字段 | 含义 |
+| --- | --- |
+| process_time_ms | 处理耗时，单位 ms |
+| processing_time_ms | 处理耗时，单位 ms |
+| frame_time_ms | 单帧耗时，单位 ms |
+| latency_ms | 延迟，单位 ms |
+| cpu_percent | CPU 占用百分比 |
+| memory_percent | 内存占用百分比 |
+| memory_mb | 内存占用，单位 MB |
+| fps | 每秒处理帧数 |
 
 对任意字段数组 $x_i$，计算：
 
