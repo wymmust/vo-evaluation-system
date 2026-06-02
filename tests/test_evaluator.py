@@ -1,6 +1,9 @@
+import json
+import math
+
 import numpy as np
 
-from vo_eval.evaluator import EvaluationConfig, evaluate_trajectories, load_trajectory_from_text, yaw_from_rot
+from vo_eval.evaluator import EvaluationConfig, evaluate_trajectories, load_trajectory_from_text, report_to_json, yaw_from_rot
 
 
 def make_tum(rows=120):
@@ -76,3 +79,9 @@ def test_numeric_tum_nanosecond_timestamps_are_normalized():
 """
     traj = load_trajectory_from_text(text, fmt="tum", name="tum_ns")
     assert abs(traj.duration_s - 0.05) < 1e-12
+
+
+def test_report_json_replaces_non_finite_values_with_null():
+    text = report_to_json({"values": [1.0, math.inf, -math.inf, math.nan, np.float64(np.nan)]})
+    parsed = json.loads(text)
+    assert parsed == {"values": [1.0, None, None, None, None]}

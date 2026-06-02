@@ -1150,37 +1150,32 @@ def matrix_to_quaternion(rot: np.ndarray) -> np.ndarray:
 
 
 def report_to_json(report: dict[str, Any]) -> str:
-    return json.dumps(_jsonable_report(report), ensure_ascii=False, indent=2)
+    return json.dumps(_jsonable_report(report), ensure_ascii=False, indent=2, allow_nan=False)
 
 
 def _jsonable_report(report: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for key, value in report.items():
-        if isinstance(value, pd.DataFrame):
-            out[key] = value.to_dict(orient="records")
-        elif isinstance(value, dict):
-            out[key] = _jsonable_dict(value)
-        elif isinstance(value, list):
-            out[key] = [_jsonable_dict(x) if isinstance(x, dict) else x for x in value]
-        else:
-            out[key] = value
-    return out
+    return _jsonable_value(report)
 
 
 def _jsonable_dict(data: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for key, value in data.items():
-        if isinstance(value, np.ndarray):
-            out[key] = value.tolist()
-        elif isinstance(value, np.generic):
-            out[key] = value.item()
-        elif isinstance(value, dict):
-            out[key] = _jsonable_dict(value)
-        elif isinstance(value, list):
-            out[key] = [_jsonable_dict(x) if isinstance(x, dict) else x for x in value]
-        else:
-            out[key] = value
-    return out
+    return _jsonable_value(data)
+
+
+def _jsonable_value(value: Any) -> Any:
+    """Convert report values to strict JSON-safe Python objects."""
+    if isinstance(value, pd.DataFrame):
+        return [_jsonable_value(row) for row in value.to_dict(orient="records")]
+    if isinstance(value, np.ndarray):
+        return _jsonable_value(value.tolist())
+    if isinstance(value, np.generic):
+        return _jsonable_value(value.item())
+    if isinstance(value, dict):
+        return {key: _jsonable_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_value(item) for item in value]
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
 
 
 def _dataclass_to_jsonable(cfg: EvaluationConfig) -> dict[str, Any]:
