@@ -1,3 +1,13 @@
+"""Streamlit UI for the VO evaluation system.
+
+这个文件只负责交互和展示：
+1. 侧边栏收集评估配置。
+2. 上传 GT/VO 文件并交给 vo_eval.evaluator 解析和计算。
+3. 把 report 中的指标映射到页面指标卡、Plotly 图表和下载文件。
+
+核心计算不在这里，核心指标都由 vo_eval/evaluator.py 产生。
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -34,10 +44,15 @@ SEGMENT_POLICY_OPTIONS = {
 
 
 def main() -> None:
+    """页面入口：上传文件 -> 构造配置 -> 调用 evaluator -> 展示 report。"""
     st.set_page_config(page_title="VO 评估系统", layout="wide")
     st.title("VO 评估系统")
 
     with st.sidebar:
+        # 这些控件直接映射到 EvaluationConfig：
+        # alignment -> 对齐方式；max_time_diff/time_offset -> 时间关联；
+        # rpe_delta -> RPE；segment_* -> 长航程子轨迹误差；
+        # divergence_* -> 发散检测阈值。
         st.header("输入设置")
         gt_format_label = st.selectbox("Ground truth 格式", list(FORMAT_OPTIONS), index=0)
         est_format_label = st.selectbox("VO 输出格式", list(FORMAT_OPTIONS), index=0)
@@ -68,6 +83,8 @@ def main() -> None:
         return
 
     try:
+        # Streamlit 热更新有时不会重载普通 Python 模块。
+        # 每次评估前 reload evaluator，确保页面使用最新的解析/指标逻辑。
         evaluator = latest_evaluator()
         segment_lengths = parse_float_list(segment_text)
         cfg = evaluator.EvaluationConfig(
@@ -140,6 +157,17 @@ def show_metric_catalog() -> None:
 
 
 def show_summary(report: dict[str, Any]) -> None:
+    """顶部指标卡。
+
+    UI 指标与 report 字段对应：
+    - 路程 -> summary.gt_path_length_m
+    - ATE RMSE -> ate_position_m.rmse
+    - RPE RMSE -> rpe_frame_delta.translation_m.rmse
+    - 终点漂移 -> summary.endpoint_error_m
+    - 垂直 RMSE -> ate_vertical_m.rmse
+    - 覆盖率/匹配位姿/耗时 -> summary
+    - 是否发散 -> divergence.diverged
+    """
     summary = report["summary"]
     ate = report["ate_position_m"] or {}
     vertical = report["ate_vertical_m"] or {}
@@ -198,6 +226,15 @@ def show_summary(report: dict[str, Any]) -> None:
 
 
 def show_visuals(report: dict[str, Any]) -> None:
+    """可视化区域。
+
+    图表与指标对应：
+    - 3D/XY 轨迹：per_pose 中 GT 和对齐后的 VO 坐标。
+    - 误差随路程：per_pose.error_m / horizontal_error_m。
+    - 高度与垂直误差：per_pose.gt_z_m / est_z_aligned_m / vertical_error_m。
+    - 按距离子轨迹误差：segment_errors。
+    - 速度分箱误差：speed_bins。
+    """
     per_pose = report["per_pose"]
     segment_records = report["segment_records"]
 
@@ -230,6 +267,11 @@ def show_visuals(report: dict[str, Any]) -> None:
 
 
 def show_tables_and_downloads(report: dict[str, Any]) -> None:
+    """明细表和导出。
+
+    JSON 导出完整 report；per_pose CSV 导出逐帧误差；
+    segment_records CSV 导出每个固定距离子轨迹的原始误差记录。
+    """
     st.subheader("明细与导出")
     summary_rows = flatten_report_summary(report)
     st.dataframe(summary_rows, use_container_width=True, hide_index=True)
@@ -258,6 +300,7 @@ def show_tables_and_downloads(report: dict[str, Any]) -> None:
 
 
 def make_trajectory_3d(df: pd.DataFrame) -> go.Figure:
+    """3D 轨迹图：用于肉眼检查 GT 与 VO aligned 是否重合、是否重置。"""
     fig = go.Figure()
     gt_x, gt_y, gt_z = segmented_values(df, ["gt_x_m", "gt_y_m", "gt_z_m"])
     est_x, est_y, est_z = segmented_values(df, ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"])
@@ -276,6 +319,7 @@ def make_trajectory_3d(df: pd.DataFrame) -> go.Figure:
 
 
 def make_trajectory_xy(df: pd.DataFrame) -> go.Figure:
+    """俯视 XY 轨迹图：对应水平路径形状和水平误差观察。"""
     fig = go.Figure()
     gt_x, gt_y = segmented_values(df, ["gt_x_m", "gt_y_m"])
     est_x, est_y = segmented_values(df, ["est_x_aligned_m", "est_y_aligned_m"])
@@ -286,6 +330,7 @@ def make_trajectory_xy(df: pd.DataFrame) -> go.Figure:
 
 
 def make_error_distance(df: pd.DataFrame) -> go.Figure:
+    """误差随路程变化：展示 ATE 3D/horizontal 是否随长航程增长。"""
     fig = go.Figure()
     dist_3d, err_3d = segmented_values(df, ["distance_m", "error_m"])
     dist_h, err_h = segmented_values(df, ["distance_m", "horizontal_error_m"])
@@ -296,6 +341,7 @@ def make_error_distance(df: pd.DataFrame) -> go.Figure:
 
 
 def make_altitude_distance(df: pd.DataFrame) -> go.Figure:
+    """高度与垂直误差：无人机高度方向单独看，避免被 XY 误差掩盖。"""
     fig = go.Figure()
     dist_gt, gt_z = segmented_values(df, ["distance_m", "gt_z_m"])
     dist_est, est_z = segmented_values(df, ["distance_m", "est_z_aligned_m"])
@@ -308,6 +354,10 @@ def make_altitude_distance(df: pd.DataFrame) -> go.Figure:
 
 
 def segmented_values(df: pd.DataFrame, cols: list[str]) -> list[list[float | None]]:
+    """Plotly 分段画线辅助函数。
+
+    segment_id 之间插入 None，避免 VO 重置/分段评估时图上被错误连线。
+    """
     if "segment_id" not in df.columns:
         return [df[col].tolist() for col in cols]
     outputs: list[list[float | None]] = [[] for _ in cols]
@@ -319,6 +369,7 @@ def segmented_values(df: pd.DataFrame, cols: list[str]) -> list[list[float | Non
 
 
 def make_segment_error(segment_summary: list[dict[str, Any]]) -> go.Figure:
+    """长航程子轨迹误差图，对应 KITTI/rpg 风格 segment_errors。"""
     fig = go.Figure()
     if segment_summary:
         lengths = [row["length_m"] for row in segment_summary]
@@ -340,6 +391,7 @@ def make_segment_error(segment_summary: list[dict[str, Any]]) -> go.Figure:
 
 
 def make_speed_error(speed_bins: list[dict[str, Any]]) -> go.Figure:
+    """速度分箱误差图，用于判断高速/低速时 VO 漂移是否不同。"""
     fig = go.Figure()
     if speed_bins:
         labels = [row["speed_bin_mps"] for row in speed_bins]
@@ -363,6 +415,7 @@ def metric(col: Any, label: str, value: Any, unit: str) -> None:
 
 
 def flatten_report_summary(report: dict[str, Any]) -> pd.DataFrame:
+    """把嵌套 report 摊平成 metric/value 表，供页面展示。"""
     rows: list[dict[str, Any]] = []
 
     def add(prefix: str, data: Any) -> None:
@@ -390,6 +443,7 @@ def flatten_report_summary(report: dict[str, Any]) -> pd.DataFrame:
 
 
 def build_html_report(report: dict[str, Any], figures: list[go.Figure]) -> str:
+    """生成离线 HTML 报告，包含指标表和 Plotly 图表。"""
     summary = flatten_report_summary(report).to_html(index=False, escape=True)
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'><title>VO Evaluation Report</title>",

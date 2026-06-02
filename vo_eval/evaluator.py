@@ -1,3 +1,30 @@
+"""VO evaluation core.
+
+这份文件负责所有“算法层”的工作，页面只是调用这里的函数。
+
+代码分层：
+1. 输入解析：把 TUM/KITTI/CSV/EuRoC/注释表头等轨迹文件读成 Trajectory。
+2. 时间匹配：按 TUM RGB-D benchmark 的 greedy timestamp association 找 GT/VO 对应位姿。
+3. 轨迹对齐：SE3、Sim3、首帧对齐或不对齐，把 VO 坐标系映射到 GT 坐标系。
+4. 指标计算：ATE、RPE、长距离子轨迹误差、尺度漂移、覆盖率、发散、速度分箱、runtime。
+5. 报告输出：把指标、每帧误差表、子轨迹表组织成 report dict，供 app.py 展示和导出。
+
+指标与代码字段对应：
+- 时间关联质量：associate_trajectories() -> report["association"]。
+- 轨迹对齐尺度：compute_alignment()/aggregate_alignment() -> report["alignment"]。
+- ATE 三维位置误差：pos_error_m -> report["ate_position_m"]。
+- ATE 水平误差：horizontal_error_m -> report["ate_horizontal_m"]。
+- ATE 垂直/高度误差：vertical_error_m -> report["ate_vertical_m"]。
+- 姿态/yaw 误差：rotation_errors()/yaw_from_rot() -> ate_orientation_deg / ate_yaw_deg。
+- RPE 固定帧间隔误差：rpe_error_arrays() -> report["rpe_frame_delta"]。
+- KITTI/rpg 风格子轨迹误差：segment_errors() -> report["segment_errors"] 和 segment_records。
+- 速度分箱误差：summarize_by_speed_bins() -> report["speed_bins"]。
+- 终点漂移、覆盖率、路程、耗时、原始尺度比：summary dict。
+- 发散检测：detect_divergence() -> report["divergence"]。
+- VO 重置/大跳变诊断：detect_associated_discontinuities() -> report["discontinuities"]。
+- runtime/资源统计：summarize_runtime() -> report["runtime"]。
+"""
+
 from __future__ import annotations
 
 import io
@@ -14,6 +41,14 @@ import pandas as pd
 
 @dataclass
 class Trajectory:
+    """统一后的轨迹数据结构。
+
+    stamps: 秒级时间戳。所有 ns/us/ms 输入都会先归一化到秒。
+    positions: N x 3 的位置，单位默认按输入理解为米。
+    rotations: 可选 N x 3 x 3 旋转矩阵；没有姿态时仍可计算位置类指标。
+    extras: runtime 或资源字段，例如 process_time_ms、fps、memory_mb。
+    """
+
     name: str
     stamps: np.ndarray
     positions: np.ndarray
@@ -59,6 +94,8 @@ class Trajectory:
 
 @dataclass
 class EvaluationConfig:
+    """评估配置，基本都由 app.py 侧边栏控件传入。"""
+
     alignment: str = "se3"
     max_time_diff_s: float | None = 0.02
     time_offset_s: float = 0.0
@@ -75,6 +112,8 @@ class EvaluationConfig:
     speed_bins_mps: tuple[float, ...] = (0, 5, 10, 15, 20, 30, math.inf)
 
 
+# 下面这些候选列名用于 CSV/TSV/注释表头自动识别。
+# 目的：不要求用户改原始数据列名，只要能识别到所需字段即可。
 TIME_COLUMN_CANDIDATES = ["timestamp", "time", "t", "stamp", "sec", "seconds", "ts", "ts1", "frame", "index"]
 X_COLUMN_CANDIDATES = [
     "x",
@@ -141,6 +180,12 @@ def load_trajectory(source: str | bytes | Path | io.BytesIO, fmt: str = "auto", 
 
 
 def load_trajectory_from_text(text: str, fmt: str = "auto", name: str = "trajectory") -> Trajectory:
+    """把文本轨迹读成 Trajectory。
+
+    这里是输入格式分发层：auto 会先看是否有注释表头，再按列数识别
+    KITTI/TUM/XYZ/CSV。真正的列解析在 _parse_csv() 和 _parse_numeric_table()。
+    """
+
     lines = _meaningful_lines(text)
     if not lines:
         raise ValueError(f"{name}: empty trajectory file")
@@ -165,11 +210,25 @@ def evaluate_trajectories(
     est: Trajectory,
     config: EvaluationConfig | None = None,
 ) -> dict[str, Any]:
+    """评估入口：输入 GT 和 VO 轨迹，输出完整 report。
+
+    流程对应页面上的“运行结果、可视化、明细与导出”：
+    1. 时间匹配 -> association / coverage。
+    2. 大跳变诊断 -> discontinuities。
+    3. 对每个选中连续段做对齐和误差计算。
+    4. 汇总 ATE/RPE/子轨迹/速度分箱/runtime/发散等指标。
+    5. 返回 report dict，app.py 只负责展示这个 report。
+    """
     cfg = config or EvaluationConfig()
+
+    # 1. 时间关联：只比较有对应时间戳的位姿。对 IMU 长时间日志场景，
+    #    这一步会自然只取 VO 时间段附近的 GT/IMU 位姿。
     gt_idx, est_idx, assoc = associate_trajectories(gt, est, cfg.max_time_diff_s, cfg.time_offset_s)
     if len(gt_idx) < 2:
         raise ValueError("Need at least two associated poses to evaluate a trajectory")
 
+    # 2. 先在原始匹配序列上诊断断点/跳变。默认策略 vo_timestamps 不丢点，
+    #    断点只用于提示 VO 可能发生了重置或局部坐标系切换。
     original_match_count = int(len(gt_idx))
     original_gt_pos = gt.positions[gt_idx]
     original_est_pos = est.positions[est_idx]
@@ -185,6 +244,7 @@ def evaluate_trajectories(
     if not eval_ranges:
         raise ValueError("No continuous segment contains at least two matched poses")
 
+    # 这些列表会收集每个连续段的结果，最后统一 concat/describe。
     per_pose_frames: list[pd.DataFrame] = []
     segment_record_frames: list[pd.DataFrame] = []
     pos_error_parts: list[np.ndarray] = []
@@ -204,6 +264,7 @@ def evaluate_trajectories(
     distance_offset = 0.0
 
     for seg_id, seg in enumerate(eval_ranges):
+        # 3. 根据连续段策略切片；默认是一整段 VO 时间戳，segments 模式会分段评估。
         start = int(seg["start"])
         end = int(seg["end"])
         cur_gt_idx = gt_idx[start:end]
@@ -217,6 +278,7 @@ def evaluate_trajectories(
         est_rot = est.rotations[cur_est_idx] if est.rotations is not None else None
         stamps = gt.stamps[cur_gt_idx]
 
+        # 4. 对齐 VO 到 GT 坐标系。alignment.scale 是页面“对齐尺度”。
         alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode=cfg.alignment)
         alignment["segment_id"] = int(seg_id)
         alignment["start_match_index"] = start
@@ -226,6 +288,9 @@ def evaluate_trajectories(
         est_pos_aligned = apply_alignment(est_pos, alignment)
         est_rot_aligned = apply_rotation_alignment(est_rot, alignment) if est_rot is not None else None
 
+        # 5. ATE 逐帧误差：
+        #    error_m -> ate_position_m，horizontal_error_m -> ate_horizontal_m，
+        #    vertical_error_m -> ate_vertical_m。
         errors = est_pos_aligned - gt_pos
         pos_error_m = np.linalg.norm(errors, axis=1)
         horizontal_error_m = np.linalg.norm(errors[:, :2], axis=1)
@@ -236,11 +301,13 @@ def evaluate_trajectories(
         orientation_error_deg = None
         yaw_error_deg = None
         if gt_rot is not None and est_rot_aligned is not None:
+            # 6. 如果输入含姿态，额外统计 orientation/yaw ATE。
             orientation_error_deg = np.degrees(rotation_errors(gt_rot, est_rot_aligned))
             yaw_error_deg = np.degrees(wrap_pi(yaw_from_rot(est_rot_aligned) - yaw_from_rot(gt_rot)))
             orientation_error_parts.append(orientation_error_deg)
             yaw_error_parts.append(yaw_error_deg)
 
+        # 7. RPE 固定帧间隔误差，对应页面“RPE RMSE”。
         rpe_trans, rpe_rot = rpe_error_arrays(
             gt_pos,
             est_pos_aligned,
@@ -252,6 +319,7 @@ def evaluate_trajectories(
         if len(rpe_rot):
             rpe_rot_parts.append(np.degrees(rpe_rot))
 
+        # 8. 长航程核心指标：按固定距离 L 抽子轨迹，统计漂移百分比、旋转误差和尺度漂移。
         cur_segments = segment_errors(
             gt_pos,
             est_pos_aligned,
@@ -268,6 +336,7 @@ def evaluate_trajectories(
             rec["segment_id"] = int(seg_id)
             segment_record_frames.append(rec)
 
+        # 9. per_pose 是每帧明细表，既用于误差曲线，也可导出 CSV。
         frame = pd.DataFrame(
             {
                 "timestamp": stamps,
@@ -296,6 +365,7 @@ def evaluate_trajectories(
         used_gt_indices.append(cur_gt_idx)
         used_est_indices.append(cur_est_idx)
 
+        # 10. summary 所需的总路程、raw VO 路程、对齐后 VO 路程、耗时等。
         seg_gt_path = float(local_distance_m[-1])
         total_gt_path_m += seg_gt_path
         total_raw_est_path_m += float(path_distance(est_pos)[-1])
@@ -308,6 +378,7 @@ def evaluate_trajectories(
 
     per_pose = pd.concat(per_pose_frames, ignore_index=True)
     segment_records = pd.concat(segment_record_frames, ignore_index=True) if segment_record_frames else pd.DataFrame()
+    # 11. 统计汇总：describe() 会统一给出 count/rmse/mean/median/std/min/max/p95/p99。
     segment_summary = summarize_segment_records(segment_records)
     speed_bins = summarize_by_speed_bins(segment_records, cfg.speed_bins_mps)
     pos_error_m = np.concatenate(pos_error_parts)
@@ -319,6 +390,7 @@ def evaluate_trajectories(
     rpe_rot_deg = np.concatenate(rpe_rot_parts) if rpe_rot_parts else np.asarray([], dtype=float)
     used_gt_idx = np.concatenate(used_gt_indices)
     used_est_idx = np.concatenate(used_est_indices)
+    # 12. runtime 只统计 VO 输出里存在的资源字段；没有字段则返回 None。
     runtime = summarize_runtime(est, used_est_idx)
     divergence = detect_divergence(pos_error_m, per_pose["distance_m"].to_numpy(), cfg.divergence_abs_m, cfg.divergence_rel_percent, per_pose["timestamp"].to_numpy())
     alignment = aggregate_alignment(alignments, cfg.alignment)
@@ -336,6 +408,7 @@ def evaluate_trajectories(
     }
     endpoint_error_m = float(pos_error_m[-1])
 
+    # 13. summary 是页面第一屏指标卡的主要来源。
     summary = {
         "gt_path_length_m": float(total_gt_path_m),
         "est_path_length_raw_m": float(total_raw_est_path_m),
@@ -353,6 +426,7 @@ def evaluate_trajectories(
         "raw_path_scale_ratio_est_over_gt": float(total_raw_est_path_m / total_gt_path_m) if total_gt_path_m > 0 else math.nan,
     }
 
+    # 14. report 是唯一对外返回值。app.py 的所有图表/表格/下载都从这里取数据。
     report = {
         "inputs": {
             "ground_truth": {"name": gt.name, "format": gt.source_format},
@@ -400,6 +474,11 @@ def associate_trajectories(
     TUM's associate.py builds all pairs with abs(t_gt - (t_est + offset))
     below max_difference, sorts by time difference, then greedily keeps
     one-to-one matches.
+
+    指标对应：
+    - report["association"]["matches"]：成功匹配数量。
+    - max_time_diff_s / mean_time_diff_s：时间关联质量。
+    - summary 里的 GT/VO 覆盖率由这里返回的索引数量计算。
     """
     if len(gt.stamps) == len(est.stamps):
         diffs = np.abs(gt.stamps - (est.stamps + time_offset_s))
@@ -469,6 +548,14 @@ def compute_alignment(
     est_rot: np.ndarray | None = None,
     mode: str = "se3",
 ) -> dict[str, Any]:
+    """计算 VO 到 GT 的轨迹对齐变换。
+
+    指标对应：
+    - SE3: 尺度固定为 1，适合双目/VIO/尺度已知。
+    - Sim3: 同时估计尺度，适合单目 VO/尺度未知。
+    - first_pose: 只把首帧对齐，用于观察误差随航程增长。
+    - alignment["scale"] 最终显示为页面“对齐尺度”。
+    """
     mode = mode.lower()
     if mode in {"none", "identity"}:
         return _alignment_dict(mode, 1.0, np.eye(3), np.zeros(3))
@@ -490,6 +577,10 @@ def compute_alignment(
 
 
 def umeyama_alignment(src: np.ndarray, dst: np.ndarray, with_scale: bool) -> tuple[float, np.ndarray, np.ndarray]:
+    """Umeyama SVD 对齐。
+
+    src 是 VO，dst 是 GT。with_scale=False 得到 SE3；with_scale=True 得到 Sim3。
+    """
     src = np.asarray(src, dtype=float)
     dst = np.asarray(dst, dtype=float)
     if src.shape != dst.shape or src.ndim != 2 or src.shape[1] != 3:
@@ -553,6 +644,11 @@ def rpe_error_arrays(
     est_rot: np.ndarray | None,
     delta: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """固定帧间隔 RPE。
+
+    对每个 i 取 j=i+delta，比较 GT 相对运动和 VO 相对运动。
+    返回值对应 report["rpe_frame_delta"]["translation_m"] 和 rotation_deg。
+    """
     n = len(gt_pos)
     if n <= delta:
         return np.asarray([], dtype=float), np.asarray([], dtype=float)
@@ -594,6 +690,15 @@ def segment_errors(
     step_frames: int = 10,
     max_length_diff_ratio: float = 0.2,
 ) -> dict[str, Any]:
+    """按距离的 KITTI/rpg 风格子轨迹误差。
+
+    这是物流无人机长航程最重要的漂移指标之一：
+    - length_m: 目标子轨迹长度 L。
+    - translation_error_percent: 100 * 相对位移误差 / L。
+    - rotation_error_deg_per_m: 姿态相对误差除以 L。
+    - scale_ratio_est_over_gt: 该段 VO 路程 / GT 路程。
+    - scale_drift_percent: (scale_ratio - 1) * 100。
+    """
     cumulative = path_distance(gt_pos)
     total_length = cumulative[-1] if len(cumulative) else 0.0
     records: list[dict[str, float]] = []
@@ -690,6 +795,11 @@ def find_segment_end(cumulative: np.ndarray, start_idx: int, target_distance: fl
 
 
 def summarize_by_speed_bins(records: pd.DataFrame, bins: Iterable[float]) -> list[dict[str, Any]]:
+    """速度分箱误差。
+
+    segment_errors() 已经给每个子轨迹记录了 speed_mps，这里按速度区间聚合，
+    用于观察高速/低速飞行时 VO 漂移是否不同。
+    """
     if records.empty or "speed_mps" not in records:
         return []
     clean = records.replace([np.inf, -np.inf], np.nan).dropna(subset=["speed_mps", "translation_error_percent"])
@@ -718,6 +828,11 @@ def summarize_by_speed_bins(records: pd.DataFrame, bins: Iterable[float]) -> lis
 
 
 def summarize_runtime(est: Trajectory, est_idx: np.ndarray) -> dict[str, Any] | None:
+    """运行资源统计。
+
+    如果 VO 输出 CSV 中包含 process_time_ms、fps、cpu_percent、memory_mb 等字段，
+    这里会按匹配到的 VO 帧做 describe() 汇总，对应 report["runtime"]。
+    """
     runtime_keys = {
         "process_time_ms",
         "processing_time_ms",
@@ -747,6 +862,11 @@ def detect_divergence(
     rel_threshold_percent: float,
     stamps: np.ndarray,
 ) -> dict[str, Any]:
+    """发散检测。
+
+    阈值取 max(绝对阈值, 当前累计路程 * 相对阈值百分比)，
+    第一个超过阈值的点就是页面提示的“首次发散”。
+    """
     if len(errors_m) == 0:
         return {"diverged": False}
     dynamic_threshold = np.maximum(abs_threshold_m, cumulative_m * rel_threshold_percent / 100.0)
@@ -779,6 +899,11 @@ def detect_associated_discontinuities(
     step_threshold_m: float,
     time_gap_threshold_s: float,
 ) -> dict[str, Any]:
+    """断点/重置诊断。
+
+    根据 GT 步长、VO 步长、时间间隔判断是否存在大跳变。
+    默认评估策略不会丢弃这些点，只把信息放入 report["discontinuities"] 供诊断。
+    """
     n = len(stamps)
     if n == 0:
         return {"segment_count": 0, "break_count": 0, "breaks": [], "segments": [], "segment_ids": np.asarray([], dtype=int)}
@@ -868,6 +993,11 @@ def relative_error(
     i: int,
     j: int,
 ) -> tuple[float, float | None]:
+    """相对运动误差，RPE 和子轨迹误差共用这一段逻辑。
+
+    有姿态时在各自起点坐标系下比较相对位移/相对旋转；
+    无姿态时只比较世界系位移差。
+    """
     if gt_rot is not None and est_rot is not None:
         gt_r, gt_t = relative_pose(gt_rot[i], gt_pos[i], gt_rot[j], gt_pos[j])
         est_r, est_t = relative_pose(est_rot[i], est_pos[i], est_rot[j], est_pos[j])
@@ -886,6 +1016,10 @@ def relative_pose(r_i: np.ndarray, p_i: np.ndarray, r_j: np.ndarray, p_j: np.nda
 
 
 def path_distance(positions: np.ndarray) -> np.ndarray:
+    """累计路程 D_i。
+
+    用于 summary.gt_path_length_m、误差随路程图、子轨迹长度搜索和发散阈值。
+    """
     positions = np.asarray(positions, dtype=float)
     if len(positions) == 0:
         return np.asarray([], dtype=float)
@@ -896,6 +1030,11 @@ def path_distance(positions: np.ndarray) -> np.ndarray:
 
 
 def describe(values: Any) -> dict[str, float | int] | None:
+    """统一统计描述函数。
+
+    所有 RMSE/mean/median/std/min/max/p95/p99 都从这里产生，
+    因此 ATE、RPE、子轨迹、速度分箱、runtime 的统计口径一致。
+    """
     if values is None:
         return None
     arr = np.asarray(values, dtype=float).reshape(-1)
@@ -1117,6 +1256,13 @@ def _parse_float_line(line: str) -> list[float]:
 
 
 def _parse_numeric_table(lines: list[str], name: str, fmt: str) -> Trajectory:
+    """解析无表头数字表。
+
+    TUM: timestamp tx ty tz qx qy qz qw。
+    KITTI: 每行 12 个数，表示 3x4 pose matrix。
+    XYZ: x y z 或 timestamp x y z。
+    TUM/XYZ 的 timestamp 会调用 _normalize_timestamps()，避免 ns 被当成秒。
+    """
     rows = [_parse_float_line(line) for line in lines]
     width = max(len(row) for row in rows)
     if any(len(row) != width for row in rows):
@@ -1151,6 +1297,13 @@ def _parse_numeric_table(lines: list[str], name: str, fmt: str) -> Trajectory:
 
 
 def _parse_csv(text: str, name: str) -> Trajectory:
+    """解析 CSV/TSV/空格表/注释表头。
+
+    这里做三件事：
+    1. 自动识别 time/x/y/z 列，兼容 EuRoC 的 p_RS_R_x/y/z。
+    2. 自动识别四元数 qx/qy/qz/qw 或 yaw/pitch/roll。
+    3. 抽取 runtime extras，供 summarize_runtime() 统计。
+    """
     frame = _read_dataframe(text)
     if frame.empty:
         raise ValueError(f"{name}: empty CSV")
@@ -1165,6 +1318,7 @@ def _parse_csv(text: str, name: str) -> Trajectory:
     z_col = _pick(normalized, Z_COLUMN_CANDIDATES)
 
     if x_col is None or y_col is None or z_col is None:
+        # 没有可靠列名时，退回到数字表解析，尽量支持老式无表头日志。
         numeric_values = numeric.dropna(axis=1, how="all").to_numpy(dtype=float)
         numeric_values = numeric_values[~np.isnan(numeric_values).all(axis=1)]
         if numeric_values.shape[1] == 12:
@@ -1177,6 +1331,8 @@ def _parse_csv(text: str, name: str) -> Trajectory:
 
     positions = numeric[[x_col, y_col, z_col]].to_numpy(dtype=float)
     if time_col is not None:
+        # 所有时间戳在进入 Trajectory 前统一转成秒；
+        # EuRoC 的 timestamp [ns] 和无表头 ns 时间戳都在这里处理。
         stamps = _normalize_timestamps(
             numeric[time_col].to_numpy(dtype=float),
             timestamp_unit_hint or _timestamp_unit_hint("", str(time_col)),
@@ -1206,6 +1362,7 @@ def _parse_csv(text: str, name: str) -> Trajectory:
             roll_col = _pick_angle_col(normalized, "roll", ["row", "phi"])
             if yaw_col is not None and pitch_col is not None and roll_col is not None:
                 angles = numeric[[yaw_col, pitch_col, roll_col]].to_numpy(dtype=float)
+                # 自动识别角度/弧度，兼容用户 IMU/VO 表头单位不同的情况。
                 unit = _angle_unit_for_columns([yaw_col, pitch_col, roll_col], angle_unit_hint, angles)
                 if unit == "deg":
                     angles = np.deg2rad(angles)
@@ -1222,6 +1379,7 @@ def _parse_csv(text: str, name: str) -> Trajectory:
     extras: dict[str, np.ndarray] = {}
     for col in frame.columns:
         key = _normalize_col(col)
+        # extras 只收集 runtime/资源字段，不参与轨迹几何计算。
         if key in {
             "processtimems",
             "processingtimems",
@@ -1248,6 +1406,11 @@ def _parse_csv(text: str, name: str) -> Trajectory:
 
 
 def _read_dataframe(text: str) -> pd.DataFrame:
+    """把文本读取为 DataFrame。
+
+    优先处理 # 开头的注释表头，例如 "# ts x y z yaw pitch roll ..."；
+    否则交给 pandas 尝试自动分隔符、空格分隔和逗号分隔。
+    """
     header = _comment_header(text)
     if header:
         frame = _read_commented_header_table(text, header)
@@ -1333,6 +1496,7 @@ def _is_column_token(token: str) -> bool:
 
 
 def _timestamp_unit_hint(text: str, column: str | None = None) -> str | None:
+    """从表头/列名中提取时间单位提示：ns/us/ms/s。"""
     snippets: list[str] = []
     if column:
         snippets.append(str(column))
@@ -1356,6 +1520,10 @@ def _timestamp_unit_hint(text: str, column: str | None = None) -> str | None:
 
 
 def _normalize_timestamps(stamps: np.ndarray, unit_hint: str | None = None) -> np.ndarray:
+    """时间戳统一换算到秒。
+
+    这直接影响 duration_s、速度分箱、时间间隔断点和 TUM 时间关联阈值。
+    """
     arr = np.asarray(stamps, dtype=float)
     unit = unit_hint or _infer_timestamp_unit(arr)
     factors = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0}
@@ -1363,6 +1531,7 @@ def _normalize_timestamps(stamps: np.ndarray, unit_hint: str | None = None) -> n
 
 
 def _infer_timestamp_unit(stamps: np.ndarray) -> str:
+    """无表头时按时间戳数量级和相邻步长推断单位。"""
     finite = np.asarray(stamps, dtype=float)
     finite = finite[np.isfinite(finite)]
     if len(finite) == 0:
@@ -1384,6 +1553,7 @@ def _infer_timestamp_unit(stamps: np.ndarray) -> str:
 
 
 def _angle_unit_hint(text: str) -> str | None:
+    """从注释行推断 yaw/pitch/roll 是角度制还是弧度制。"""
     for line in text.splitlines():
         lower = line.lower()
         if any(word in lower for word in ["角度", "degree", "degrees", " deg"]):
@@ -1413,6 +1583,10 @@ def _pick_angle_col(normalized: dict[str, Any], base: str, aliases: list[str]) -
 
 
 def _angle_unit_for_columns(cols: list[Any], hint: str | None, values: np.ndarray) -> str:
+    """确定欧拉角单位。
+
+    优先级：列名 > 注释提示 > 数值范围启发式。
+    """
     col_text = " ".join(str(col).lower() for col in cols)
     if any(marker in col_text for marker in ["deg", "degree", "degrees"]):
         return "deg"
