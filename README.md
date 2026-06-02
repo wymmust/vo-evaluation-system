@@ -87,11 +87,11 @@ e_i^{horizontal}=
 
 其中：
 
-- `\mathbf{p}_i^{gt}` 表示 Ground Truth 位置；
-- `\hat{\mathbf{p}}_i^{vo}` 表示对齐后的 VO 位置；
-- `D_i` 表示第 `i` 个匹配位姿对应的累计路程；
-- `e_i^{3D}` 对应图中的 `3D error`；
-- `e_i^{horizontal}` 对应图中的 `horizontal`。
+- $\mathbf{p}_i^{gt}$ 表示 Ground Truth 位置；
+- $\hat{\mathbf{p}}_i^{vo}$ 表示对齐后的 VO 位置；
+- $D_i$ 表示第 $i$ 个匹配位姿对应的累计路程；
+- $e_i^{3D}$ 对应图中的 “3D error”；
+- $e_i^{horizontal}$ 对应图中的 “horizontal”。
 
 该图中每个点对应一个匹配位姿，展示该位置处 VO 轨迹相对于 Ground Truth 的误差。
 
@@ -133,10 +133,10 @@ RMSE_{vertical}
 
 其中：
 
-- `z_i^{gt}` 对应图中的 `GT altitude`；
-- `\hat{z}_i^{vo}` 对应图中的 `VO altitude`；
-- `e_i^{vertical}` 对应图中的 `vertical error`；
-- `N` 为成功匹配的位姿数量。
+- $z_i^{gt}$ 对应图中的 “GT altitude”；
+- $\hat{z}_i^{vo}$ 对应图中的 “VO altitude”；
+- $e_i^{vertical}$ 对应图中的 “vertical error”；
+- $N$ 为成功匹配的位姿数量。
 
 ---
 
@@ -212,16 +212,16 @@ ATE_{max}
 
 其中：
 
-- `N` 为成功匹配的位姿数量；
-- `\hat{\mathbf{p}}_i^{vo}` 为对齐后的 VO 位置；
-- `\mathbf{p}_i^{gt}` 为 Ground Truth 位置；
-- 页面中的 `ATE RMSE` 即为 `ATE_{RMSE}`。
+- $N$ 为成功匹配的位姿数量；
+- $\hat{\mathbf{p}}_i^{vo}$ 为对齐后的 VO 位置；
+- $\mathbf{p}_i^{gt}$ 为 Ground Truth 位置；
+- 页面中的 “ATE RMSE” 即为 $ATE_{RMSE}$。
 
 ---
 
 ### 4. RPE 相对位姿误差
 
-RPE 用于评估固定帧间隔下的局部运动误差。设固定帧间隔为 `\Delta`，则：
+RPE 用于评估固定帧间隔下的局部运动误差。设固定帧间隔为 $\Delta$，则：
 
 ```math
 j=i+\Delta
@@ -315,9 +315,9 @@ e_{ij}^{RPE,r}
 
 其中：
 
-- `\Delta` 为固定帧间隔；
-- `M` 为可计算 RPE 的相对位姿数量；
-- 页面中的 `RPE RMSE` 即为 `RPE_{RMSE}`。
+- $\Delta$ 为固定帧间隔；
+- $M$ 为可计算 RPE 的相对位姿数量；
+- 页面中的 “RPE RMSE” 即为 $RPE_{RMSE}$。
 
 ---
 
@@ -337,7 +337,7 @@ L
 L\in \{50,100,200,500,1000,2000,5000\}\ m
 ```
 
-对每个起点 `i`，寻找终点 `j`，使得：
+对每个起点 $i$，寻找终点 $j$，使得：
 
 ```math
 D_j-D_i\approx L
@@ -423,11 +423,11 @@ P_{95}(E_m)
 
 其中：
 
-- `L` 为目标子轨迹长度；
-- `M` 为该长度下有效子轨迹数量；
-- 图中的 `translation mean %` 为 `Mean_L`；
-- 图中的 `translation p95 %` 为 `P95_L`；
-- 图中的 `rotation deg/m` 为单位距离旋转误差。
+- $L$ 为目标子轨迹长度；
+- $M$ 为该长度下有效子轨迹数量；
+- 图中的 “translation mean %” 为 $Mean_L$；
+- 图中的 “translation p95 %” 为 $P95_L$；
+- 图中的 “rotation deg/m” 为单位距离旋转误差。
 
 ---
 
@@ -484,12 +484,12 @@ E_m^{seg,t,\%}
 
 其中：
 
-- `v_{ij}` 为子轨迹平均速度；
-- `L` 为目标子轨迹长度；
-- `t_j-t_i` 为该子轨迹持续时间；
-- `M` 为当前速度箱内有效子轨迹数量；
-- 图中的 `mean %` 为该速度箱内平移误差百分比均值；
-- 图中的 `p95 %` 为该速度箱内平移误差百分比 95 分位数。
+- $v_{ij}$ 为子轨迹平均速度；
+- $L$ 为目标子轨迹长度；
+- $t_j-t_i$ 为该子轨迹持续时间；
+- $M$ 为当前速度箱内有效子轨迹数量；
+- 图中的 “mean %” 为该速度箱内平移误差百分比均值；
+- 图中的 “p95 %” 为该速度箱内平移误差百分比 95 分位数。
 
 ---
 
@@ -523,9 +523,9 @@ E_{end}
 
 其中：
 
-- `N` 为最后一个匹配位姿；
-- `L_{gt}` 为 Ground Truth 总路程；
-- 页面中的 `终点漂移` 即为 `E_{end}`。
+- $N$ 为最后一个匹配位姿；
+- $L_{gt}$ 为 Ground Truth 总路程；
+- 页面中的 “终点漂移” 即为 $E_{end}$。
 
 ---
 
@@ -600,9 +600,9 @@ ScaleDrift_{ij}^{\%}
 
 其中：
 
-- 页面中的 `Raw 尺度比` 即为 `ScaleRatio_{raw}`；
-- 页面中的 `对齐尺度` 为轨迹对齐时求得的尺度因子 `s`；
-- `ScaleRatio_{ij}` 用于表示某一子轨迹段内 VO 路程和 GT 路程的比例关系。
+- 页面中的 “Raw 尺度比” 即为 $ScaleRatio_{raw}$；
+- 页面中的 “对齐尺度” 为轨迹对齐时求得的尺度因子 $s$；
+- $ScaleRatio_{ij}$ 用于表示某一子轨迹段内 VO 路程和 GT 路程的比例关系。
 
 ---
 
@@ -662,12 +662,12 @@ N_{vo}
 
 其中：
 
-- `N_{matched}` 为成功匹配的位姿数量；
-- `N_{gt}` 为 Ground Truth 总位姿数量；
-- `N_{vo}` 为 VO 输出总位姿数量；
-- 页面中的 `GT 覆盖率` 对应 `Coverage_{gt}^{\%}`；
-- 页面中的 `VO匹配率` 对应 `Coverage_{vo}^{\%}`；
-- 页面中的 `匹配位姿` 对应 `N_{matched}`。
+- $N_{matched}$ 为成功匹配的位姿数量；
+- $N_{gt}$ 为 Ground Truth 总位姿数量；
+- $N_{vo}$ 为 VO 输出总位姿数量；
+- 页面中的 “GT 覆盖率” 对应 $Coverage_{gt}^{\%}$；
+- 页面中的 “VO匹配率” 对应 $Coverage_{vo}^{\%}$；
+- 页面中的 “匹配位姿” 对应 $N_{matched}$。
 
 ---
 
@@ -732,10 +732,10 @@ E_{div}=e_k^{ATE}
 
 其中：
 
-- `T_{abs}` 为绝对误差阈值；
-- `T_{rel}` 为相对路程阈值，单位为 %；
-- `D_i` 为当前累计路程；
-- 页面中的 `是否发散` 根据上述条件判断。
+- $T_{abs}$ 为绝对误差阈值；
+- $T_{rel}$ 为相对路程阈值，单位为 %；
+- $D_i$ 为当前累计路程；
+- 页面中的 “是否发散” 根据上述条件判断。
 
 ---
 
@@ -745,7 +745,7 @@ E_{div}=e_k^{ATE}
 
 支持的字段包括：
 
-```math
+```text
 process_time_ms
 processing_time_ms
 frame_time_ms
@@ -756,7 +756,7 @@ memory_mb
 fps
 ```
 
-对任意字段数组 `x_i`，计算：
+对任意字段数组 $x_i$，计算：
 
 RMSE：
 
@@ -814,6 +814,6 @@ P99=P_{99}(x_i)
 
 其中：
 
-- 页面中的 `耗时` 对应算法运行或评估过程统计得到的时间；
+- 页面中的 “耗时” 对应算法运行或评估过程统计得到的时间；
 
-详细指标说明见 [metrics_catalog.md](/Users/wuyumeng/Desktop/SF/vo评估调研/metrics_catalog.md)。
+详细指标说明见 [metrics_catalog.md](metrics_catalog.md)。
