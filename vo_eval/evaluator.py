@@ -4,13 +4,13 @@
 
 代码分层：
 1. 输入解析：把 TUM/KITTI/CSV/EuRoC/注释表头等轨迹文件读成 Trajectory。
-2. 时间匹配：按 TUM RGB-D benchmark 的 greedy timestamp association 找 GT/VO 对应位姿。
+2. 时间同步：默认把 GT 插值到 VO 时间戳；也保留 TUM greedy timestamp association。
 3. 轨迹对齐：SE3、Sim3、首帧对齐或不对齐，把 VO 坐标系映射到 GT 坐标系。
 4. 指标计算：ATE、RPE、长距离子轨迹误差、尺度漂移、覆盖率、发散、速度分箱、runtime。
 5. 报告输出：把指标、每帧误差表、子轨迹表组织成 report dict，供 app.py 展示和导出。
 
 指标与代码字段对应：
-- 时间关联质量：associate_trajectories() -> report["association"]。
+- 时间同步质量：prepare_evaluation_trajectories()/associate_trajectories() -> report["association"]。
 - 轨迹对齐尺度：compute_alignment()/aggregate_alignment() -> report["alignment"]。
 - ATE 三维位置误差：pos_error_m -> report["ate_position_m"]。
 - ATE 水平误差：horizontal_error_m -> report["ate_horizontal_m"]。
@@ -97,7 +97,9 @@ class EvaluationConfig:
     """评估配置，基本都由 app.py 侧边栏控件传入。"""
 
     alignment: str = "se3"
+    association_mode: str = "interpolate_gt"
     max_time_diff_s: float | None = 0.02
+    max_interpolation_gap_s: float | None = 1.0
     time_offset_s: float = 0.0
     rpe_delta_frames: int = 1
     segment_lengths_m: tuple[float, ...] = (50, 100, 200, 500, 1000, 2000, 5000)
@@ -221,9 +223,12 @@ def evaluate_trajectories(
     """
     cfg = config or EvaluationConfig()
 
-    # 1. 时间关联：只比较有对应时间戳的位姿。对 IMU 长时间日志场景，
-    #    这一步会自然只取 VO 时间段附近的 GT/IMU 位姿。
-    gt_idx, est_idx, assoc = associate_trajectories(gt, est, cfg.max_time_diff_s, cfg.time_offset_s)
+    # 1. 时间同步：默认以 VO 时间戳为评估基准，把 GT/IMU 插值到 VO 时刻。
+    #    这样 GT=0.1/0.3/0.5、VO=0.2/0.4/0.6 的相位错开数据不会被错误丢弃。
+    #    如果选择 nearest，则退回 TUM RGB-D benchmark 的 greedy timestamp association。
+    original_gt = gt
+    original_est = est
+    gt, est, gt_idx, est_idx, assoc = prepare_evaluation_trajectories(original_gt, original_est, cfg)
     if len(gt_idx) < 2:
         raise ValueError("Need at least two associated poses to evaluate a trajectory")
 
@@ -416,11 +421,12 @@ def evaluate_trajectories(
         "duration_s": float(total_duration_s),
         "matched_poses": int(len(used_gt_idx)),
         "original_matched_poses": original_match_count,
-        "gt_poses": int(len(gt.positions)),
-        "est_poses": int(len(est.positions)),
-        "coverage_ratio": float(len(used_gt_idx) / max(1, len(gt.positions))),
-        "gt_pose_coverage_ratio": float(len(used_gt_idx) / max(1, len(gt.positions))),
-        "est_pose_coverage_ratio": float(len(used_est_idx) / max(1, len(est.positions))),
+        "gt_poses": int(len(original_gt.positions)),
+        "est_poses": int(len(original_est.positions)),
+        "coverage_ratio": _gt_coverage_ratio(assoc, total_duration_s, original_gt, len(used_gt_idx)),
+        "gt_pose_coverage_ratio": _gt_coverage_ratio(assoc, total_duration_s, original_gt, len(used_gt_idx)),
+        "gt_time_coverage_ratio": float(total_duration_s / original_gt.duration_s) if original_gt.duration_s > 0 else 1.0,
+        "est_pose_coverage_ratio": float(len(used_est_idx) / max(1, len(original_est.positions))),
         "endpoint_error_m": endpoint_error_m,
         "endpoint_error_percent_of_path": float(100.0 * endpoint_error_m / total_gt_path_m) if total_gt_path_m > 0 else math.nan,
         "raw_path_scale_ratio_est_over_gt": float(total_raw_est_path_m / total_gt_path_m) if total_gt_path_m > 0 else math.nan,
@@ -429,8 +435,8 @@ def evaluate_trajectories(
     # 14. report 是唯一对外返回值。app.py 的所有图表/表格/下载都从这里取数据。
     report = {
         "inputs": {
-            "ground_truth": {"name": gt.name, "format": gt.source_format},
-            "estimate": {"name": est.name, "format": est.source_format},
+            "ground_truth": {"name": original_gt.name, "format": original_gt.source_format},
+            "estimate": {"name": original_est.name, "format": original_est.source_format},
         },
         "config": _dataclass_to_jsonable(cfg),
         "association": assoc,
@@ -461,6 +467,174 @@ def evaluate_trajectories(
         "segment_records": segment_records,
     }
     return report
+
+
+def prepare_evaluation_trajectories(
+    gt: Trajectory,
+    est: Trajectory,
+    cfg: EvaluationConfig,
+) -> tuple[Trajectory, Trajectory, np.ndarray, np.ndarray, dict[str, Any]]:
+    """Build same-timestamp GT/VO trajectories for metric computation."""
+    mode = cfg.association_mode.lower()
+    if mode in {"interpolate_gt", "gt_interpolate", "interpolate", "vo_timestamps"}:
+        return interpolate_gt_to_est_timestamps(gt, est, cfg.time_offset_s, cfg.max_interpolation_gap_s)
+    if mode in {"nearest", "tum", "tum_greedy", "associate"}:
+        gt_idx, est_idx, assoc = associate_trajectories(gt, est, cfg.max_time_diff_s, cfg.time_offset_s)
+        assoc["mode"] = "nearest"
+        return gt, est, gt_idx, est_idx, assoc
+    if mode in {"index", "index_truncated"}:
+        gt_idx, est_idx, assoc = associate_trajectories(gt, est, None, cfg.time_offset_s)
+        assoc["mode"] = "index"
+        return gt, est, gt_idx, est_idx, assoc
+    raise ValueError(f"Unknown association mode: {cfg.association_mode}")
+
+
+def interpolate_gt_to_est_timestamps(
+    gt: Trajectory,
+    est: Trajectory,
+    time_offset_s: float = 0.0,
+    max_interpolation_gap_s: float | None = 1.0,
+) -> tuple[Trajectory, Trajectory, np.ndarray, np.ndarray, dict[str, Any]]:
+    """Interpolate GT to VO timestamps after applying the configured VO time offset."""
+    gt_unique = _unique_timestamp_trajectory(gt)
+    shifted_est_stamps = est.stamps + time_offset_s
+    in_range = (shifted_est_stamps >= gt_unique.stamps[0]) & (shifted_est_stamps <= gt_unique.stamps[-1])
+    est_indices = np.flatnonzero(in_range)
+    if not len(est_indices):
+        empty = np.asarray([], dtype=int)
+        return gt_unique, est, empty, empty, {
+            "method": "gt_interpolated_to_est_timestamps",
+            "mode": "interpolate_gt",
+            "matches": 0,
+            "time_offset_s": float(time_offset_s),
+            "dropped_est_outside_gt_range": int(len(est.positions)),
+            "warning": "no VO timestamp falls inside the GT timestamp range",
+        }
+
+    target_stamps = shifted_est_stamps[est_indices]
+    bracket_gaps = interpolation_bracket_gaps(gt_unique.stamps, target_stamps)
+    if max_interpolation_gap_s is not None:
+        valid_gap = bracket_gaps <= float(max_interpolation_gap_s)
+        est_indices = est_indices[valid_gap]
+        target_stamps = target_stamps[valid_gap]
+        bracket_gaps = bracket_gaps[valid_gap]
+
+    if len(est_indices) < 2:
+        empty = np.asarray([], dtype=int)
+        return gt_unique, est, empty, empty, {
+            "method": "gt_interpolated_to_est_timestamps",
+            "mode": "interpolate_gt",
+            "matches": int(len(est_indices)),
+            "time_offset_s": float(time_offset_s),
+            "max_interpolation_gap_s_allowed": max_interpolation_gap_s,
+            "warning": "fewer than two VO timestamps remain after GT interpolation range/gap filtering",
+        }
+
+    gt_positions = interpolate_positions(gt_unique.stamps, gt_unique.positions, target_stamps)
+    gt_rotations = interpolate_rotations(gt_unique.stamps, gt_unique.rotations, target_stamps) if gt_unique.rotations is not None else None
+    est_eval = subset_trajectory(est, est_indices, stamps_override=target_stamps)
+    gt_eval = Trajectory(
+        f"{gt.name}_interpolated_to_{est.name}",
+        target_stamps,
+        gt_positions,
+        gt_rotations,
+        source_format=f"{gt.source_format}+interpolated",
+    )
+    idx = np.arange(len(est_indices), dtype=int)
+    matched_duration = float(target_stamps[-1] - target_stamps[0]) if len(target_stamps) > 1 else 0.0
+    assoc = {
+        "method": "gt_interpolated_to_est_timestamps",
+        "mode": "interpolate_gt",
+        "matches": int(len(est_indices)),
+        "time_offset_s": float(time_offset_s),
+        "max_time_diff_s": 0.0,
+        "mean_time_diff_s": 0.0,
+        "max_interpolation_gap_s_allowed": max_interpolation_gap_s,
+        "max_interpolation_gap_s": float(np.max(bracket_gaps)) if len(bracket_gaps) else 0.0,
+        "mean_interpolation_gap_s": float(np.mean(bracket_gaps)) if len(bracket_gaps) else 0.0,
+        "dropped_est_outside_gt_range": int(np.count_nonzero(~in_range)),
+        "dropped_est_large_gt_gap": int(np.count_nonzero(in_range) - len(est_indices)),
+        "gt_time_coverage_ratio": float(matched_duration / gt.duration_s) if gt.duration_s > 0 else 1.0,
+        "est_pose_coverage_ratio": float(len(est_indices) / max(1, len(est.positions))),
+    }
+    return gt_eval, est_eval, idx, idx, assoc
+
+
+def _unique_timestamp_trajectory(traj: Trajectory) -> Trajectory:
+    """Keep the first sample for duplicate timestamps before interpolation."""
+    unique_stamps, unique_indices = np.unique(traj.stamps, return_index=True)
+    if len(unique_stamps) == len(traj.stamps):
+        return traj
+    return subset_trajectory(traj, np.sort(unique_indices), stamps_override=traj.stamps[np.sort(unique_indices)])
+
+
+def subset_trajectory(traj: Trajectory, indices: np.ndarray, stamps_override: np.ndarray | None = None) -> Trajectory:
+    rotations = traj.rotations[indices] if traj.rotations is not None else None
+    extras = {key: np.asarray(value)[indices] for key, value in traj.extras.items() if len(value) == len(traj.positions)}
+    stamps = np.asarray(stamps_override, dtype=float) if stamps_override is not None else traj.stamps[indices]
+    return Trajectory(traj.name, stamps, traj.positions[indices], rotations, extras=extras, source_format=traj.source_format)
+
+
+def interpolate_positions(src_stamps: np.ndarray, src_positions: np.ndarray, target_stamps: np.ndarray) -> np.ndarray:
+    return np.column_stack([np.interp(target_stamps, src_stamps, src_positions[:, axis]) for axis in range(3)])
+
+
+def interpolation_bracket_gaps(src_stamps: np.ndarray, target_stamps: np.ndarray) -> np.ndarray:
+    src = np.asarray(src_stamps, dtype=float)
+    target = np.asarray(target_stamps, dtype=float)
+    insert = np.searchsorted(src, target, side="left")
+    gaps = np.zeros(len(target), dtype=float)
+    exact = (insert < len(src)) & np.isclose(src[np.clip(insert, 0, len(src) - 1)], target)
+    middle = (~exact) & (insert > 0) & (insert < len(src))
+    gaps[middle] = src[insert[middle]] - src[insert[middle] - 1]
+    gaps[(~exact) & ~middle] = math.inf
+    return gaps
+
+
+def interpolate_rotations(src_stamps: np.ndarray, src_rotations: np.ndarray | None, target_stamps: np.ndarray) -> np.ndarray | None:
+    if src_rotations is None:
+        return None
+    quats = matrix_to_quaternion(src_rotations)
+    src = np.asarray(src_stamps, dtype=float)
+    target = np.asarray(target_stamps, dtype=float)
+    insert = np.searchsorted(src, target, side="left")
+    out = np.empty((len(target), 4), dtype=float)
+    for i, pos in enumerate(insert):
+        if pos <= 0:
+            out[i] = quats[0]
+        elif pos >= len(src):
+            out[i] = quats[-1]
+        elif np.isclose(src[pos], target[i]):
+            out[i] = quats[pos]
+        else:
+            alpha = float((target[i] - src[pos - 1]) / (src[pos] - src[pos - 1]))
+            out[i] = slerp_quaternion(quats[pos - 1], quats[pos], alpha)
+    return quaternion_to_matrix(out[:, 0], out[:, 1], out[:, 2], out[:, 3])
+
+
+def slerp_quaternion(q0: np.ndarray, q1: np.ndarray, alpha: float) -> np.ndarray:
+    q0 = np.asarray(q0, dtype=float)
+    q1 = np.asarray(q1, dtype=float)
+    dot = float(np.dot(q0, q1))
+    if dot < 0.0:
+        q1 = -q1
+        dot = -dot
+    if dot > 0.9995:
+        q = q0 + alpha * (q1 - q0)
+        return q / np.linalg.norm(q)
+    theta_0 = math.acos(float(np.clip(dot, -1.0, 1.0)))
+    theta = theta_0 * alpha
+    sin_theta = math.sin(theta)
+    sin_theta_0 = math.sin(theta_0)
+    s0 = math.cos(theta) - dot * sin_theta / sin_theta_0
+    s1 = sin_theta / sin_theta_0
+    return s0 * q0 + s1 * q1
+
+
+def _gt_coverage_ratio(assoc: dict[str, Any], total_duration_s: float, original_gt: Trajectory, used_count: int) -> float:
+    if assoc.get("mode") == "interpolate_gt":
+        return float(total_duration_s / original_gt.duration_s) if original_gt.duration_s > 0 else 1.0
+    return float(used_count / max(1, len(original_gt.positions)))
 
 
 def associate_trajectories(
@@ -1181,7 +1355,9 @@ def _jsonable_value(value: Any) -> Any:
 def _dataclass_to_jsonable(cfg: EvaluationConfig) -> dict[str, Any]:
     return {
         "alignment": cfg.alignment,
+        "association_mode": cfg.association_mode,
         "max_time_diff_s": cfg.max_time_diff_s,
+        "max_interpolation_gap_s": cfg.max_interpolation_gap_s,
         "time_offset_s": cfg.time_offset_s,
         "rpe_delta_frames": cfg.rpe_delta_frames,
         "segment_lengths_m": list(cfg.segment_lengths_m),

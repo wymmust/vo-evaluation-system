@@ -151,9 +151,12 @@ async function runEvaluation() {
 
 function buildConfig() {
   const maxTimeDiff = numberOf("maxTimeDiff");
+  const maxInterpolationGap = numberOf("maxInterpolationGap");
   return {
     alignment: valueOf("alignment"),
+    association_mode: valueOf("associationMode"),
     max_time_diff_s: maxTimeDiff < 0 ? null : maxTimeDiff,
+    max_interpolation_gap_s: maxInterpolationGap < 0 ? null : maxInterpolationGap,
     time_offset_s: numberOf("timeOffset"),
     rpe_delta_frames: integerOf("rpeDelta"),
     segment_lengths_m: parseFloatList(valueOf("segmentLengths")),
@@ -213,6 +216,7 @@ function renderMetrics(report) {
   const vertical = report.ate_vertical_m || {};
   const rpe = report.rpe_frame_delta?.translation_m || {};
   const divergence = report.divergence || {};
+  const association = report.association || {};
   const metrics = [
     ["路程", summary.gt_path_length_m, "m"],
     ["ATE RMSE", ate.rmse, "m"],
@@ -226,6 +230,8 @@ function renderMetrics(report) {
     ["匹配位姿", summary.matched_poses, ""],
     ["VO匹配率", 100 * summary.est_pose_coverage_ratio, "%"],
     ["耗时", summary.duration_s, "s"],
+    ["时间同步", associationLabel(association), ""],
+    ["最大插值间隔", association.max_interpolation_gap_s, "s"],
   ];
 
   document.getElementById("metrics").innerHTML = metrics.map(([label, value, unit]) => `
@@ -234,6 +240,20 @@ function renderMetrics(report) {
       <div class="value">${formatValue(value, unit)}</div>
     </div>
   `).join("");
+}
+
+function associationLabel(association) {
+  const mode = association.mode || association.method;
+  if (mode === "interpolate_gt") {
+    return "GT插值到VO";
+  }
+  if (mode === "nearest") {
+    return "最近邻";
+  }
+  if (mode === "index") {
+    return "按索引";
+  }
+  return mode || "N/A";
 }
 
 function renderMessages(report) {
@@ -253,6 +273,14 @@ function renderMessages(report) {
     } else {
       messages.push(`检测到 ${allDisc.break_count} 个大跳变/时间间隔；当前策略 ${selected.policy}，评估匹配点 ${summary.matched_poses}/${summary.original_matched_poses}。`);
     }
+  }
+
+  if (
+    report.association?.mode === "interpolate_gt" &&
+    ((report.association.dropped_est_outside_gt_range || 0) > 0 || (report.association.dropped_est_large_gt_gap || 0) > 0)
+  ) {
+    const maxGap = report.association.max_interpolation_gap_s;
+    messages.push(`当前将 GT 插值到 VO 时间戳；因超出 GT 时间范围或插值间隔过大丢弃了部分 VO 点，最大 GT 插值间隔 ${formatNumber(maxGap)} s。`);
   }
 
   if (report.divergence?.diverged) {

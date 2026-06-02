@@ -62,6 +62,14 @@
               <option value="none">不对齐</option>
             </select>
           </label>
+          <label>
+            时间同步方式
+            <select id="associationMode">
+              <option value="interpolate_gt">GT 插值到 VO 时间戳</option>
+              <option value="nearest">TUM 最近邻时间戳匹配</option>
+              <option value="index">按索引匹配</option>
+            </select>
+          </label>
         </section>
 
         <section>
@@ -69,6 +77,10 @@
           <label>
             时间关联最大误差 s（不按时间填 -1）
             <input id="maxTimeDiff" type="number" value="0.02" step="0.01" />
+          </label>
+          <label>
+            GT 插值最大间隔 s（不限制填 -1）
+            <input id="maxInterpolationGap" type="number" value="1" step="0.1" />
           </label>
           <label>
             VO 时间戳偏移 s

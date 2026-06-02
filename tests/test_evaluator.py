@@ -81,6 +81,25 @@ def test_numeric_tum_nanosecond_timestamps_are_normalized():
     assert abs(traj.duration_s - 0.05) < 1e-12
 
 
+def test_gt_is_interpolated_to_vo_timestamps_by_default():
+    gt_text = """0.1 0.1 0 0 0 0 0 1
+0.3 0.3 0 0 0 0 0 1
+0.5 0.5 0 0 0 0 0 1
+0.7 0.7 0 0 0 0 0 1
+"""
+    est_text = """0.2 0.2 0 0 0 0 0 1
+0.4 0.4 0 0 0 0 0 1
+0.6 0.6 0 0 0 0 0 1
+"""
+    gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
+    est = load_trajectory_from_text(est_text, fmt="tum", name="est")
+    cfg = EvaluationConfig(alignment="none", segment_lengths_m=(0.1,), max_interpolation_gap_s=0.3)
+    report = evaluate_trajectories(gt, est, cfg)
+    assert report["association"]["method"] == "gt_interpolated_to_est_timestamps"
+    assert report["summary"]["matched_poses"] == 3
+    assert report["ate_position_m"]["rmse"] < 1e-12
+
+
 def test_report_json_replaces_non_finite_values_with_null():
     text = report_to_json({"values": [1.0, math.inf, -math.inf, math.nan, np.float64(np.nan)]})
     parsed = json.loads(text)

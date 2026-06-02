@@ -42,6 +42,12 @@ SEGMENT_POLICY_OPTIONS = {
     "只评估最长连续段": "longest",
 }
 
+ASSOCIATION_OPTIONS = {
+    "GT插值到VO时间戳（推荐）": "interpolate_gt",
+    "TUM最近邻时间戳匹配": "nearest",
+    "按索引匹配（不按时间）": "index",
+}
+
 
 def main() -> None:
     """页面入口：上传文件 -> 构造配置 -> 调用 evaluator -> 展示 report。"""
@@ -50,14 +56,16 @@ def main() -> None:
 
     with st.sidebar:
         # 这些控件直接映射到 EvaluationConfig：
-        # alignment -> 对齐方式；max_time_diff/time_offset -> 时间关联；
+        # alignment -> 对齐方式；association/max_time_diff/time_offset -> 时间同步；
         # rpe_delta -> RPE；segment_* -> 长航程子轨迹误差；
         # divergence_* -> 发散检测阈值。
         st.header("输入设置")
         gt_format_label = st.selectbox("Ground truth 格式", list(FORMAT_OPTIONS), index=0)
         est_format_label = st.selectbox("VO 输出格式", list(FORMAT_OPTIONS), index=0)
         alignment_label = st.selectbox("轨迹对齐", list(ALIGNMENT_OPTIONS), index=1)
+        association_label = st.selectbox("时间同步方式", list(ASSOCIATION_OPTIONS), index=0)
         max_time_diff = st.number_input("时间关联最大误差 s（不按时间则填 -1）", value=0.02, min_value=-1.0, step=0.01)
+        max_interpolation_gap = st.number_input("GT 插值最大间隔 s（不限制填 -1）", value=1.0, min_value=-1.0, step=0.1)
         time_offset = st.number_input("VO 时间戳偏移 s（按 TUM：加到 VO 时间戳）", value=0.0, step=0.01)
         rpe_delta = st.number_input("RPE 固定帧间隔 Δ", value=1, min_value=1, step=1)
         segment_text = st.text_input("长航程子轨迹长度 m", value="50,100,200,500,1000,2000,5000")
@@ -89,7 +97,9 @@ def main() -> None:
         segment_lengths = parse_float_list(segment_text)
         cfg = evaluator.EvaluationConfig(
             alignment=ALIGNMENT_OPTIONS[alignment_label],
+            association_mode=ASSOCIATION_OPTIONS[association_label],
             max_time_diff_s=None if max_time_diff < 0 else float(max_time_diff),
+            max_interpolation_gap_s=None if max_interpolation_gap < 0 else float(max_interpolation_gap),
             time_offset_s=float(time_offset),
             rpe_delta_frames=int(rpe_delta),
             segment_lengths_m=tuple(segment_lengths),
@@ -191,6 +201,12 @@ def show_summary(report: dict[str, Any]) -> None:
     metric(cols[4], "VO匹配率", 100 * summary.get("est_pose_coverage_ratio", math.nan), "%")
     metric(cols[5], "耗时", summary.get("duration_s"), "s")
 
+    assoc = report.get("association", {})
+    cols = st.columns(3)
+    cols[0].metric("时间同步", association_label(assoc))
+    metric(cols[1], "最大插值间隔", assoc.get("max_interpolation_gap_s"), "s")
+    metric(cols[2], "平均时间差", assoc.get("mean_time_diff_s"), "s")
+
     if div.get("diverged"):
         st.warning(
             f"首次发散：distance={div.get('first_divergence_distance_m'):.2f} m, "
@@ -223,6 +239,17 @@ def show_summary(report: dict[str, Any]) -> None:
             )
         with st.expander("查看大跳变/时间间隔明细"):
             st.dataframe(pd.DataFrame(all_disc.get("breaks", [])), use_container_width=True, hide_index=True)
+
+
+def association_label(assoc: dict[str, Any]) -> str:
+    method = assoc.get("mode") or assoc.get("method")
+    if method == "interpolate_gt":
+        return "GT插值到VO"
+    if method == "nearest":
+        return "最近邻"
+    if method == "index":
+        return "按索引"
+    return str(method or "N/A")
 
 
 def show_visuals(report: dict[str, Any]) -> None:
