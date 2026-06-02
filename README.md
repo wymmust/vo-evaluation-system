@@ -61,37 +61,37 @@ streamlit run app.py
 
 GT 累计路程：
 
-$$
+```text
 D_0=0
-$$
+```
 
-$$
+```text
 D_i=\sum_{k=1}^{i}\left\|\mathbf{p}_k^{gt}-\mathbf{p}_{k-1}^{gt}\right\|_2
-$$
+```
 
 三维位置误差：
 
-$$
+```text
 e_i^{3D}=\left\|\hat{\mathbf{p}}_i^{vo}-\mathbf{p}_i^{gt}\right\|_2
-$$
+```
 
 水平误差：
 
-$$
+```text
 e_i^{horizontal}=
 \sqrt{
 (\hat{x}_i^{vo}-x_i^{gt})^2+
 (\hat{y}_i^{vo}-y_i^{gt})^2
 }
-$$
+```
 
 其中：
 
-- $\mathbf{p}_i^{gt}$ 表示 Ground Truth 位置；
-- $\hat{\mathbf{p}}_i^{vo}$ 表示对齐后的 VO 位置；
-- $D_i$ 表示第 $i$ 个匹配位姿对应的累计路程；
-- $e_i^{3D}$ 对应图中的 `3D error`；
-- $e_i^{horizontal}$ 对应图中的 `horizontal`。
+- `\mathbf{p}_i^{gt}` 表示 Ground Truth 位置；
+- `\hat{\mathbf{p}}_i^{vo}` 表示对齐后的 VO 位置；
+- `D_i` 表示第 `i` 个匹配位姿对应的累计路程；
+- `e_i^{3D}` 对应图中的 `3D error`；
+- `e_i^{horizontal}` 对应图中的 `horizontal`。
 
 该图中每个点对应一个匹配位姿，展示该位置处 VO 轨迹相对于 Ground Truth 的误差。
 
@@ -103,25 +103,25 @@ $$
 
 Ground Truth 高度：
 
-$$
+```text
 z_i^{gt}
-$$
+```
 
 VO 对齐后高度：
 
-$$
+```text
 \hat{z}_i^{vo}
-$$
+```
 
 垂直误差：
 
-$$
+```text
 e_i^{vertical}=\hat{z}_i^{vo}-z_i^{gt}
-$$
+```
 
 垂直误差 RMSE：
 
-$$
+```text
 RMSE_{vertical}
 =
 \sqrt{
@@ -129,14 +129,14 @@ RMSE_{vertical}
 \sum_{i=1}^{N}
 (e_i^{vertical})^2
 }
-$$
+```
 
 其中：
 
-- $z_i^{gt}$ 对应图中的 `GT altitude`；
-- $\hat{z}_i^{vo}$ 对应图中的 `VO altitude`；
-- $e_i^{vertical}$ 对应图中的 `vertical error`；
-- $N$ 为成功匹配的位姿数量。
+- `z_i^{gt}` 对应图中的 `GT altitude`；
+- `\hat{z}_i^{vo}` 对应图中的 `VO altitude`；
+- `e_i^{vertical}` 对应图中的 `vertical error`；
+- `N` 为成功匹配的位姿数量。
 
 ---
 
@@ -146,7 +146,7 @@ ATE 用于统计整条轨迹在对齐后的整体位置误差。
 
 单点 ATE 误差：
 
-$$
+```text
 e_i^{ATE}
 =
 \left\|
@@ -154,11 +154,11 @@ e_i^{ATE}
 -
 \mathbf{p}_i^{gt}
 \right\|_2
-$$
+```
 
 ATE RMSE：
 
-$$
+```text
 ATE_{RMSE}
 =
 \sqrt{
@@ -166,70 +166,70 @@ ATE_{RMSE}
 \sum_{i=1}^{N}
 (e_i^{ATE})^2
 }
-$$
+```
 
 ATE mean：
 
-$$
+```text
 ATE_{mean}
 =
 \frac{1}{N}
 \sum_{i=1}^{N}
 e_i^{ATE}
-$$
+```
 
 ATE median：
 
-$$
+```text
 ATE_{median}
 =
 median(e_i^{ATE})
-$$
+```
 
 ATE p95：
 
-$$
+```text
 ATE_{p95}
 =
 P_{95}(e_i^{ATE})
-$$
+```
 
 ATE p99：
 
-$$
+```text
 ATE_{p99}
 =
 P_{99}(e_i^{ATE})
-$$
+```
 
 ATE max：
 
-$$
+```text
 ATE_{max}
 =
 \max(e_i^{ATE})
-$$
+```
 
 其中：
 
-- $N$ 为成功匹配的位姿数量；
-- $\hat{\mathbf{p}}_i^{vo}$ 为对齐后的 VO 位置；
-- $\mathbf{p}_i^{gt}$ 为 Ground Truth 位置；
-- 页面中的 `ATE RMSE` 即为 $ATE_{RMSE}$。
+- `N` 为成功匹配的位姿数量；
+- `\hat{\mathbf{p}}_i^{vo}` 为对齐后的 VO 位置；
+- `\mathbf{p}_i^{gt}` 为 Ground Truth 位置；
+- 页面中的 `ATE RMSE` 即为 `ATE_{RMSE}`。
 
 ---
 
 ### 4. RPE 相对位姿误差
 
-RPE 用于评估固定帧间隔下的局部运动误差。设固定帧间隔为 $\Delta$，则：
+RPE 用于评估固定帧间隔下的局部运动误差。设固定帧间隔为 `\Delta`，则：
 
-$$
+```text
 j=i+\Delta
-$$
+```
 
 无姿态时，RPE 平移误差计算为：
 
-$$
+```text
 e_{ij}^{RPE,t}
 =
 \left\|
@@ -237,27 +237,27 @@ e_{ij}^{RPE,t}
 -
 (\mathbf{p}_j^{gt}-\mathbf{p}_i^{gt})
 \right\|_2
-$$
+```
 
 有姿态时，先计算相对位移：
 
-$$
+```text
 \mathbf{t}_{ij}^{gt}
 =
 (\mathbf{R}_i^{gt})^T
 (\mathbf{p}_j^{gt}-\mathbf{p}_i^{gt})
-$$
+```
 
-$$
+```text
 \mathbf{t}_{ij}^{vo}
 =
 (\hat{\mathbf{R}}_i^{vo})^T
 (\hat{\mathbf{p}}_j^{vo}-\hat{\mathbf{p}}_i^{vo})
-$$
+```
 
 RPE 平移误差为：
 
-$$
+```text
 e_{ij}^{RPE,t}
 =
 \left\|
@@ -265,11 +265,11 @@ e_{ij}^{RPE,t}
 -
 \mathbf{t}_{ij}^{gt}
 \right\|_2
-$$
+```
 
 RPE RMSE：
 
-$$
+```text
 RPE_{RMSE}
 =
 \sqrt{
@@ -277,32 +277,32 @@ RPE_{RMSE}
 \sum_{k=1}^{M}
 (e_k^{RPE,t})^2
 }
-$$
+```
 
 如果输入包含姿态，还可以计算 RPE 旋转误差：
 
-$$
+```text
 \mathbf{R}_{ij}^{gt}
 =
 (\mathbf{R}_i^{gt})^T
 \mathbf{R}_j^{gt}
-$$
+```
 
-$$
+```text
 \mathbf{R}_{ij}^{vo}
 =
 (\hat{\mathbf{R}}_i^{vo})^T
 \hat{\mathbf{R}}_j^{vo}
-$$
+```
 
-$$
+```text
 \mathbf{R}_{ij}^{err}
 =
 (\mathbf{R}_{ij}^{gt})^T
 \mathbf{R}_{ij}^{vo}
-$$
+```
 
-$$
+```text
 e_{ij}^{RPE,r}
 =
 \arccos
@@ -311,13 +311,13 @@ e_{ij}^{RPE,r}
 \right)
 \cdot
 \frac{180}{\pi}
-$$
+```
 
 其中：
 
-- $\Delta$ 为固定帧间隔；
-- $M$ 为可计算 RPE 的相对位姿数量；
-- 页面中的 `RPE RMSE` 即为 $RPE_{RMSE}$。
+- `\Delta` 为固定帧间隔；
+- `M` 为可计算 RPE 的相对位姿数量；
+- 页面中的 `RPE RMSE` 即为 `RPE_{RMSE}`。
 
 ---
 
@@ -327,41 +327,41 @@ $$
 
 设目标子轨迹长度为：
 
-$$
+```text
 L
-$$
+```
 
 例如：
 
-$$
+```text
 L\in \{50,100,200,500,1000,2000,5000\}\ m
-$$
+```
 
-对每个起点 $i$，寻找终点 $j$，使得：
+对每个起点 `i`，寻找终点 `j`，使得：
 
-$$
+```text
 D_j-D_i\approx L
-$$
+```
 
 实际子轨迹长度为：
 
-$$
+```text
 L_{ij}^{actual}=D_j-D_i
-$$
+```
 
 长度容差判断：
 
-$$
+```text
 \left|
 L_{ij}^{actual}-L
 \right|
 \leq
 \alpha L
-$$
+```
 
 子轨迹平移误差：
 
-$$
+```text
 e_{ij}^{seg,t}
 =
 \left\|
@@ -369,11 +369,11 @@ e_{ij}^{seg,t}
 -
 (\mathbf{p}_j^{gt}-\mathbf{p}_i^{gt})
 \right\|_2
-$$
+```
 
 平移误差百分比：
 
-$$
+```text
 E_{ij}^{seg,t,\%}
 =
 100
@@ -381,52 +381,52 @@ E_{ij}^{seg,t,\%}
 \frac{
 e_{ij}^{seg,t}
 }{L}
-$$
+```
 
 如果输入包含姿态，子轨迹旋转误差为：
 
-$$
+```text
 e_{ij}^{seg,r,deg}
-$$
+```
 
 单位距离旋转误差为：
 
-$$
+```text
 E_{ij}^{seg,r}
 =
 \frac{
 e_{ij}^{seg,r,deg}
 }{L}
-$$
+```
 
 单位为：
 
-$$
+```text
 deg/m
-$$
+```
 
 每个目标长度下，对所有有效子轨迹统计 mean 和 p95：
 
-$$
+```text
 Mean_L
 =
 \frac{1}{M}
 \sum_{m=1}^{M}
 E_m
-$$
+```
 
-$$
+```text
 P95_L
 =
 P_{95}(E_m)
-$$
+```
 
 其中：
 
-- $L$ 为目标子轨迹长度；
-- $M$ 为该长度下有效子轨迹数量；
-- 图中的 `translation mean %` 为 $Mean_L$；
-- 图中的 `translation p95 %` 为 $P95_L$；
+- `L` 为目标子轨迹长度；
+- `M` 为该长度下有效子轨迹数量；
+- 图中的 `translation mean %` 为 `Mean_L`；
+- 图中的 `translation p95 %` 为 `P95_L`；
 - 图中的 `rotation deg/m` 为单位距离旋转误差。
 
 ---
@@ -437,21 +437,21 @@ $$
 
 子轨迹平均速度：
 
-$$
+```text
 v_{ij}
 =
 \frac{L}{t_j-t_i}
-$$
+```
 
 速度分箱示例：
 
-$$
+```text
 [0,5),[5,10),[10,15),[15,20),[20,30),[30,\infty)
-$$
+```
 
 每个子轨迹的平移误差百分比为：
 
-$$
+```text
 E_{ij}^{seg,t,\%}
 =
 100
@@ -459,35 +459,35 @@ E_{ij}^{seg,t,\%}
 \frac{
 e_{ij}^{seg,t}
 }{L}
-$$
+```
 
 每个速度箱内的 mean：
 
-$$
+```text
 Mean_{bin}
 =
 \frac{1}{M}
 \sum_{m=1}^{M}
 E_m^{seg,t,\%}
-$$
+```
 
 每个速度箱内的 p95：
 
-$$
+```text
 P95_{bin}
 =
 P_{95}
 (
 E_m^{seg,t,\%}
 )
-$$
+```
 
 其中：
 
-- $v_{ij}$ 为子轨迹平均速度；
-- $L$ 为目标子轨迹长度；
-- $t_j-t_i$ 为该子轨迹持续时间；
-- $M$ 为当前速度箱内有效子轨迹数量；
+- `v_{ij}` 为子轨迹平均速度；
+- `L` 为目标子轨迹长度；
+- `t_j-t_i` 为该子轨迹持续时间；
+- `M` 为当前速度箱内有效子轨迹数量；
 - 图中的 `mean %` 为该速度箱内平移误差百分比均值；
 - 图中的 `p95 %` 为该速度箱内平移误差百分比 95 分位数。
 
@@ -499,7 +499,7 @@ $$
 
 终点漂移：
 
-$$
+```text
 E_{end}
 =
 \left\|
@@ -507,11 +507,11 @@ E_{end}
 -
 \mathbf{p}_N^{gt}
 \right\|_2
-$$
+```
 
 终点漂移占总路程比例：
 
-$$
+```text
 E_{end}^{\%}
 =
 100
@@ -519,13 +519,13 @@ E_{end}^{\%}
 \frac{
 E_{end}
 }{L_{gt}}
-$$
+```
 
 其中：
 
-- $N$ 为最后一个匹配位姿；
-- $L_{gt}$ 为 Ground Truth 总路程；
-- 页面中的 `终点漂移` 即为 $E_{end}$。
+- `N` 为最后一个匹配位姿；
+- `L_{gt}` 为 Ground Truth 总路程；
+- 页面中的 `终点漂移` 即为 `E_{end}`。
 
 ---
 
@@ -535,7 +535,7 @@ $$
 
 VO 原始路程：
 
-$$
+```text
 L_{vo}^{raw}
 =
 \sum_{i=1}^{N-1}
@@ -544,11 +544,11 @@ L_{vo}^{raw}
 -
 \mathbf{p}_{i}^{vo}
 \right\|_2
-$$
+```
 
 Ground Truth 路程：
 
-$$
+```text
 L_{gt}
 =
 \sum_{i=1}^{N-1}
@@ -557,11 +557,11 @@ L_{gt}
 -
 \mathbf{p}_{i}^{gt}
 \right\|_2
-$$
+```
 
 Raw 尺度比：
 
-$$
+```text
 ScaleRatio_{raw}
 =
 \frac{
@@ -569,11 +569,11 @@ L_{vo}^{raw}
 }{
 L_{gt}
 }
-$$
+```
 
 子轨迹尺度比：
 
-$$
+```text
 ScaleRatio_{ij}
 =
 \frac{
@@ -586,23 +586,23 @@ ScaleRatio_{ij}
 }{
 D_j-D_i
 }
-$$
+```
 
 子轨迹尺度漂移百分比：
 
-$$
+```text
 ScaleDrift_{ij}^{\%}
 =
 (ScaleRatio_{ij}-1)
 \times
 100
-$$
+```
 
 其中：
 
-- 页面中的 `Raw 尺度比` 即为 $ScaleRatio_{raw}$；
-- 页面中的 `对齐尺度` 为轨迹对齐时求得的尺度因子 $s$；
-- $ScaleRatio_{ij}$ 用于表示某一子轨迹段内 VO 路程和 GT 路程的比例关系。
+- 页面中的 `Raw 尺度比` 即为 `ScaleRatio_{raw}`；
+- 页面中的 `对齐尺度` 为轨迹对齐时求得的尺度因子 `s`；
+- `ScaleRatio_{ij}` 用于表示某一子轨迹段内 VO 路程和 GT 路程的比例关系。
 
 ---
 
@@ -612,7 +612,7 @@ $$
 
 GT 覆盖率：
 
-$$
+```text
 Coverage_{gt}
 =
 \frac{
@@ -620,11 +620,11 @@ N_{matched}
 }{
 N_{gt}
 }
-$$
+```
 
 VO 匹配率：
 
-$$
+```text
 Coverage_{vo}
 =
 \frac{
@@ -632,11 +632,11 @@ N_{matched}
 }{
 N_{vo}
 }
-$$
+```
 
 百分比形式：
 
-$$
+```text
 Coverage_{gt}^{\%}
 =
 100
@@ -646,9 +646,9 @@ N_{matched}
 }{
 N_{gt}
 }
-$$
+```
 
-$$
+```text
 Coverage_{vo}^{\%}
 =
 100
@@ -658,16 +658,16 @@ N_{matched}
 }{
 N_{vo}
 }
-$$
+```
 
 其中：
 
-- $N_{matched}$ 为成功匹配的位姿数量；
-- $N_{gt}$ 为 Ground Truth 总位姿数量；
-- $N_{vo}$ 为 VO 输出总位姿数量；
-- 页面中的 `GT 覆盖率` 对应 $Coverage_{gt}^{\%}$；
-- 页面中的 `VO匹配率` 对应 $Coverage_{vo}^{\%}$；
-- 页面中的 `匹配位姿` 对应 $N_{matched}$。
+- `N_{matched}` 为成功匹配的位姿数量；
+- `N_{gt}` 为 Ground Truth 总位姿数量；
+- `N_{vo}` 为 VO 输出总位姿数量；
+- 页面中的 `GT 覆盖率` 对应 `Coverage_{gt}^{\%}`；
+- 页面中的 `VO匹配率` 对应 `Coverage_{vo}^{\%}`；
+- 页面中的 `匹配位姿` 对应 `N_{matched}`。
 
 ---
 
@@ -677,7 +677,7 @@ $$
 
 动态发散阈值：
 
-$$
+```text
 T_i
 =
 \max
@@ -689,11 +689,11 @@ D_i
 T_{rel}
 }{100}
 \right)
-$$
+```
 
 发散判断：
 
-$$
+```text
 diverged
 =
 \exists i,
@@ -701,11 +701,11 @@ diverged
 e_i^{ATE}
 >
 T_i
-$$
+```
 
 首次发散点：
 
-$$
+```text
 k
 =
 \min
@@ -716,25 +716,25 @@ e_i^{ATE}
 >
 T_i
 \}
-$$
+```
 
 首次发散距离：
 
-$$
+```text
 D_{div}=D_k
-$$
+```
 
 首次发散误差：
 
-$$
+```text
 E_{div}=e_k^{ATE}
-$$
+```
 
 其中：
 
-- $T_{abs}$ 为绝对误差阈值；
-- $T_{rel}$ 为相对路程阈值，单位为 %；
-- $D_i$ 为当前累计路程；
+- `T_{abs}` 为绝对误差阈值；
+- `T_{rel}` 为相对路程阈值，单位为 %；
+- `D_i` 为当前累计路程；
 - 页面中的 `是否发散` 根据上述条件判断。
 
 ---
@@ -756,11 +756,11 @@ memory_mb
 fps
 ```
 
-对任意字段数组 $x_i$，计算：
+对任意字段数组 `x_i`，计算：
 
 RMSE：
 
-$$
+```text
 RMSE
 =
 \sqrt{
@@ -768,29 +768,29 @@ RMSE
 \sum_{i=1}^{N}
 x_i^2
 }
-$$
+```
 
 mean：
 
-$$
+```text
 Mean
 =
 \frac{1}{N}
 \sum_{i=1}^{N}
 x_i
-$$
+```
 
 median：
 
-$$
+```text
 Median
 =
 median(x_i)
-$$
+```
 
 std：
 
-$$
+```text
 Std
 =
 \sqrt{
@@ -798,19 +798,19 @@ Std
 \sum_{i=1}^{N}
 (x_i-Mean)^2
 }
-$$
+```
 
 p95：
 
-$$
+```text
 P95=P_{95}(x_i)
-$$
+```
 
 p99：
 
-$$
+```text
 P99=P_{99}(x_i)
-$$
+```
 
 其中：
 
