@@ -14,6 +14,7 @@ reports/
 outputs/
 
 *.html
+!static_web/index.html
 *.bag
 *.zip
 *.tar

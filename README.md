@@ -13,6 +13,21 @@ streamlit run app.py
 
 这个项目是 Streamlit/Python 应用，需要部署到能运行 Python 服务的平台；GitHub Pages 只能托管静态网页，不能直接运行本工具。
 
+## 纯静态网页版本
+
+如果不想维护 Python 服务，可以直接部署 `static_web/` 文件夹。这个版本用 Pyodide 在浏览器里运行 Python 评估代码，用户上传的轨迹文件只在浏览器内处理，不需要后端服务器。
+
+本地预览：
+
+```bash
+cd static_web
+python3 -m http.server 8765
+```
+
+然后打开 `http://localhost:8765/`。不要直接双击 `index.html`，因为浏览器通常会限制本地文件读取，导致 Pyodide 或评估代码无法加载。
+
+公网部署时，把 `static_web/` 文件夹上传到任意静态网站托管平台即可，例如 Netlify、Vercel、Cloudflare Pages、对象存储静态站点或普通 Nginx 静态目录。这个静态版首次打开会下载 Pyodide、numpy、pandas 和 Plotly，首屏加载比 Streamlit 版慢一些；超大日志也会受浏览器内存限制。
+
 推荐方式一：Streamlit Community Cloud
 
 1. 打开 Streamlit Community Cloud，新建 app。
