@@ -9,6 +9,34 @@ python3 -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## 公网部署
+
+这个项目是 Streamlit/Python 应用，需要部署到能运行 Python 服务的平台；GitHub Pages 只能托管静态网页，不能直接运行本工具。
+
+推荐方式一：Streamlit Community Cloud
+
+1. 打开 Streamlit Community Cloud，新建 app。
+2. 选择 GitHub 仓库 `wymmust/vo-evaluation-system`。
+3. Main file path 填 `app.py`。
+4. 部署完成后，平台会生成一个公网 URL，任何人都可以通过该 URL 上传自己的 GT/VO 文件并查看评估结果。
+
+推荐方式二：Docker 平台
+
+仓库已经包含 `Dockerfile`，可部署到 Render、Railway、Fly.io 或任意支持 Docker 的服务器。容器启动后监听 `8501` 端口。
+
+本地 Docker 验证：
+
+```bash
+docker build -t vo-evaluation-system .
+docker run --rm -p 8501:8501 vo-evaluation-system
+```
+
+部署注意事项：
+
+- 不要把飞行日志、测试数据或导出报告提交到仓库；`.gitignore` 和 `.dockerignore` 已经默认排除这些文件。
+- 上传文件大小默认上限为 200 MB，可在 `.streamlit/config.toml` 中调整 `maxUploadSize`。
+- 如果要让所有人访问应用，部署平台上的访问权限需要设置为 public。
+
 ## 支持格式
 
 - TUM：`timestamp tx ty tz qx qy qz qw`
