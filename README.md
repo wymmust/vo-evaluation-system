@@ -111,6 +111,354 @@ docker run --rm -p 8501:8501 vo-evaluation-system
 
 仓库不包含测试数据、飞行日志、导出报告或轨迹样例。请在本地页面中上传自己的 ground truth 与 VO 输出文件运行评估。
 
+## 运行结果截图指标卡与代码/公式对应
+
+本节对应页面第一屏 `EVALUATION SUMMARY / 运行结果` 的 15 个卡片。前端卡片由 `vo-evaluation-system/static_web/app.js:242-268` 生成，后端指标主要由 `vo-evaluation-system/vo_eval/evaluator.py:evaluate_trajectories()` 生成。所有 `rmse/mean/median/std/min/max/p95/p99` 统计最终都走 `describe()`：
+
+```python
+"rmse": float(np.sqrt(np.mean(arr * arr)))
+```
+
+位置类指标先把 VO 位置对齐到 GT 坐标系：
+
+$$
+\hat{\mathbf{p}}_i^{vo}=s\mathbf{R}\mathbf{p}_i^{vo}+\mathbf{t}
+$$
+
+对应代码：
+
+```python
+return scale * (positions @ rot.T) + trans
+```
+
+其中 `s/R/t` 来自 `compute_alignment()` 和 `umeyama_alignment()`；`SE3` 固定 `scale=1`，`Sim3` 会估计全局尺度。
+
+### #01 ATE RMSE
+
+- 前端取值：`value: ate.rmse`，其中 `ate = report.ate_position_m || {}`。
+- 后端字段：`report["ate_position_m"]["rmse"]`。
+- 后端代码：`errors = est_pos_aligned - gt_pos`，`pos_error_m = np.linalg.norm(errors, axis=1)`，`"ate_position_m": describe(pos_error_m)`。
+- 公式：
+
+$$
+e_i^{ATE}=\left\|\hat{\mathbf{p}}_i^{vo}-\mathbf{p}_i^{gt}\right\|_2
+$$
+
+$$
+ATE_{RMSE}=\sqrt{\frac{1}{N}\sum_{i=1}^{N}(e_i^{ATE})^2}
+$$
+
+- 含义：整条轨迹对齐后的全局位置一致性，数值越小越好；截图里的 `0.11 % 路程` 来自 `100 * ATE_RMSE / summary.gt_path_length_m`。
+- 偏高时怎么改：先检查时间同步和时间戳单位，再看坐标系/外参、对齐方式 `SE3/Sim3`、尺度来源、轨迹异常点、后端优化和闭环约束。如果 `Sim3` 下 ATE 很低但 `Raw 尺度比` 异常，说明形状能对上，但原始 VO 没有真实尺度。
+
+### #02 RPE RMSE
+
+- 前端取值：`value: rpe.rmse`，其中 `rpe = report.rpe_frame_delta?.translation_m || {}`；卡片备注 `Δ=... frames` 来自 `report.rpe_frame_delta.delta_frames`。
+- 后端字段：`report["rpe_frame_delta"]["translation_m"]["rmse"]`。
+- 后端代码：`rpe_error_arrays(..., delta=max(1, int(cfg.rpe_delta_frames)))`，每个 `i` 取 `j=i+delta`，再调用 `relative_error()`。
+- 公式：
+
+$$
+j=i+\Delta
+$$
+
+无姿态时：
+
+$$
+e_{ij}^{RPE,t}=
+\left\|
+(\hat{\mathbf{p}}_j^{vo}-\hat{\mathbf{p}}_i^{vo})
+-
+(\mathbf{p}_j^{gt}-\mathbf{p}_i^{gt})
+\right\|_2
+$$
+
+有姿态时，先转到起点局部坐标系：
+
+$$
+\mathbf{t}_{ij}^{gt}=(\mathbf{R}_i^{gt})^T(\mathbf{p}_j^{gt}-\mathbf{p}_i^{gt})
+$$
+
+$$
+\mathbf{t}_{ij}^{vo}=(\hat{\mathbf{R}}_i^{vo})^T(\hat{\mathbf{p}}_j^{vo}-\hat{\mathbf{p}}_i^{vo})
+$$
+
+$$
+RPE_{RMSE}=\sqrt{\frac{1}{M}\sum_{k=1}^{M}(e_k^{RPE,t})^2}
+$$
+
+- 含义：固定帧间隔内的局部相对运动误差，比 ATE 更敏感于帧间抖动、短时跟踪不稳和局部运动估计错误。
+- 偏高时怎么改：优先看特征跟踪、RANSAC/外点剔除、曝光/运动模糊、IMU 与相机时间同步、rolling shutter 和单帧尺度估计。可调 `rpe_delta_frames`：小 `Δ` 看单帧稳定性，大 `Δ` 看中短程累计漂移。
+
+### #03 终点漂移
+
+- 前端取值：`value: summary.endpoint_error_m`，备注百分比来自 `summary.endpoint_error_percent_of_path`。
+- 后端字段：`report["summary"]["endpoint_error_m"]`。
+- 后端代码：`endpoint_error_m = float(pos_error_m[-1])`。
+- 公式：
+
+$$
+E_{end}=
+\left\|
+\hat{\mathbf{p}}_N^{vo}-\mathbf{p}_N^{gt}
+\right\|_2
+$$
+
+$$
+E_{end}^{\%}=100\cdot\frac{E_{end}}{L_{gt}}
+$$
+
+- 含义：最后一个匹配位姿的最终定位偏差，长航程无人机里可直接理解为终点/降落点附近的累计误差。
+- 偏高时怎么改：重点检查长距离累计漂移、航向漂移、尺度漂移、后端约束、闭环/地图复用、GNSS/高度计/IMU 融合；如果只有终点高而中间不高，排查末段丢跟踪或最后几帧外点。
+
+### #04 长航程路程
+
+- 前端取值：`value: summary.gt_path_length_m`，备注 `${summary.duration_s} / ${summary.matched_poses} 帧`。
+- 后端字段：`report["summary"]["gt_path_length_m"]`。
+- 后端代码：每个评估段 `local_distance_m = path_distance(gt_pos)`，然后 `total_gt_path_m += float(local_distance_m[-1])`。
+- 公式：
+
+$$
+L_{gt}=\sum_{i=1}^{N-1}\left\|\mathbf{p}_{i+1}^{gt}-\mathbf{p}_{i}^{gt}\right\|_2
+$$
+
+- 含义：本次真正参与评估的 GT 航程，是 ATE 百分比、终点漂移百分比、发散阈值和长航程子轨迹统计的分母基础。它不是误差指标，不是越高越差。
+- 异常时怎么改：如果和预期飞行距离不一致，检查 GT 单位、时间戳范围、VO 是否只覆盖 GT 的一小段、`association_mode`、`time_offset_s`、`max_interpolation_gap_s` 和 `continuous_segment_policy`。
+
+### #05 垂直 RMSE
+
+- 前端取值：`value: vertical.rmse`，其中 `vertical = report.ate_vertical_m || {}`。
+- 后端字段：`report["ate_vertical_m"]["rmse"]`。
+- 后端代码：`vertical_error_signed_m = errors[:, 2]`，`vertical_error_abs_m = np.abs(vertical_error_signed_m)`，`"ate_vertical_m": describe(vertical_error_abs_m)`。
+- 公式：
+
+$$
+e_i^{vertical}=\hat{z}_i^{vo}-z_i^{gt}
+$$
+
+$$
+RMSE_{vertical}=\sqrt{\frac{1}{N}\sum_{i=1}^{N}(e_i^{vertical})^2}
+$$
+
+- 含义：高度方向误差。代码对 `abs(vertical)` 做统计，RMSE 与 signed vertical 的 RMSE 等价。
+- 偏高时怎么改：检查 z 轴方向、ENU/NED、相机到机体外参、气压计/GNSS/高度计融合、单目尺度、地面真值高度来源和起飞高度零点。
+
+### #06 发散状态
+
+- 前端取值：`value: divergence.diverged ? "是" : "否"`。
+- 后端字段：`report["divergence"]["diverged"]`。
+- 后端代码：`detect_divergence()` 先判断 ATE 是否超过动态阈值，再合并 `tracking_failure` 和 `scale_divergence`。
+- 公式：
+
+$$
+T_i=\max(T_{abs},D_i\cdot T_{rel}/100)
+$$
+
+$$
+diverged_{metric}=\exists i,\quad e_i^{ATE}>T_i
+$$
+
+最终页面上的 `diverged` 是：
+
+$$
+diverged=diverged_{metric}\lor diverged_{tracking}\lor diverged_{scale}
+$$
+
+- 含义：不是单一误差值，而是综合报警：可能是 ATE 超阈值、VO 断点/重置，也可能是尺度失控。
+- 显示“是”时怎么改：先看 `report.divergence.metric_divergence`、`tracking_failure`、`scale_divergence` 哪个触发。ATE 触发就查时间同步/漂移；tracking 触发就查丢跟踪、reset、输出中断；scale 触发就查尺度初始化和尺度传感器。
+
+### #07 GT 覆盖率
+
+- 前端取值：`100 * (summary.gt_pose_coverage_ratio ?? summary.coverage_ratio)`。
+- 后端字段：`report["summary"]["gt_pose_coverage_ratio"]`。
+- 后端代码：`_gt_coverage_ratio()`；`interpolate_gt` 模式按 `total_duration_s / original_gt.duration_s`，最近邻/索引模式按 `used_count / len(original_gt.positions)`。
+- 公式：
+
+插值模式：
+
+$$
+Coverage_{gt}^{time}=\frac{T_{eval}}{T_{gt}}
+$$
+
+最近邻/索引模式：
+
+$$
+Coverage_{gt}^{pose}=\frac{N_{matched}}{N_{gt}}
+$$
+
+- 含义：本次评估覆盖了 GT 的多少范围。截图里的 37.581% 表示 VO 有效窗口只覆盖 GT 全记录的一部分。
+- 偏低时怎么改：如果 GT 是开机到关机全程而 VO 只跑中间一段，低覆盖率可能正常；如果不正常，检查时间戳单位、固定时间偏移 `time_offset_s`、GT/VO 起止时间、插值最大间隔和是否需要裁剪 GT。
+
+### #08 Raw 尺度比
+
+- 前端取值：`value: summary.raw_path_scale_ratio_est_over_gt`。
+- 后端字段：`report["summary"]["raw_path_scale_ratio_est_over_gt"]`。
+- 后端代码：`total_raw_est_path_m += float(path_distance(est_pos)[-1])`，最后 `total_raw_est_path_m / total_gt_path_m`。
+- 公式：
+
+$$
+ScaleRatio_{raw}=\frac{L_{vo}^{raw}}{L_{gt}}
+$$
+
+$$
+L_{vo}^{raw}=\sum_{i=1}^{N-1}\left\|\mathbf{p}_{i+1}^{vo}-\mathbf{p}_{i}^{vo}\right\|_2
+$$
+
+- 含义：不经过 Sim3/SE3 对齐缩放前，VO 自己输出的路程和 GT 路程的比例。1 附近表示原始尺度接近米制真实尺度。
+- 偏离 1 时怎么改：单目 VO 优先检查尺度初始化、三角化基线、IMU/GNSS/高度计/双目/深度尺度源和单位换算。双目/VIO 如果也明显偏离 1，检查相机标定、baseline、IMU 噪声/重力尺度和输入坐标单位。
+
+### #09 对齐尺度
+
+- 前端取值：`value: report.alignment?.scale`；如果有多段，会用 `scale_min-scale_max (range%)` 作为备注。
+- 后端字段：`report["alignment"]["scale"]`，以及 `scale_min/scale_max`。
+- 后端代码：`compute_alignment()` 调 `umeyama_alignment()`；`Sim3` 下 `scale = sum(singular_values * sign) / var_src`，`SE3` 下 `scale = 1.0`；多段由 `aggregate_alignment()` 取平均、最小、最大。
+- 公式：
+
+$$
+\min_{s,\mathbf{R},\mathbf{t}}\sum_i\left\|s\mathbf{R}\mathbf{p}_i^{vo}+\mathbf{t}-\mathbf{p}_i^{gt}\right\|^2
+$$
+
+Sim3 尺度：
+
+$$
+s=\frac{\sum_k \sigma_k q_k}{\frac{1}{N}\sum_i\left\|\mathbf{p}_i^{vo}-\bar{\mathbf{p}}^{vo}\right\|^2}
+$$
+
+尺度范围备注：
+
+$$
+ScaleRange^{\%}=100\cdot\frac{s_{max}-s_{min}}{|s|}
+$$
+
+- 含义：评估时为了把 VO 对齐到 GT 需要乘上的全局尺度。`Sim3` 可以用它看轨迹形状，但不能证明 VO 原始输出已有真实尺度。
+- 异常时怎么改：尺度已知的双目/VIO 应优先看 `SE3`，如果 `Sim3 scale` 远离 1 或分段范围很大，检查尺度源、重初始化后尺度是否变化、分段坐标系是否重置、单位是否米。
+
+### #10 匹配位姿
+
+- 前端取值：`value: summary.matched_poses`，备注 `${summary.original_matched_poses} 原始匹配`。
+- 后端字段：`report["summary"]["matched_poses"]` 和 `original_matched_poses`。
+- 后端代码：`matched_poses = len(used_gt_idx)`；`original_matched_poses = original_match_count`；如果连续段策略丢弃部分片段，二者会不同。
+- 公式：
+
+$$
+N_{matched}=|\{(gt_i,vo_i)\ \text{成功进入评估}\}|
+$$
+
+- 含义：真正进入 ATE/RPE/子轨迹统计的位姿数量。样本越多，统计越稳定，但前提是时间同步正确。
+- 偏低时怎么改：检查时间同步模式、时间戳单位、`time_offset_s`、`max_time_diff_s`、`max_interpolation_gap_s`、VO 输出是否中断，以及 `continuous_segment_policy` 是否只保留了部分连续段。
+
+### #11 VO 匹配率
+
+- 前端取值：`estCoverage = 100 * summary.est_pose_coverage_ratio`。
+- 后端字段：`report["summary"]["est_pose_coverage_ratio"]`。
+- 后端代码：`len(used_est_idx) / max(1, len(original_est.positions))`。
+- 公式：
+
+$$
+Coverage_{vo}^{\%}=100\cdot\frac{N_{matched}}{N_{vo}}
+$$
+
+- 含义：VO 输出中有多少比例成功进入评估。100% 表示所有 VO 位姿都找到了可用 GT 并未被连续段策略丢弃。
+- 偏低时怎么改：优先排查 VO 时间戳是否超出 GT 范围、时间戳单位是否错、是否需要 `time_offset_s`、GT 插值间隔是否过严、VO 是否有大量无效/重复时间戳。
+
+### #12 断点数量
+
+- 前端取值：`report.discontinuities?.all_matches?.break_count || 0`。
+- 后端字段：`report["discontinuities"]["all_matches"]["break_count"]`。
+- 后端代码：`detect_associated_discontinuities()`；只要相邻匹配点满足 `gt_step > step_threshold_m`、`est_step > step_threshold_m` 或 `time_gap > time_gap_threshold_s`，就在该处记一个 break。
+- 公式：
+
+$$
+break_i =
+(d_i^{gt}>T_{step})\lor(d_i^{vo}>T_{step})\lor(\Delta t_i>T_{gap})
+$$
+
+$$
+BreakCount=\sum_i \mathbf{1}(break_i)
+$$
+
+- 含义：长航程连续性诊断。非零通常表示 VO reset、丢跟踪、输出中断、时间戳大 gap 或轨迹出现大跳变。
+- 偏高时怎么改：先看 `breaks[*].reasons` 是 `gt_step/est_step/time_gap` 哪个触发。`est_step` 多就查 VO 重定位和异常跳点；`time_gap` 多就查输出频率和丢帧；GT 本身跳变则先清理或裁剪真值。
+
+### #13 时间同步
+
+- 前端取值：`associationLabel(report.association)`；备注 `最大间隔 ${association.max_interpolation_gap_s}`。
+- 后端字段：`report["association"]`。
+- 后端代码：`prepare_evaluation_trajectories()` 调 `build_associated_trajectories()`；默认 `interpolate_gt` 会把 GT 插值到 VO 时间戳；`nearest` 使用 TUM greedy timestamp association；`index` 按行号截断配对。
+- 公式：
+
+插值模式查询时刻：
+
+$$
+t_{query}=t_{vo}+offset
+$$
+
+GT 位置线性插值：
+
+$$
+\mathbf{p}^{gt}(t)=(1-\alpha)\mathbf{p}^{gt}_{left}+\alpha\mathbf{p}^{gt}_{right}
+$$
+
+最近邻模式匹配条件：
+
+$$
+|t_{gt}-(t_{vo}+offset)|<T_{max}
+$$
+
+- 含义：说明 GT 和 VO 是如何放到同一个时间轴上的。截图里的 `GT插值到VO` 表示评估点以 VO 时间戳为准，GT 被插值到这些时刻。
+- 异常时怎么改：如果匹配率低、最大插值间隔大或误差曲线整体错位，检查时间戳单位 ns/us/ms/s、固定时间偏移 `time_offset_s`、`max_interpolation_gap_s`、是否需要允许外推，以及是否误选了 `nearest/index`。
+
+### #14 姿态修正
+
+- 前端取值：`orientationCorrectionLabel(report.orientation_correction || {})`；自动模式会显示 `auto -> selected`。
+- 后端字段：`report["orientation_correction"]["selected"]`。
+- 后端代码：`select_orientation_correction()`；`auto` 遍历常见候选，调用 `score_orientation_correction_candidate()`，选择 score 最小者；真正应用在 `apply_orientation_correction()`。
+- 公式：
+
+自动选择评分：
+
+$$
+Score=
+RMSE_{orientation}
++0.25\cdot RMSE_{yaw}
++2\cdot RMSE_{RPE,rotation}
++RMSE_{RPE,translation}
+$$
+
+常见修正形式：
+
+$$
+\mathbf{R}'=\mathbf{M}\mathbf{R},\quad
+\mathbf{R}'=\mathbf{R}\mathbf{M},\quad
+\mathbf{R}'=\mathbf{M}\mathbf{R}\mathbf{M}^T,\quad
+\mathbf{R}'=\mathbf{R}^T
+$$
+
+- 含义：用于修正 VO 姿态坐标约定，例如 ENU/NED、camera-to-body 外参、旋转矩阵方向相反、绕轴 180 度。它主要影响姿态误差、旋转 RPE 和带姿态的相对位移口径。
+- 出现 `auto -> 非 none` 时怎么改：不要长期依赖评估自动猜测。应回到 VO 输出端固化坐标系和外参定义，明确世界系、机体系、相机系、四元数方向和旋转矩阵是 body-to-world 还是 world-to-body。
+
+### #15 耗时
+
+- 前端取值：`value: summary.duration_s`，备注 `有效评估窗口`。
+- 后端字段：`report["summary"]["duration_s"]`。
+- 后端代码：每个评估段 `total_duration_s += stamps[-1] - stamps[0]`。
+- 公式：
+
+单段：
+
+$$
+T_{seg}=t_{last}-t_{first}
+$$
+
+多段：
+
+$$
+T_{eval}=\sum_s T_{seg}
+$$
+
+- 含义：截图卡片里的“耗时”是有效评估时间窗口，不是算法计算耗时。它和 `长航程路程` 一起说明本次统计覆盖了多长时间、多远路程。
+- 异常时怎么改：如果和实际飞行时长不一致，检查时间戳单位、时间同步、GT/VO 起止范围和连续段策略。真正的算法运行耗时在 `report["runtime"]`，只有 VO CSV 里包含 `process_time_ms/fps/cpu_percent/memory_mb` 等字段时才会统计。
+
 ## 指标计算方式
 
 ### 1. 误差随路程变化
