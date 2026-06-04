@@ -205,7 +205,7 @@ E_{end}=
 $$
 
 $$
-E_{end}^{\%}=100\cdot\frac{E_{end}}{L_{gt}}
+E_{end,pct}=100\cdot\frac{E_{end}}{L_{gt}}
 $$
 
 - 含义：最后一个匹配位姿的最终定位偏差，长航程无人机里可直接理解为终点/降落点附近的累计误差。
@@ -327,7 +327,7 @@ $$
 尺度范围备注：
 
 $$
-ScaleRange^{\%}=100\cdot\frac{s_{max}-s_{min}}{|s|}
+ScaleRange_{pct}=100\cdot\frac{s_{max}-s_{min}}{|s|}
 $$
 
 - 含义：评估时为了把 VO 对齐到 GT 需要乘上的全局尺度。`Sim3` 可以用它看轨迹形状，但不能证明 VO 原始输出已有真实尺度。
@@ -340,9 +340,9 @@ $$
 - 后端代码：`matched_poses = len(used_gt_idx)`；`original_matched_poses = original_match_count`；如果连续段策略丢弃部分片段，二者会不同。
 - 公式：
 
-$$
-N_{matched}=|\{(gt_i,vo_i)\ \text{成功进入评估}\}|
-$$
+```text
+N_matched = count(accepted matched pose pairs)
+```
 
 - 含义：真正进入 ATE/RPE/子轨迹统计的位姿数量。样本越多，统计越稳定，但前提是时间同步正确。
 - 偏低时怎么改：检查时间同步模式、时间戳单位、`time_offset_s`、`max_time_diff_s`、`max_interpolation_gap_s`、VO 输出是否中断，以及 `continuous_segment_policy` 是否只保留了部分连续段。
@@ -355,7 +355,7 @@ $$
 - 公式：
 
 $$
-Coverage_{vo}^{\%}=100\cdot\frac{N_{matched}}{N_{vo}}
+Coverage_{vo,pct}=100\cdot\frac{N_{matched}}{N_{vo}}
 $$
 
 - 含义：VO 输出中有多少比例成功进入评估。100% 表示所有 VO 位姿都找到了可用 GT 并未被连续段策略丢弃。
@@ -709,9 +709,9 @@ translation p95 > 3% -> 需要关注
 - 后端代码：`build_worst_segments()` 从 `segment_records` 中按 `translation_error_percent` 降序排序，取 `top_k`。
 - 排序公式：
 
-$$
-rank=\operatorname{argsort}_{desc}(translation\_error\_percent)
-$$
+```text
+rank = sort_desc(translation_error_percent)
+```
 
 - 输出列：
   - `#`：最差片段排名。
