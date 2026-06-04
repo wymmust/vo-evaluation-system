@@ -63,6 +63,22 @@
             </select>
           </label>
           <label>
+            VO 姿态修正
+            <select id="orientationCorrection">
+              <option value="auto">自动选择最优姿态修正</option>
+              <option value="none">不修正</option>
+              <option value="ignore">忽略姿态，只评估位置</option>
+              <option value="inverse">取逆 R^T</option>
+              <option value="rz180_right">右乘 Rz(180)</option>
+              <option value="rz180_left">左乘 Rz(180)</option>
+              <option value="rx180_right">右乘 Rx(180)</option>
+              <option value="ry180_right">右乘 Ry(180)</option>
+              <option value="enu_ned_left">ENU/NED 左乘</option>
+              <option value="enu_ned_right">ENU/NED 右乘</option>
+              <option value="enu_ned_both">ENU/NED 两侧变换</option>
+            </select>
+          </label>
+          <label>
             时间同步方式
             <select id="associationMode">
               <option value="interpolate_gt">GT 插值到 VO 时间戳</option>
@@ -79,8 +95,33 @@
             <input id="maxTimeDiff" type="number" value="0.02" step="0.01" />
           </label>
           <label>
+            Reference 频率 / 插值间隔预设
+            <select id="interpolationPreset">
+              <option value="0.15" selected>20 Hz reference（0.15 s 推荐）</option>
+              <option value="0.05">100 Hz reference（0.05 s）</option>
+              <option value="0.08">50 Hz reference（0.08 s）</option>
+              <option value="0.30">10 Hz reference（0.30 s）</option>
+              <option value="-1">不限制 GT gap</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <label>
             GT 插值最大间隔 s（不限制填 -1）
-            <input id="maxInterpolationGap" type="number" value="1" step="0.1" />
+            <input id="maxInterpolationGap" type="number" value="0.15" step="0.01" />
+          </label>
+          <label>
+            插值外推
+            <select id="allowExtrapolation">
+              <option value="false" selected>不允许外推（推荐）</option>
+              <option value="true">允许外推</option>
+            </select>
+          </label>
+          <label>
+            姿态插值
+            <select id="interpolateRotation">
+              <option value="true" selected>GT 姿态用 SLERP 插值</option>
+              <option value="false">只插位置，不插姿态</option>
+            </select>
           </label>
           <label>
             VO 时间戳偏移 s
@@ -104,7 +145,7 @@
           </label>
           <label>
             子轨迹长度容差比例
-            <input id="lengthTolerance" type="number" value="0.2" min="0" max="1" step="0.05" />
+            <input id="lengthTolerance" type="number" value="0.05" min="0" max="1" step="0.01" />
           </label>
         </section>
 
@@ -114,7 +155,7 @@
             VO 重置/断点处理
             <select id="segmentPolicy">
               <option value="vo_timestamps">按 VO 时间戳统一评估</option>
-              <option value="segments">按 VO 连续段逐段评估</option>
+              <option value="segments" selected>按 VO 连续段逐段评估</option>
               <option value="longest">只评估最长连续段</option>
             </select>
           </label>
@@ -128,11 +169,11 @@
           </label>
           <label>
             发散绝对阈值 m
-            <input id="divergenceAbs" type="number" value="10" min="0" step="1" />
+            <input id="divergenceAbs" type="number" value="30" min="0" step="1" />
           </label>
           <label>
             发散相对阈值 % 路程
-            <input id="divergenceRel" type="number" value="2" min="0" step="0.5" />
+            <input id="divergenceRel" type="number" value="3" min="0" step="0.5" />
           </label>
         </section>
 
@@ -143,14 +184,24 @@
         <div id="message" class="message" hidden></div>
 
         <section class="panel">
-          <h2>运行结果</h2>
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Evaluation Summary</div>
+              <h2>运行结果</h2>
+            </div>
+          </div>
           <div id="metrics" class="metric-grid">
             <div class="empty-state">上传 Ground truth 和 VO 输出后运行评估。</div>
           </div>
         </section>
 
         <section class="panel">
-          <h2>可视化</h2>
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Trajectory & Drift</div>
+              <h2>可视化</h2>
+            </div>
+          </div>
           <div class="chart-grid">
             <div id="trajectory3d" class="chart"></div>
             <div id="trajectoryXY" class="chart"></div>
@@ -162,11 +213,18 @@
         </section>
 
         <section class="panel">
-          <h2>导出</h2>
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Export</div>
+              <h2>导出</h2>
+            </div>
+          </div>
           <div class="downloads">
             <button id="downloadJson" disabled>下载 JSON 指标</button>
             <button id="downloadPoseCsv" disabled>下载每帧误差 CSV</button>
             <button id="downloadSegmentCsv" disabled>下载子轨迹误差 CSV</button>
+            <button id="downloadWorstCsv" disabled>下载最差片段 CSV</button>
+            <button id="downloadConfigJson" disabled>下载配置 JSON</button>
             <button id="downloadHtml" disabled>下载 HTML 报告</button>
           </div>
         </section>

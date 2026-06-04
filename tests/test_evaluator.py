@@ -3,7 +3,16 @@ import math
 
 import numpy as np
 
-from vo_eval.evaluator import EvaluationConfig, evaluate_trajectories, load_trajectory_from_text, report_to_json, yaw_from_rot
+from vo_eval.evaluator import (
+    EvaluationConfig,
+    Trajectory,
+    build_associated_trajectories,
+    evaluate_trajectories,
+    euler_yaw_pitch_roll_to_matrix,
+    load_trajectory_from_text,
+    report_to_json,
+    yaw_from_rot,
+)
 
 
 def make_tum(rows=120):
@@ -20,7 +29,7 @@ def make_tum(rows=120):
 def test_tum_zero_error_after_se3_alignment():
     gt = load_trajectory_from_text(make_tum(), fmt="tum", name="gt")
     est = load_trajectory_from_text(make_tum(), fmt="tum", name="est")
-    report = evaluate_trajectories(gt, est, EvaluationConfig(segment_lengths_m=(10, 20, 50)))
+    report = evaluate_trajectories(gt, est, EvaluationConfig(segment_lengths_m=(10, 20, 50), max_interpolation_gap_s=0.3))
     assert report["ate_position_m"]["rmse"] < 1e-6
     assert report["rpe_frame_delta"]["translation_m"]["rmse"] < 1e-9
     assert report["summary"]["coverage_ratio"] == 1.0
@@ -33,7 +42,7 @@ def test_sim3_recovers_scale_for_monocular_like_output():
     for t, p in zip(gt.stamps, est_positions):
         lines.append(f"{t:.3f} {p[0]:.6f} {p[1]:.6f} {p[2]:.6f} 0 0 0 1")
     est = load_trajectory_from_text("\n".join(lines), fmt="tum", name="est")
-    cfg = EvaluationConfig(alignment="sim3", segment_lengths_m=(10, 20, 50))
+    cfg = EvaluationConfig(alignment="sim3", segment_lengths_m=(10, 20, 50), max_interpolation_gap_s=0.3)
     report = evaluate_trajectories(gt, est, cfg)
     assert abs(report["alignment"]["scale"] - 2.0) < 1e-9
     assert report["ate_position_m"]["rmse"] < 1e-6
@@ -95,12 +104,129 @@ def test_gt_is_interpolated_to_vo_timestamps_by_default():
     est = load_trajectory_from_text(est_text, fmt="tum", name="est")
     cfg = EvaluationConfig(alignment="none", segment_lengths_m=(0.1,), max_interpolation_gap_s=0.3)
     report = evaluate_trajectories(gt, est, cfg)
-    assert report["association"]["method"] == "gt_interpolated_to_est_timestamps"
+    assert report["association"]["method"] == "interpolate_gt"
+    assert report["association"]["target"] == "estimate_timestamps"
     assert report["summary"]["matched_poses"] == 3
     assert report["ate_position_m"]["rmse"] < 1e-12
+
+
+def test_build_associated_trajectories_linearly_interpolates_gt_position():
+    gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
+    est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
+    gt_eval, est_eval, assoc = build_associated_trajectories(
+        gt,
+        est,
+        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+    )
+    assert assoc["method"] == "interpolate_gt"
+    assert assoc["position_method"] == "linear"
+    assert assoc["matches"] == 1
+    assert np.allclose(gt_eval.positions[0], [5.0, 0.0, 0.0])
+    assert np.allclose(gt_eval.stamps, est_eval.stamps)
+    assert np.allclose(est_eval.stamps, [5.0])
+    assert gt_eval.extras["gt_left_index"][0] == 0
+    assert gt_eval.extras["gt_right_index"][0] == 1
+    assert abs(gt_eval.extras["interp_alpha"][0] - 0.5) < 1e-12
+
+
+def test_build_associated_trajectories_slerps_gt_rotation():
+    gt_rot = euler_yaw_pitch_roll_to_matrix(np.array([0.0, np.pi / 2]), np.zeros(2), np.zeros(2))
+    gt = Trajectory("gt", np.array([0.0, 10.0]), np.zeros((2, 3)), gt_rot)
+    est = Trajectory("est", np.array([5.0]), np.zeros((1, 3)))
+    gt_eval, _, assoc = build_associated_trajectories(
+        gt,
+        est,
+        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+    )
+    assert assoc["matches"] == 1
+    assert assoc["rotation_method"] == "slerp"
+    assert abs(yaw_from_rot(gt_eval.rotations)[0] - np.pi / 4) < 1e-9
+
+
+def test_interpolate_gt_does_not_extrapolate_by_default():
+    gt = Trajectory(
+        "gt",
+        np.array([10.0, 20.0]),
+        np.array([[10.0, 0.0, 0.0], [20.0, 0.0, 0.0]]),
+    )
+    est = Trajectory(
+        "est",
+        np.array([9.0, 15.0, 21.0]),
+        np.array([[9.0, 0.0, 0.0], [15.0, 0.0, 0.0], [21.0, 0.0, 0.0]]),
+    )
+    gt_eval, est_eval, assoc = build_associated_trajectories(
+        gt,
+        est,
+        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+    )
+    assert assoc["allow_extrapolation"] is False
+    assert assoc["matches"] == 1
+    assert assoc["dropped_before_reference_range"] == 1
+    assert assoc["dropped_after_reference_range"] == 1
+    assert np.allclose(est_eval.stamps, [15.0])
+    assert np.allclose(gt_eval.positions[0], [15.0, 0.0, 0.0])
+
+
+def test_interpolate_gt_respects_max_interpolation_gap():
+    gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
+    est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
+    gt_eval, est_eval, assoc = build_associated_trajectories(
+        gt,
+        est,
+        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=1.0),
+    )
+    assert assoc["matches"] == 0
+    assert assoc["large_interpolation_gap_count"] == 1
+    assert assoc["dropped"] == 1
+    assert len(gt_eval.positions) == 0
+    assert len(est_eval.positions) == 0
+
+    gt_eval, est_eval, assoc = build_associated_trajectories(
+        gt,
+        est,
+        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+    )
+    assert assoc["matches"] == 1
+    assert assoc["large_interpolation_gap_count"] == 0
+    assert len(gt_eval.positions) == len(est_eval.positions) == 1
+
+
+def test_nearest_association_keeps_tum_greedy_behavior_without_interpolation():
+    gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
+    est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
+    gt_eval, est_eval, assoc = build_associated_trajectories(
+        gt,
+        est,
+        EvaluationConfig(association_mode="nearest", max_time_diff_s=0.02),
+    )
+    assert assoc["mode"] == "nearest"
+    assert assoc["interpolated"] is False
+    assert assoc["matches"] == 0
+    assert len(gt_eval.positions) == 0
+    assert len(est_eval.positions) == 0
 
 
 def test_report_json_replaces_non_finite_values_with_null():
     text = report_to_json({"values": [1.0, math.inf, -math.inf, math.nan, np.float64(np.nan)]})
     parsed = json.loads(text)
     assert parsed == {"values": [1.0, None, None, None, None]}
+
+
+def test_auto_orientation_correction_selects_right_rz180():
+    stamps = np.arange(40, dtype=float) * 0.1
+    positions = np.column_stack([stamps, np.sin(stamps), 0.1 * stamps])
+    gt_rot = euler_yaw_pitch_roll_to_matrix(0.2 * stamps, 0.1 * np.sin(stamps), 0.05 * np.cos(stamps))
+    rz180 = np.diag([-1.0, -1.0, 1.0])
+    est_rot = np.einsum("nij,jk->nik", gt_rot, rz180)
+    gt = Trajectory("gt", stamps, positions, gt_rot)
+    est = Trajectory("est", stamps, positions, est_rot)
+
+    report = evaluate_trajectories(
+        gt,
+        est,
+        EvaluationConfig(alignment="none", orientation_correction="auto", segment_lengths_m=(1.0,)),
+    )
+
+    assert report["orientation_correction"]["selected"] == "rz180_right"
+    assert report["ate_orientation_deg"]["rmse"] < 1e-9
+    assert report["rpe_frame_delta"]["rotation_deg"]["rmse"] < 1e-6
