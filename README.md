@@ -459,6 +459,384 @@ $$
 - 含义：截图卡片里的“耗时”是有效评估时间窗口，不是算法计算耗时。它和 `长航程路程` 一起说明本次统计覆盖了多长时间、多远路程。
 - 异常时怎么改：如果和实际飞行时长不一致，检查时间戳单位、时间同步、GT/VO 起止范围和连续段策略。真正的算法运行耗时在 `report["runtime"]`，只有 VO CSV 里包含 `process_time_ms/fps/cpu_percent/memory_mb` 等字段时才会统计。
 
+## HTML 调参报告新增参数与代码/公式对应
+
+本节对应导出的 `vo_evaluation_report.html`。首页 15 个指标里已经解释过的 `ATE RMSE`、`RPE RMSE`、`终点漂移`、`长航程路程`、`垂直 RMSE`、`发散状态`、`GT 覆盖率`、`Raw 尺度比`、`对齐尺度`、`匹配位姿`、`VO 匹配率`、`断点数量`、`时间同步`、`姿态修正`、`耗时` 不在这里重复展开。
+
+### 1. 报告 Hero 基本信息
+
+- 前端代码：`static_web/app.js` 的报告模板读取 `report.inputs`、`report.summary`、`report.config`、`alignmentSummaryLabel(report)` 和 `tuningRiskStatus(tuningRows)`。
+- 新增字段：
+  - `estimate`：`report.inputs.estimate.name`，本次评估的 VO 文件名。
+  - `reference`：`report.inputs.ground_truth.name`，本次评估的 GT/reference 文件名；如果文件名像 `imu.txt`，报告会提示确认它是否是真值。
+  - `profile`：`report.config.profile`，当前评估配置画像，例如 `monocular_long_range_uav`。
+  - `alignment summary`：由 `report.alignment.mode/base_mode` 和分段信息生成，用来说明是全局对齐还是分段 Sim3。
+  - `risk level`：由调参结论表的最高优先级生成。
+
+风险等级规则：
+
+```text
+只要存在 P0 -> high
+否则只要存在 P1 -> warning
+否则 -> good
+```
+
+- 含义：Hero 区不是新误差公式，而是告诉读者“这份报告评的是哪个文件、用什么评估画像、整体风险等级是什么”。
+- 异常时怎么改：`reference` 不可靠时先换真值源；`profile` 不符合当前任务时先改评估配置；`alignment summary` 显示分段 Sim3 时，不要把跨 reset 的结果解释成一条完全连续轨迹。
+
+### 2. 调参结论摘要 P0/P1/P2
+
+- 前端代码：`buildTuningConclusionRows(report)`。
+- 输出列：`优先级 / 问题 / 证据 / 可能原因 / 建议动作 / 跳转`。
+- 它不是单个传感器指标，而是基于多个字段的规则诊断。主要规则如下：
+
+```text
+break_count > 0 -> P0 VO 重置 / 大跳变
+Sim3 scale range > 15% -> P0 单目尺度不稳定
+Sim3 scale range > 8% -> P1 尺度稳定性需要关注
+GT time coverage < 80% -> P0 评估覆盖不足
+5000m p95 > 8% 或 1000m p95 > 5% -> P0 长距离累计漂移偏大
+1000m mean > 2% 或 5000m mean > 4% -> P1 长距离漂移需要关注
+auto 姿态修正选到非 none/ignore -> P1 姿态坐标系需要固化
+divergence.diverged 为 true -> P1/P2 发散阈值被触发
+Raw VO/GT 路程比 < 0.8 或 > 1.25 -> P2 原始尺度不一致
+存在 dropped_est_outside_gt_range 或 dropped_est_large_gt_gap -> P1 部分 VO 帧未进入评估
+reset_rate_per_km > 0.2 且 break_count > 0 -> P1 单位航程重置率偏高
+```
+
+- 含义：P0 是优先修复项，通常会影响报告可信度或长航程可用性；P1 是下一轮重点；P2 是解释性提示或后续优化项。
+- 异常时怎么改：先按 P0 顺序处理，不要先调低优先级指标。例如同时有 `Reference 真值来源需要确认` 和 `VO 漂移偏大` 时，先确认真值，否则误差结论可能没有意义。
+
+### 3. 连续性参数
+
+这些参数在报告的“核心健康指标 Dashboard”和“完整指标”里出现，来源是 `detect_associated_discontinuities()` 和 `summarize_continuity()`。
+
+#### 最大时间 gap
+
+- 前端字段：`discontinuities.all_matches.breaks[].time_gap_s` 的最大值。
+- 公式：
+
+$$
+MaxGap=\max_i(t_{i+1}-t_i)
+$$
+
+其中只统计被判定为断点的相邻匹配点。
+
+- 含义：VO 是否长时间没有有效输出。报告里 `197.550 s` 这种值通常表示 VO 中断、reset 或数据时间轴有大空洞。
+- 偏高时怎么改：检查 VO 输出频率、丢帧、重定位、日志分段、时间戳跳变；先回放 gap 前后图像和 VO 日志。
+
+#### 最长连续段
+
+- 后端字段：`discontinuities.continuity.longest_continuous_segment_m`、`longest_continuous_segment_s`、`longest_continuous_segment_pose_count`。
+- 后端代码：对每个连续段计算 `distance_m = cumulative[end - 1] - cumulative[start]`，再按 `distance_m` 取最大。
+- 公式：
+
+$$
+L_s=D_{end_s-1}-D_{start_s}
+$$
+
+$$
+T_s=t_{end_s-1}-t_{start_s}
+$$
+
+$$
+Longest=\max_s L_s
+$$
+
+- 含义：比断点数量更直观，表示 VO 单次不 reset 最远能连续飞多远。
+- 偏低时怎么改：降低丢跟踪概率，增加重定位/地图复用，检查弱纹理、运动模糊和关键帧策略。
+
+#### 重置率
+
+- 后端字段：`discontinuities.continuity.reset_rate_per_km`、`reset_rate_per_hour`。
+- 公式：
+
+$$
+ResetRate_{km}=\frac{BreakCount}{L_{gt}/1000}
+$$
+
+$$
+ResetRate_{hour}=\frac{BreakCount}{T_{eval}/3600}
+$$
+
+- 含义：把断点数量归一化到单位距离/单位时间，便于不同航线长度之间比较连续性。
+- 偏高时怎么改：优先修跟踪连续性，而不是只看 ATE；分开统计每次 reset 前后的尺度，确认 reset 后是否换了坐标系或尺度。
+
+#### 连续段覆盖率
+
+- 后端字段：`coverage_time_ratio`、`coverage_distance_ratio`。
+- 公式：
+
+$$
+CoverageTime=\frac{\sum_s T_s}{t_N-t_0}
+$$
+
+$$
+CoverageDistance=\frac{\sum_s L_s}{L_{gt}}
+$$
+
+- 含义：断点切分后的连续段合计覆盖了多少时间/路程。
+- 偏低时怎么改：检查断点阈值是否过严、GT/VO 是否有异常跳点，以及 `continuous_segment_policy` 是否丢弃了大量片段。
+
+### 4. 时间同步诊断细项
+
+首页 #13 已解释“时间同步方式”，这里补充报告表里的细分参数。前端代码是 `buildAssociationDiagnosticRows(report)`，后端主要来自 `interpolate_reference_to_estimate()`。
+
+#### 插值方法
+
+- 字段：`association.position_method`、`association.rotation_method`。
+- 代码口径：position 固定为 `linear`；reference 有姿态且启用时 rotation 使用 `slerp`，没有姿态时跳过。
+- 位置插值公式：
+
+$$
+\mathbf{p}^{gt}(t)=(1-\alpha)\mathbf{p}^{gt}_{left}+\alpha\mathbf{p}^{gt}_{right}
+$$
+
+$$
+\alpha=\frac{t-t_{left}}{t_{right}-t_{left}}
+$$
+
+- 含义：说明 GT/reference 是怎么补到 VO 时间戳上的。
+- 异常时怎么改：GT 采样稀疏或存在大空洞时，不要盲目放宽插值；先确认 GT 是否连续可靠。
+
+#### 是否允许外推
+
+- 字段：`association.allow_extrapolation`。
+- 规则：默认 `False`。VO 查询时刻早于 reference 首帧或晚于末帧时会被丢弃。
+- 含义：外推会产生没有真值约束的“假 GT”，默认关闭更稳妥。
+- 异常时怎么改：如果大量帧早于/晚于 reference 范围，先修起止时间和 `time_offset_s`，不要优先打开外推。
+
+#### 插值目标时间轴
+
+- 字段：`association.target`。
+- 常见值：
+  - `estimate_timestamps`：以 VO 时间戳为评估基准，把 GT 插值到 VO。
+  - `nearest_timestamp_pairs`：只保留时间差足够小的离散配对。
+- 含义：决定所有后续 ATE/RPE/segment 的评估时刻。
+- 异常时怎么改：GT 高频、VO 低频或两者相位错开时优先用 `estimate_timestamps`；已经严格同步的数据可用 nearest/index 做复现对比。
+
+#### 原始帧数、成功对齐帧数、丢弃帧数
+
+- 字段：
+  - `estimate_count_input` / `estimate_pose_count`：原始 VO 帧数。
+  - `reference_count_input` / `reference_pose_count`：原始 reference 帧数。
+  - `matched_count` / `matches`：成功进入评估的帧数。
+  - `dropped_count` / `dropped`：未进入评估的 VO 帧数。
+- 公式：
+
+$$
+Dropped=N_{vo}-N_{matched}
+$$
+
+$$
+Coverage_{estimate}=\frac{N_{matched}}{N_{vo}}
+$$
+
+- 含义：判断报告是否覆盖了足够多的 VO 输出。
+- 偏低时怎么改：检查时间戳单位、起止时间、固定 offset、GT 空洞、重复/无效时间戳。
+
+#### 丢弃原因拆分
+
+- 字段：
+  - `dropped_before_reference_range`：VO 查询时刻早于 reference。
+  - `dropped_after_reference_range`：VO 查询时刻晚于 reference。
+  - `outside_gt_range_count` / `dropped_est_outside_gt_range`：超出 GT 范围总数。
+  - `dropped_gt_gap_too_large` / `dropped_est_large_gt_gap`：GT 左右样本间隔超过阈值。
+  - `dropped_invalid_timestamp`：无效时间戳。
+- 判断：
+
+$$
+t_{query}=t_{vo}+time\_offset_s
+$$
+
+$$
+Gap=t_{right}^{gt}-t_{left}^{gt}
+$$
+
+若 `Gap > max_interpolation_gap_s`，该 VO 帧不进入评估。
+
+- 含义：解释 VO 帧为什么没进评估。
+- 异常时怎么改：`before/after` 高说明时间范围或 offset 错；`GT 空洞过大` 高说明 reference 不连续或阈值过严；`invalid timestamp` 高说明输入解析或时间戳列有问题。
+
+#### 实际使用插值间隔
+
+- 字段：`max_used_gt_gap_s`、`mean_used_gt_gap_s`、`p95_used_gt_gap_s`。
+- 公式：
+
+$$
+Gap_i=t_{right,i}^{gt}-t_{left,i}^{gt}
+$$
+
+$$
+MaxGap_{used}=\max_i Gap_i
+$$
+
+$$
+P95Gap_{used}=P_{95}(Gap_i)
+$$
+
+- 含义：成功插值样本实际跨了多大的 reference 时间间隔。`p95` 比 `max` 更能代表常态质量。
+- 偏高时怎么改：提高 GT/reference 频率，清理 GT 空洞，或降低 `max_interpolation_gap_s` 避免跨缺口插值。
+
+### 5. 长航程子轨迹表新增列
+
+基础的按距离子轨迹平移误差、旋转误差和尺度漂移公式见下方“按距离子轨迹误差”和“尺度比与尺度漂移”。报告表里额外需要理解这些列：
+
+- `长度 m`：`segment_errors[*].length_m`，目标子轨迹长度。
+- `样本数`：该长度下有效子轨迹数量 `count`。
+- `平移 mean/p95/max %`：`translation_error_percent.mean/p95/max`，用于判断对应距离的累计漂移。
+- `yaw p95`：`segment_yaw_error_abs_deg.p95`，固定距离内航向变化误差的 95 分位。
+- `vertical p95`：`vertical_error_abs_m.p95`，固定距离内高度误差绝对值的 95 分位。
+- `scale p95`：`scale_drift_percent.p95`，固定距离内原始尺度漂移百分比的 95 分位。
+
+诊断标签来自 `longRangeTag(row)`：
+
+```text
+translation p95 > 8% -> 平移漂移高
+abs(scale p95) > 15% -> 尺度漂移高
+yaw p95 > 8 deg -> 航向漂移高
+vertical p95 > 30 m -> 高度漂移高
+translation p95 > 3% -> 需要关注
+否则 -> 正常
+```
+
+- 含义：短距离看局部跟踪稳定性，长距离看累计漂移；`p95` 更适合作为工程容差，因为它比 mean 更能暴露较差航段。
+- 异常时怎么改：平移高看尺度/后端/闭环；yaw 高看航向约定、外参和 IMU/视觉姿态融合；vertical 高看 Z 轴、尺度和高度约束；scale 高看单目尺度源和重初始化。
+
+### 6. Top-K 最差片段
+
+- 后端字段：`report["worst_segments"]`。
+- 后端代码：`build_worst_segments()` 从 `segment_records` 中按 `translation_error_percent` 降序排序，取 `top_k`。
+- 排序公式：
+
+$$
+rank=\operatorname{argsort}_{desc}(translation\_error\_percent)
+$$
+
+- 输出列：
+  - `#`：最差片段排名。
+  - `时间段`：`start_time_s -> end_time_s`。
+  - `长度`：`length_m` 或 `actual_length_m`。
+  - `平移误差`：`translation_error_percent`。
+  - `米级误差`：`translation_error_m`。
+  - `速度`：`speed_mps = actual_length_m / duration_s`。
+  - `yaw`：`yaw_error_abs_deg`。
+  - `vertical`：`vertical_error_abs_m`。
+  - `近断点`：片段起止索引附近是否包含断点。
+
+近断点判断：
+
+```text
+near_break = 任一 break_index 落在 [start_index - 10, end_index + 10]
+```
+
+建议动作规则：
+
+```text
+near_break 为 true -> 优先查丢跟踪、重定位、地图切换和 reset
+yaw_error_abs_deg > 8 -> 查 yaw 约定、外参、ENU/NED 或姿态融合
+vertical_error_abs_m > 30 -> 查 Z 轴、尺度、高度计约束和爬升下降
+speed_mps > 16 -> 查高速段运动模糊、曝光、滚快门、特征跟踪和 RANSAC
+否则 -> 回放该时间段图像和前后端日志
+```
+
+- 含义：Top-K 用来定位“最值得回放的时间段”，比只看平均指标更适合调参。
+- 异常时怎么改：直接按 Top-K 时间段回放图像、特征数、光流/RANSAC 内点率、关键帧、重定位和局部地图日志。
+
+### 7. 条件诊断
+
+- 前端代码：`buildConditionDiagnosticRows(report)`。
+- 目前报告包含四类条件：
+  - `速度分箱`：来自 `report.speed_bins`。
+  - `断点附近`：统计 `worst_segments.near_break`。
+  - `转弯 / yaw-rate`：当前未接入。
+  - `爬升 / 下降`：当前未接入。
+
+速度分箱后端代码是 `summarize_by_speed_bins()`：
+
+$$
+v_{ij}=\frac{L_{ij}^{actual}}{t_j-t_i}
+$$
+
+然后按 `config.speed_bins_mps` 用左闭右开区间分箱，例如 `[8,12)`。
+
+- 含义：判断 VO 是否只在某些运动条件下退化。高速差通常对应运动模糊、曝光、滚快门、特征跟踪跟不上；低速/悬停差通常对应视差不足、弱纹理、初始化或尺度退化。
+- 异常时怎么改：按最差速度区间筛选 Top-K 或 `segment_records`，回放对应时间段；如果需要分析急转弯或爬升下降，需要在 `segment_records` 中新增 `yaw_rate_deg_s` 或 `climb_rate_mps` 分箱字段。
+
+### 8. A/B 对比占位
+
+- 前端代码：`comparisonPlaceholderHtml()`。
+- 当前字段：`comparison`，显示“当前报告未包含 baseline”。
+- 含义：这不是当前算法好坏指标，只说明报告还没有加载 baseline/current 两组结果做对比。
+- 后续接入后建议比较：断点数量、scale variation、1000/5000m p95、Top-K 最差片段和 runtime。
+
+### 9. 辅助论文指标中未重复的项
+
+报告中的 `segment-wise Sim3 ATE RMSE` 与首页 `ATE RMSE` 重复，`Frame-to-frame RPE` 与首页 `RPE RMSE` 重复，`Endpoint drift` 与首页 `终点漂移` 重复，这里不再展开。
+
+#### Global Sim3 ATE RMSE
+
+- 前端字段：`ate.global_sim3_ate_position_m.rmse` 或 `ate.global.sim3.position_m.rmse`。
+- 后端代码：`compute_global_ate(..., mode="sim3")`。
+- 公式：仍是 ATE RMSE，但只对全程求一个 Sim3 对齐：
+
+$$
+\min_{s,\mathbf{R},\mathbf{t}}\sum_i\left\|s\mathbf{R}\mathbf{p}_i^{vo}+\mathbf{t}-\mathbf{p}_i^{gt}\right\|^2
+$$
+
+然后：
+
+$$
+ATE_{global\_sim3}=\sqrt{\frac{1}{N}\sum_i\left\|s\mathbf{R}\mathbf{p}_i^{vo}+\mathbf{t}-\mathbf{p}_i^{gt}\right\|^2}
+$$
+
+- 含义：全程只用一个 Sim3，比 segment-wise Sim3 更能暴露跨 reset、跨连续段的尺度和坐标系不一致。
+- 偏高时怎么改：如果 segment-wise ATE 低但 global Sim3 ATE 高，说明每段形状尚可，但段与段之间不连续；优先查 reset、重定位、地图复用和分段尺度。
+
+#### 固定时间 RPE：1s / 5s / 10s
+
+- 前端字段：`rpe_time_delta.1s.translation_m.rmse`、`5s`、`10s`。
+- 后端代码：`rpe_error_arrays_by_time()` 和 `summarize_time_rpe()`。
+- 计算方式：对每个起点 `i`，寻找最接近 `stamps[i] + delta_s` 的终点 `j`，再调用和 RPE 相同的 `relative_error()`。
+
+$$
+j=\arg\min_{k>i}\left|t_k-(t_i+\Delta t)\right|
+$$
+
+$$
+RPE_{\Delta t}=\sqrt{\frac{1}{M}\sum_k(e_k^{RPE,t})^2}
+$$
+
+- 含义：固定时间窗口的局部累计误差，比固定帧 RPE 更适合帧率不稳定或不同算法输出频率不同的对比。
+- 偏高时怎么改：`1s` 高多半是短时跟踪/同步问题；`5s/10s` 高更像局部累计漂移、尺度或航向约束不足。
+
+#### Attitude / yaw RMSE
+
+- 前端字段：`ate_orientation_deg.rmse / ate_yaw_deg.rmse`。
+- 后端代码：`rotation_errors()` 和 `yaw_from_rot()`。
+- 姿态误差公式：
+
+$$
+\mathbf{R}_{err}=(\mathbf{R}^{gt})^T\hat{\mathbf{R}}^{vo}
+$$
+
+$$
+e^{rot}=\arccos\left(\frac{trace(\mathbf{R}_{err})-1}{2}\right)\cdot\frac{180}{\pi}
+$$
+
+Yaw 误差：
+
+$$
+e^{yaw}=wrap(\hat{yaw}^{vo}-yaw^{gt})
+$$
+
+$$
+Yaw_{RMSE}=\sqrt{\frac{1}{N}\sum_i(e_i^{yaw})^2}
+$$
+
+- 含义：`Attitude RMSE` 是完整三维姿态误差；`yaw RMSE` 单独看航向误差，更贴近无人机巡航方向控制。
+- 偏高时怎么改：检查欧拉角顺序、角度/弧度、四元数顺序、旋转方向取逆、ENU/NED、camera-to-body 外参，以及是否长期依赖 `auto` 姿态修正。
+
 ## 指标计算方式
 
 ### 1. 误差随路程变化
