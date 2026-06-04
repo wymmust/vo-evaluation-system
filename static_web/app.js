@@ -591,7 +591,7 @@ table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;borde
 </section>
 <section>
   <h2>导出与复现</h2>
-  <p class="section-note">HTML 报告内嵌完整 report；如果在网页工具里导出，还可以拿到 per_pose、segment_records、worst_segments 和 config 文件。</p>
+  <p class="section-note">HTML 报告内嵌完整 report；如果在网页工具里导出，还可以拿到 per_pose、segment_records、worst_segments 和 config 文件。报告和 CSV 会包含轨迹坐标、时间戳、逐帧误差和最差片段；真实飞行或敏感数据请勿公开分享。</p>
   <div class="downloads">
     <button onclick="downloadEmbeddedReport('json')">下载 JSON 指标</button>
     <button onclick="downloadEmbeddedReport('per_pose')">下载每帧误差 CSV</button>
