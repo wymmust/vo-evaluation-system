@@ -2171,6 +2171,8 @@ function buildTrajectoryWorkbook(sheets) {
     "interpolated_gt_tum",
     "sim3_gt_tum",
     "sim3_vo_tum",
+    "ate_per_frame",
+    "rpe_per_frame",
   ];
   const entries = orderedNames.map((name) => ({
     name,

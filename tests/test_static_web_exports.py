@@ -44,15 +44,17 @@ def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets(
         const report = {
           summary: { matched_poses: 2 },
           per_pose: [{ timestamp: 1, error_m: 0.1 }],
-          trajectory_exports: {
-            input_gt_tum: [{ timestamp: 1, tx: 0, ty: 0, tz: 0 }],
-            input_vo_tum: [{ timestamp: 1, tx: 1, ty: 0, tz: 0 }],
-            filtered_vo_tum: [{ timestamp: 1, tx: 1, ty: 0, tz: 0 }],
-            interpolated_gt_tum: [{ timestamp: 1, tx: 0, ty: 0, tz: 0 }],
-            sim3_gt_tum: [{ timestamp: 1, tx: 0, ty: 0, tz: 0 }],
-            sim3_vo_tum: [{ timestamp: 1, tx: 0, ty: 0, tz: 0 }],
-          },
-        };
+            trajectory_exports: {
+              input_gt_tum: [{ timestamp: 1, tx: 0, ty: 0, tz: 0 }],
+              input_vo_tum: [{ timestamp: 1, tx: 1, ty: 0, tz: 0 }],
+              filtered_vo_tum: [{ timestamp: 1, tx: 1, ty: 0, tz: 0 }],
+              interpolated_gt_tum: [{ timestamp: 1, tx: 0, ty: 0, tz: 0 }],
+              sim3_gt_tum: [{ timestamp: 1, tx: 0, ty: 0, tz: 0 }],
+              sim3_vo_tum: [{ timestamp: 1, tx: 0, ty: 0, tz: 0 }],
+              ate_per_frame: [{ timestamp: 1, ate_position_m: 0.1 }],
+              rpe_per_frame: [{ timestamp: 1, rpe_translation_m: 0.2, rpe_available: true }],
+            },
+          };
         const sanitized = context.reportForHtmlExport(report);
         const workbook = context.buildTrajectoryWorkbook(report.trajectory_exports);
         process.stdout.write(JSON.stringify({
@@ -77,6 +79,10 @@ def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets(
         "interpolated_gt_tum",
         "sim3_gt_tum",
         "sim3_vo_tum",
+        "ate_per_frame",
+        "rpe_per_frame",
     ]
     assert workbook["input_gt_tum"]["A1"].value == "timestamp"
     assert workbook["input_gt_tum"]["A2"].value == 1
+    assert workbook["ate_per_frame"]["B1"].value == "ate_position_m"
+    assert workbook["rpe_per_frame"]["B1"].value == "rpe_translation_m"

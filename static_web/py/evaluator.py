@@ -491,6 +491,7 @@ def evaluate_trajectories(
     alignments: list[dict[str, Any]] = []
     sim3_gt_export_frames: list[pd.DataFrame] = []
     sim3_vo_export_frames: list[pd.DataFrame] = []
+    rpe_frame_export_frames: list[pd.DataFrame] = []
     total_gt_path_m = 0.0
     total_raw_est_path_m = 0.0
     total_aligned_est_path_m = 0.0
@@ -574,6 +575,18 @@ def evaluate_trajectories(
             gt_rot,
             est_rot_aligned,
             delta=max(1, int(cfg.rpe_delta_frames)),
+        )
+        rpe_frame_export_frames.append(
+            rpe_frame_dataframe(
+                gt_pos,
+                est_pos_aligned,
+                gt_rot,
+                est_rot_aligned,
+                stamps,
+                segment_id=int(seg_id),
+                match_indices=np.arange(start, end, dtype=int),
+                delta=max(1, int(cfg.rpe_delta_frames)),
+            )
         )
         rpe_trans_parts.append(rpe_trans)
         if len(rpe_rot):
@@ -661,6 +674,7 @@ def evaluate_trajectories(
 
     per_pose = pd.concat(per_pose_frames, ignore_index=True)
     segment_records = pd.concat(segment_record_frames, ignore_index=True) if segment_record_frames else pd.DataFrame()
+    rpe_per_frame = pd.concat(rpe_frame_export_frames, ignore_index=True) if rpe_frame_export_frames else pd.DataFrame()
     # 12. 统计汇总：describe() 会统一给出 count/rmse/mean/median/std/min/max/p95/p99。
     segment_summary = summarize_segment_records(segment_records)
     speed_bins = summarize_by_speed_bins(segment_records, cfg.speed_bins_mps)
@@ -753,6 +767,8 @@ def evaluate_trajectories(
         est,
         pd.concat(sim3_gt_export_frames, ignore_index=True) if sim3_gt_export_frames else pd.DataFrame(),
         pd.concat(sim3_vo_export_frames, ignore_index=True) if sim3_vo_export_frames else pd.DataFrame(),
+        ate_frame_dataframe(per_pose),
+        rpe_per_frame,
     )
     report = {
         "inputs": {
@@ -2958,6 +2974,112 @@ def interpolated_gt_extra_columns(gt_eval: Trajectory) -> dict[str, Any]:
     return extra
 
 
+def ate_frame_dataframe(per_pose: pd.DataFrame) -> pd.DataFrame:
+    """生成每个时间戳一行的 ATE 明细 sheet。
+
+    ATE 不是只在最后算一个总 RMSE。evaluate_trajectories() 已经在 per_pose 里保存了
+    每一帧的对齐后位置误差，这里只把这些逐帧误差换成更适合导出阅读的列名：
+    - ate_position_m: 三维位置绝对轨迹误差，等于 per_pose.error_m。
+    - ate_horizontal_m: XY 平面绝对误差，等于 per_pose.horizontal_error_m。
+    - ate_vertical_signed_m: Z 方向带符号误差，正负能看出高度偏高还是偏低。
+    - ate_vertical_abs_m: Z 方向绝对误差，适合做 RMSE/阈值判断。
+
+    如果输入包含姿态，还会追加姿态/yaw 的逐帧绝对误差。
+    """
+    if per_pose.empty:
+        return pd.DataFrame(
+            columns=[
+                "timestamp",
+                "segment_id",
+                "distance_m",
+                "segment_distance_m",
+                "ate_position_m",
+                "ate_horizontal_m",
+                "ate_vertical_signed_m",
+                "ate_vertical_abs_m",
+            ]
+        )
+
+    data: dict[str, Any] = {
+        "timestamp": per_pose["timestamp"].to_numpy(),
+        "segment_id": per_pose["segment_id"].to_numpy(),
+        "distance_m": per_pose["distance_m"].to_numpy() if "distance_m" in per_pose else np.full(len(per_pose), math.nan),
+        "segment_distance_m": per_pose["segment_distance_m"].to_numpy() if "segment_distance_m" in per_pose else np.full(len(per_pose), math.nan),
+        "ate_position_m": per_pose["error_m"].to_numpy(),
+        "ate_horizontal_m": per_pose["horizontal_error_m"].to_numpy(),
+        "ate_vertical_signed_m": per_pose["vertical_error_signed_m"].to_numpy(),
+        "ate_vertical_abs_m": per_pose["vertical_error_abs_m"].to_numpy(),
+    }
+    if "orientation_error_deg" in per_pose:
+        data["ate_orientation_deg"] = per_pose["orientation_error_deg"].to_numpy()
+    if "yaw_error_signed_deg" in per_pose:
+        data["ate_yaw_signed_deg"] = per_pose["yaw_error_signed_deg"].to_numpy()
+    if "yaw_error_abs_deg" in per_pose:
+        data["ate_yaw_abs_deg"] = per_pose["yaw_error_abs_deg"].to_numpy()
+    return pd.DataFrame(data)
+
+
+def rpe_frame_dataframe(
+    gt_pos: np.ndarray,
+    est_pos: np.ndarray,
+    gt_rot: np.ndarray | None,
+    est_rot: np.ndarray | None,
+    stamps: np.ndarray,
+    *,
+    segment_id: int,
+    match_indices: np.ndarray,
+    delta: int,
+) -> pd.DataFrame:
+    """生成每个时间戳一行的固定帧间隔 RPE 明细 sheet。
+
+    RPE 比较的是从当前帧 i 到未来帧 j=i+delta 的相对运动：
+    - rpe_translation_m: 这段相对位移的误差。
+    - rpe_rotation_deg: 这段相对旋转的误差；没有姿态输入时为 NaN。
+    - rpe_available: 当前时间戳是否有足够的未来帧可计算 RPE。
+
+    最后 delta 帧没有 j=i+delta，所以保留时间戳但 rpe_available=False。
+    这样 Excel 里仍然能做到“每个时间戳都有一行”，不会因为 RPE 少几行而和 ATE 对不上。
+    """
+    stamps = np.asarray(stamps, dtype=float)
+    match_indices = np.asarray(match_indices, dtype=int)
+    n = len(stamps)
+    delta = max(1, int(delta))
+    rpe_translation = np.full(n, math.nan, dtype=float)
+    rpe_rotation = np.full(n, math.nan, dtype=float)
+    end_timestamp = np.full(n, math.nan, dtype=float)
+    end_match_index = np.full(n, -1, dtype=int)
+    time_delta = np.full(n, math.nan, dtype=float)
+    available = np.zeros(n, dtype=bool)
+
+    for i in range(n):
+        j = i + delta
+        if j >= n:
+            continue
+        trans_error, rot_error = relative_error(gt_pos, est_pos, gt_rot, est_rot, i, j)
+        rpe_translation[i] = trans_error
+        if rot_error is not None:
+            rpe_rotation[i] = math.degrees(rot_error)
+        end_timestamp[i] = stamps[j]
+        end_match_index[i] = int(match_indices[j]) if j < len(match_indices) else -1
+        time_delta[i] = stamps[j] - stamps[i]
+        available[i] = True
+
+    return pd.DataFrame(
+        {
+            "timestamp": stamps,
+            "segment_id": np.full(n, int(segment_id), dtype=int),
+            "match_index": match_indices if len(match_indices) == n else np.arange(n, dtype=int),
+            "rpe_delta_frames": np.full(n, delta, dtype=int),
+            "rpe_end_match_index": end_match_index,
+            "rpe_end_timestamp": end_timestamp,
+            "rpe_time_delta_s": time_delta,
+            "rpe_translation_m": rpe_translation,
+            "rpe_rotation_deg": rpe_rotation,
+            "rpe_available": available,
+        }
+    )
+
+
 def build_trajectory_export_sheets(
     original_gt: Trajectory,
     original_est: Trajectory,
@@ -2965,8 +3087,10 @@ def build_trajectory_export_sheets(
     est_eval: Trajectory,
     sim3_gt_tum: pd.DataFrame,
     sim3_vo_tum: pd.DataFrame,
+    ate_per_frame: pd.DataFrame,
+    rpe_per_frame: pd.DataFrame,
 ) -> dict[str, pd.DataFrame]:
-    """构造 Excel 导出的 6 张轨迹 sheet。
+    """构造 Excel 导出的 8 张中间结果 sheet。
 
     Sheet 设计：
     1. input_gt_tum: 原始 GT 转 TUM。
@@ -2975,6 +3099,8 @@ def build_trajectory_export_sheets(
     4. interpolated_gt_tum: 插值到 VO 时间戳后的 GT。
     5. sim3_gt_tum: Sim3 评估时使用的 GT。
     6. sim3_vo_tum: Sim3 对齐后的 VO。
+    7. ate_per_frame: 每个评估时间戳的 ATE 明细。
+    8. rpe_per_frame: 每个评估时间戳起算的固定帧间隔 RPE 明细。
     """
     raw_gt_extra = {
         "source_index": np.arange(len(original_gt.positions), dtype=int),
@@ -2993,11 +3119,13 @@ def build_trajectory_export_sheets(
         "interpolated_gt_tum": trajectory_to_tum_dataframe(gt_eval, interpolated_gt_extra_columns(gt_eval)),
         "sim3_gt_tum": sim3_gt_tum,
         "sim3_vo_tum": sim3_vo_tum,
+        "ate_per_frame": ate_per_frame,
+        "rpe_per_frame": rpe_per_frame,
     }
 
 
 def report_to_excel(report: dict[str, Any]) -> bytes:
-    """把 report 中的六张轨迹导出 sheet 写成一个 xlsx 工作簿。"""
+    """把 report 中的轨迹和逐帧误差导出 sheet 写成一个 xlsx 工作簿。"""
     sheets = report.get("trajectory_exports") or {}
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:

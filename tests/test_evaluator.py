@@ -244,8 +244,10 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
         "interpolated_gt_tum",
         "sim3_gt_tum",
         "sim3_vo_tum",
+        "ate_per_frame",
+        "rpe_per_frame",
     ]
-    for frame in sheets.values():
+    for frame in [sheets[name] for name in list(sheets)[:6]]:
         assert list(frame.columns[:8]) == ["timestamp", "tx", "ty", "tz", "qx", "qy", "qz", "qw"]
 
     assert sheets["input_vo_tum"]["tum_file"].tolist() == [
@@ -275,6 +277,24 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
         for column in sim3_columns:
             assert column in sheets[sheet_name].columns
         assert np.isfinite(sheets[sheet_name][sim3_columns].to_numpy(dtype=float)).all()
+    ate_sheet = sheets["ate_per_frame"]
+    assert {"timestamp", "segment_id", "ate_position_m", "ate_horizontal_m", "ate_vertical_abs_m"}.issubset(ate_sheet.columns)
+    assert len(ate_sheet) == report["summary"]["matched_poses"]
+    assert np.allclose(ate_sheet["ate_position_m"].to_numpy(), report["per_pose"]["error_m"].to_numpy())
+
+    rpe_sheet = sheets["rpe_per_frame"]
+    assert {
+        "timestamp",
+        "segment_id",
+        "rpe_delta_frames",
+        "rpe_end_timestamp",
+        "rpe_translation_m",
+        "rpe_rotation_deg",
+        "rpe_available",
+    }.issubset(rpe_sheet.columns)
+    assert len(rpe_sheet) == report["summary"]["matched_poses"]
+    assert rpe_sheet["rpe_available"].tolist()[:-1] == [True] * (len(rpe_sheet) - 1)
+    assert rpe_sheet["rpe_available"].tolist()[-1] is False
 
     workbook = report_to_excel(report)
     xlsx = pd.ExcelFile(io.BytesIO(workbook))
@@ -282,6 +302,10 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
     sim3_vo_from_workbook = pd.read_excel(xlsx, sheet_name="sim3_vo_tum")
     for column in sim3_columns:
         assert column in sim3_vo_from_workbook.columns
+    ate_from_workbook = pd.read_excel(xlsx, sheet_name="ate_per_frame")
+    rpe_from_workbook = pd.read_excel(xlsx, sheet_name="rpe_per_frame")
+    assert "ate_position_m" in ate_from_workbook.columns
+    assert "rpe_translation_m" in rpe_from_workbook.columns
 
 
 def test_auto_orientation_correction_selects_right_rz180():
