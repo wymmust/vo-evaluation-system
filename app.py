@@ -208,45 +208,102 @@ def show_metric_catalog() -> None:
 def show_summary(report: dict[str, Any]) -> None:
     """顶部指标卡。
 
-    UI 指标与 report 字段对应：
-    - 路程 -> summary.gt_path_length_m
-    - ATE RMSE -> ate_position_m.rmse
-    - RPE RMSE -> rpe_frame_delta.translation_m.rmse
-    - 终点漂移 -> summary.endpoint_error_m
-    - 垂直 RMSE -> ate_vertical_m.rmse
-    - 覆盖率/匹配位姿/耗时 -> summary
-    - 是否发散 -> divergence.diverged
+    页面展示顺序和 README “运行结果截图指标卡与代码/公式对应”保持一致：
+    #01 ATE RMSE 到 #15 耗时。这里只负责展示，不改变 evaluator 计算结果。
     """
     summary = report["summary"]
     ate = report["ate_position_m"] or {}
     vertical = report["ate_vertical_m"] or {}
     rpe = (report["rpe_frame_delta"].get("translation_m") or {})
     div = report["divergence"]
-
-    st.subheader("运行结果")
-    cols = st.columns(6)
-    metric(cols[0], "路程", summary.get("gt_path_length_m"), "m")
-    metric(cols[1], "ATE RMSE", ate.get("rmse"), "m")
-    metric(cols[2], "RPE RMSE", rpe.get("rmse"), "m")
-    metric(cols[3], "终点漂移", summary.get("endpoint_error_m"), "m")
-    metric(cols[4], "垂直 RMSE", vertical.get("rmse"), "m")
-    cols[5].metric("是否发散", "是" if div.get("diverged") else "否")
-
-    cols = st.columns(6)
-    metric(cols[0], "GT覆盖率", 100 * summary.get("gt_pose_coverage_ratio", summary.get("coverage_ratio", math.nan)), "%")
-    metric(cols[1], "Raw 尺度比", summary.get("raw_path_scale_ratio_est_over_gt"), "")
-    metric(cols[2], "对齐尺度", report["alignment"].get("scale"), "")
-    metric(cols[3], "匹配位姿", summary.get("matched_poses"), "")
-    metric(cols[4], "VO匹配率", 100 * summary.get("est_pose_coverage_ratio", math.nan), "%")
-    metric(cols[5], "耗时", summary.get("duration_s"), "s")
-
     assoc = report.get("association", {})
     orientation_info = report.get("orientation_correction", {})
-    cols = st.columns(4)
-    cols[0].metric("时间同步", association_label(assoc))
-    metric(cols[1], "最大插值间隔", assoc.get("max_interpolation_gap_s"), "s")
-    metric(cols[2], "平均时间差", assoc.get("mean_time_diff_s"), "s")
-    cols[3].metric("VO姿态修正", orientation_correction_label(orientation_info))
+    alignment = report.get("alignment", {})
+    breaks = nested(report, "discontinuities", "all_matches", "break_count", default=0)
+
+    st.subheader("运行结果")
+    cards = [
+        {
+            "label": "#01 ATE RMSE",
+            "value": report_value(ate.get("rmse"), "m"),
+            "help": f"{report_number(100 * ate.get('rmse', math.nan) / summary.get('gt_path_length_m', math.nan))} % 路程；p95 {report_value(ate.get('p95'), 'm')}",
+        },
+        {
+            "label": "#02 RPE RMSE",
+            "value": report_value(rpe.get("rmse"), "m"),
+            "help": f"Δ={report.get('rpe_frame_delta', {}).get('delta_frames', 'N/A')} frames；p95 {report_value(rpe.get('p95'), 'm')}",
+        },
+        {
+            "label": "#03 终点漂移",
+            "value": report_value(summary.get("endpoint_error_m"), "m"),
+            "help": f"{report_number(summary.get('endpoint_error_percent_of_path'))} % 路程",
+        },
+        {
+            "label": "#04 长航程路程",
+            "value": report_value(summary.get("gt_path_length_m"), "m"),
+            "help": f"{report_value(summary.get('duration_s'), 's')} / {summary.get('matched_poses', 'N/A')} 帧",
+        },
+        {
+            "label": "#05 垂直 RMSE",
+            "value": report_value(vertical.get("rmse"), "m"),
+            "help": f"p95 {report_value(vertical.get('p95'), 'm')}",
+        },
+        {
+            "label": "#06 发散状态",
+            "value": "是" if div.get("diverged") else "否",
+            "help": divergence_summary_label(div),
+        },
+        {
+            "label": "#07 GT 覆盖率",
+            "value": report_value(100 * summary.get("gt_pose_coverage_ratio", summary.get("coverage_ratio", math.nan)), "%"),
+            "help": "插值模式按有效评估时间 / GT 全时长解释",
+        },
+        {
+            "label": "#08 Raw 尺度比",
+            "value": report_number(summary.get("raw_path_scale_ratio_est_over_gt")),
+            "help": "VO 原始路程 / GT 路程",
+        },
+        {
+            "label": "#09 对齐尺度",
+            "value": report_number(alignment.get("scale")),
+            "help": scale_range_text(alignment),
+        },
+        {
+            "label": "#10 匹配位姿",
+            "value": report_value(summary.get("matched_poses")),
+            "help": f"{summary.get('original_matched_poses', 'N/A')} 原始匹配",
+        },
+        {
+            "label": "#11 VO 匹配率",
+            "value": report_value(100 * summary.get("est_pose_coverage_ratio", math.nan), "%"),
+            "help": f"{summary.get('matched_poses', 'N/A')} / {summary.get('est_poses', 'N/A')} 帧",
+        },
+        {
+            "label": "#12 断点数量",
+            "value": report_value(breaks),
+            "help": f"策略 {nested(report, 'discontinuities', 'selected_segment', 'policy', default='N/A')}",
+        },
+        {
+            "label": "#13 时间同步",
+            "value": association_label(assoc),
+            "help": association_summary_label(assoc),
+        },
+        {
+            "label": "#14 姿态修正",
+            "value": orientation_correction_label(orientation_info),
+            "help": orientation_summary_label(orientation_info),
+        },
+        {
+            "label": "#15 耗时",
+            "value": report_value(summary.get("duration_s"), "s"),
+            "help": "有效评估窗口，不是算法运行耗时",
+        },
+    ]
+
+    for start in range(0, len(cards), 5):
+        cols = st.columns(5)
+        for col, item in zip(cols, cards[start : start + 5]):
+            col.metric(item["label"], item["value"], help=item["help"])
 
     if orientation_info.get("auto") and orientation_info.get("selected"):
         st.info(
@@ -308,6 +365,36 @@ def orientation_correction_label(info: dict[str, Any]) -> str:
     return str(selected)
 
 
+def association_summary_label(assoc: dict[str, Any]) -> str:
+    """README #13 时间同步卡片的备注文本。"""
+    if assoc.get("interpolated"):
+        return (
+            f"匹配 {assoc.get('matches', 'N/A')} 帧；"
+            f"最大插值间隔 {report_value(assoc.get('max_interpolation_gap_s'), 's')}"
+        )
+    return (
+        f"匹配 {assoc.get('matches', 'N/A')} 帧；"
+        f"平均时间差 {report_value(assoc.get('mean_time_diff_s'), 's')}"
+    )
+
+
+def orientation_summary_label(info: dict[str, Any]) -> str:
+    """README #14 姿态修正卡片的备注文本。"""
+    if info.get("auto"):
+        return f"自动候选评分 {report_number(info.get('best_score'))}"
+    return f"请求 {info.get('requested', 'N/A')}"
+
+
+def divergence_summary_label(divergence: dict[str, Any]) -> str:
+    """README #06 发散状态卡片的备注文本。"""
+    if not divergence.get("diverged"):
+        return "未触发发散阈值"
+    return (
+        f"distance={report_value(divergence.get('first_divergence_distance_m'), 'm')}；"
+        f"error={report_value(divergence.get('first_divergence_error_m'), 'm')}"
+    )
+
+
 def show_visuals(report: dict[str, Any]) -> None:
     """可视化区域。
 
@@ -359,7 +446,7 @@ def show_tables_and_downloads(report: dict[str, Any]) -> None:
     summary_rows = flatten_report_summary(report)
     st.dataframe(summary_rows, use_container_width=True, hide_index=True)
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.download_button(
         "下载 JSON 指标",
         vo_evaluator.report_to_json(report),
@@ -379,6 +466,13 @@ def show_tables_and_downloads(report: dict[str, Any]) -> None:
         file_name="vo_segment_errors.csv",
         mime="text/csv",
         disabled=not bool(segment_csv),
+    )
+    col4.download_button(
+        "下载轨迹 Excel",
+        vo_evaluator.report_to_excel(report),
+        file_name="vo_trajectory_exports.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        disabled=not bool(report.get("trajectory_exports")),
     )
 
 
@@ -582,31 +676,40 @@ def build_report_metric_cards(report: dict[str, Any]) -> list[dict[str, str]]:
     summary = report.get("summary", {})
     ate = report.get("ate_position_m") or {}
     rpe = nested(report, "rpe_frame_delta", "translation_m", default={}) or {}
-    orient = report.get("ate_orientation_deg") or {}
-    yaw = report.get("ate_yaw_deg") or {}
+    vertical = report.get("ate_vertical_m") or {}
     alignment = report.get("alignment") or {}
     breaks = nested(report, "discontinuities", "all_matches", "break_count", default="N/A")
+    assoc = report.get("association") or {}
+    correction = report.get("orientation_correction") or {}
+    divergence = report.get("divergence") or {}
     return [
-        {"label": "ATE RMSE", "value": report_value(ate.get("rmse"), "m"), "note": f"p95 {report_value(ate.get('p95'), 'm')}"},
-        {"label": "RPE 平移 RMSE", "value": report_value(rpe.get("rmse"), "m"), "note": f"p95 {report_value(rpe.get('p95'), 'm')}"},
+        {"label": "#01 ATE RMSE", "value": report_value(ate.get("rmse"), "m"), "note": f"{report_number(100 * ate.get('rmse', math.nan) / summary.get('gt_path_length_m', math.nan))} % 路程；p95 {report_value(ate.get('p95'), 'm')}"},
+        {"label": "#02 RPE RMSE", "value": report_value(rpe.get("rmse"), "m"), "note": f"Δ={nested(report, 'rpe_frame_delta', 'delta_frames', default='N/A')} frames；p95 {report_value(rpe.get('p95'), 'm')}"},
         {
-            "label": "终点漂移",
+            "label": "#03 终点漂移",
             "value": report_value(summary.get("endpoint_error_m"), "m"),
             "note": f"{report_number(summary.get('endpoint_error_percent_of_path'))} % 路程",
         },
-        {"label": "姿态 RMSE", "value": report_value(orient.get("rmse"), "deg"), "note": f"yaw {report_value(yaw.get('rmse'), 'deg')}"},
-        {"label": "对齐尺度", "value": report_number(alignment.get("scale")), "note": scale_range_text(alignment)},
-        {"label": "断点数量", "value": str(breaks), "note": f"策略 {nested(report, 'discontinuities', 'selected_segment', 'policy', default='N/A')}"},
+        {"label": "#04 长航程路程", "value": report_value(summary.get("gt_path_length_m"), "m"), "note": f"{report_value(summary.get('duration_s'), 's')} / {summary.get('matched_poses', 'N/A')} 帧"},
+        {"label": "#05 垂直 RMSE", "value": report_value(vertical.get("rmse"), "m"), "note": f"p95 {report_value(vertical.get('p95'), 'm')}"},
+        {"label": "#06 发散状态", "value": "是" if divergence.get("diverged") else "否", "note": divergence_summary_label(divergence)},
         {
-            "label": "VO 匹配率",
-            "value": report_value(100 * summary.get("est_pose_coverage_ratio", math.nan), "%"),
-            "note": f"{summary.get('matched_poses', 'N/A')} / {summary.get('est_poses', 'N/A')} 帧",
-        },
-        {
-            "label": "GT 覆盖率",
+            "label": "#07 GT 覆盖率",
             "value": report_value(100 * summary.get("gt_time_coverage_ratio", summary.get("gt_pose_coverage_ratio", math.nan)), "%"),
             "note": "仅表示评估覆盖的 GT 段",
         },
+        {"label": "#08 Raw 尺度比", "value": report_number(summary.get("raw_path_scale_ratio_est_over_gt")), "note": "VO 原始路程 / GT 路程"},
+        {"label": "#09 对齐尺度", "value": report_number(alignment.get("scale")), "note": scale_range_text(alignment)},
+        {"label": "#10 匹配位姿", "value": report_value(summary.get("matched_poses")), "note": f"{summary.get('original_matched_poses', 'N/A')} 原始匹配"},
+        {
+            "label": "#11 VO 匹配率",
+            "value": report_value(100 * summary.get("est_pose_coverage_ratio", math.nan), "%"),
+            "note": f"{summary.get('matched_poses', 'N/A')} / {summary.get('est_poses', 'N/A')} 帧",
+        },
+        {"label": "#12 断点数量", "value": str(breaks), "note": f"策略 {nested(report, 'discontinuities', 'selected_segment', 'policy', default='N/A')}"},
+        {"label": "#13 时间同步", "value": association_label(assoc), "note": association_summary_label(assoc)},
+        {"label": "#14 姿态修正", "value": orientation_correction_label(correction), "note": orientation_summary_label(correction)},
+        {"label": "#15 耗时", "value": report_value(summary.get("duration_s"), "s"), "note": "有效评估窗口，不是算法运行耗时"},
     ]
 
 

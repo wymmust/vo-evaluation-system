@@ -111,6 +111,33 @@ docker run --rm -p 8501:8501 vo-evaluation-system
 
 仓库不包含测试数据、飞行日志、导出报告或轨迹样例。请在本地页面中上传自己的 ground truth 与 VO 输出文件运行评估。
 
+## 指标与 evaluator.py 代码总表
+
+本表是 `README.md` 和 `vo_eval/evaluator.py` 的统一索引。代码内同一份索引位于 `METRIC_CODE_MAP`；如果后续新增或改名 `report` 指标，需要同时更新 `METRIC_CODE_MAP` 和本表。
+
+| 指标 / 报告项 | report 字段 | evaluator.py 对应代码 | README 详细说明 |
+| --- | --- | --- | --- |
+| 时间同步 / GT 插值到 VO | `report["association"]` | `prepare_evaluation_trajectories()`、`build_associated_trajectories()`、`interpolate_reference_to_estimate()`、`associate_trajectories()` | `时间同步方式`、`#13 时间同步`、`HTML 调参报告新增参数与代码/公式对应 / 时间同步诊断细项` |
+| 轨迹对齐 / 对齐尺度 | `report["alignment"]` | `compute_alignment()`、`umeyama_alignment()`、`aggregate_alignment()`、`apply_alignment()` | `对齐方式`、`#09 对齐尺度`、`尺度比与尺度漂移` |
+| VO 姿态修正 | `report["orientation_correction"]` | `select_orientation_correction()`、`score_orientation_correction_candidate()`、`apply_orientation_correction()` | `#14 姿态修正`、`HTML 调参报告新增参数与代码/公式对应 / Attitude / yaw RMSE` |
+| ATE 三维位置误差 | `report["ate_position_m"]`、`report["ate"]["primary_position_m"]` | `evaluate_trajectories()` 中的 `errors` / `pos_error_m`，以及 `describe()`、`build_ate_report()` | `#01 ATE RMSE`、`ATE 绝对轨迹误差` |
+| ATE 水平误差 | `report["ate_horizontal_m"]` | `evaluate_trajectories()` 中的 `horizontal_error_m = norm(errors[:, :2])`，以及 `describe()` | `ATE 水平误差、垂直/海拔误差`、`误差随路程变化` |
+| ATE 垂直 / 高度误差 | `report["ate_vertical_m"]`、`vertical_error_signed_m`、`vertical_error_abs_m` | `evaluate_trajectories()` 中的 `vertical_error_signed_m = errors[:, 2]`，以及 `describe()` | `#05 垂直 RMSE`、`高度与垂直误差` |
+| ATE 姿态误差 | `report["ate_orientation_deg"]` | `rotation_errors()`、`apply_rotation_alignment()`、`describe()` | `HTML 调参报告新增参数与代码/公式对应 / Attitude / yaw RMSE` |
+| ATE yaw 航向误差 | `report["ate_yaw_deg"]`、`yaw_error_signed_deg`、`yaw_error_abs_deg` | `yaw_from_rot()`、`wrap_pi()`、`describe()` | `HTML 调参报告新增参数与代码/公式对应 / Attitude / yaw RMSE` |
+| RPE 固定帧间隔误差 | `report["rpe_frame_delta"]` | `rpe_error_arrays()`、`relative_error()`、`describe()` | `#02 RPE RMSE`、`RPE 相对位姿误差` |
+| RPE 固定时间间隔误差 | `report["rpe_time_delta"]` | `rpe_error_arrays_by_time()`、`nearest_time_index()`、`summarize_time_rpe()` | `HTML 调参报告新增参数与代码/公式对应 / 固定时间 RPE` |
+| 按距离子轨迹平移 / 旋转 / 尺度误差 | `report["segment_errors"]` | `segment_errors()`、`find_segment_end()`、`relative_error()`、`summarize_segment_records()` | `按距离子轨迹误差`、`HTML 调参报告新增参数与代码/公式对应 / 长航程子轨迹表新增列` |
+| 每个子轨迹明细 | `report["segment_records"]` | `segment_errors()` 生成 records，`summarize_segment_records()` 聚合 | `HTML 调参报告新增参数与代码/公式对应 / Top-K 最差片段` |
+| 速度分箱误差 | `report["speed_bins"]` | `summarize_by_speed_bins()`、`describe_clean()` | `速度分箱误差`、`HTML 调参报告新增参数与代码/公式对应 / 条件诊断` |
+| 最差片段 Top-K | `report["worst_segments"]` | `build_worst_segments()` | `HTML 调参报告新增参数与代码/公式对应 / Top-K 最差片段` |
+| 断点 / VO 重置 / 大跳变 | `report["discontinuities"]` | `detect_associated_discontinuities()`、`select_evaluation_segments()`、`summarize_continuity()` | `#12 断点数量`、`HTML 调参报告新增参数与代码/公式对应 / 连续性参数` |
+| 发散检测 | `report["divergence"]` | `detect_divergence()`、`classify_tracking_failure()`、`classify_scale_divergence()` | `#06 发散状态`、`发散检测` |
+| 航程 / 耗时 / 匹配数量 / 覆盖率 / 终点漂移 / 原始尺度比 | `report["summary"]` | `evaluate_trajectories()` 中的 `summary` dict，`path_distance()`、`_gt_coverage_ratio()` | `#03 终点漂移`、`#04 长航程路程`、`#07 GT 覆盖率`、`#08 Raw 尺度比`、`#10 匹配位姿`、`#11 VO 匹配率`、`#15 耗时` |
+| runtime / CPU / 内存 / FPS | `report["runtime"]` | `summarize_runtime()`、`describe()` | `Runtime / 耗时统计` |
+| 逐帧误差和轨迹可视化数据 | `report["per_pose"]` | `evaluate_trajectories()` 中的 `per_pose` DataFrame | `误差随路程变化`、`高度与垂直误差` |
+| 统计口径 count/rmse/mean/median/std/min/max/p95/p99 | 所有 `describe(...)` 指标汇总 | `describe()`、`describe_clean()` | `运行结果截图指标卡与代码/公式对应`、`Runtime / 耗时统计` |
+
 ## 运行结果截图指标卡与代码/公式对应
 
 本节对应页面第一屏 `EVALUATION SUMMARY / 运行结果` 的 15 个卡片。前端卡片由 `vo-evaluation-system/static_web/app.js:242-268` 生成，后端指标主要由 `vo-evaluation-system/vo_eval/evaluator.py:evaluate_trajectories()` 生成。所有 `rmse/mean/median/std/min/max/p95/p99` 统计最终都走 `describe()`：

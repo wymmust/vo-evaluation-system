@@ -77,6 +77,112 @@ import numpy as np
 import pandas as pd
 
 
+# 指标代码索引。README 的“指标与 evaluator.py 代码总表”应和这里保持一致。
+# 维护规则：只要 report 新增/改名指标，就同步更新本表和 README，避免页面、文档、代码三处口径分叉。
+METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
+    {
+        "metric": "时间同步 / GT 插值到 VO",
+        "report_field": 'report["association"]',
+        "code": "prepare_evaluation_trajectories(); build_associated_trajectories(); interpolate_reference_to_estimate(); associate_trajectories()",
+    },
+    {
+        "metric": "轨迹对齐 / 对齐尺度",
+        "report_field": 'report["alignment"]',
+        "code": "compute_alignment(); umeyama_alignment(); aggregate_alignment(); apply_alignment()",
+    },
+    {
+        "metric": "VO 姿态修正",
+        "report_field": 'report["orientation_correction"]',
+        "code": "select_orientation_correction(); score_orientation_correction_candidate(); apply_orientation_correction()",
+    },
+    {
+        "metric": "ATE 三维位置误差",
+        "report_field": 'report["ate_position_m"]; report["ate"]["primary_position_m"]',
+        "code": "evaluate_trajectories(): errors/pos_error_m; describe(); build_ate_report()",
+    },
+    {
+        "metric": "ATE 水平误差",
+        "report_field": 'report["ate_horizontal_m"]',
+        "code": "evaluate_trajectories(): horizontal_error_m = norm(errors[:, :2]); describe()",
+    },
+    {
+        "metric": "ATE 垂直 / 高度误差",
+        "report_field": 'report["ate_vertical_m"]; report["vertical_error_signed_m"]; report["vertical_error_abs_m"]',
+        "code": "evaluate_trajectories(): vertical_error_signed_m/errors[:, 2]; describe()",
+    },
+    {
+        "metric": "ATE 姿态误差",
+        "report_field": 'report["ate_orientation_deg"]',
+        "code": "rotation_errors(); apply_rotation_alignment(); describe()",
+    },
+    {
+        "metric": "ATE yaw 航向误差",
+        "report_field": 'report["ate_yaw_deg"]; report["yaw_error_signed_deg"]; report["yaw_error_abs_deg"]',
+        "code": "yaw_from_rot(); wrap_pi(); describe()",
+    },
+    {
+        "metric": "RPE 固定帧间隔误差",
+        "report_field": 'report["rpe_frame_delta"]',
+        "code": "rpe_error_arrays(); relative_error(); describe()",
+    },
+    {
+        "metric": "RPE 固定时间间隔误差",
+        "report_field": 'report["rpe_time_delta"]',
+        "code": "rpe_error_arrays_by_time(); nearest_time_index(); summarize_time_rpe()",
+    },
+    {
+        "metric": "按距离子轨迹平移 / 旋转 / 尺度误差",
+        "report_field": 'report["segment_errors"]',
+        "code": "segment_errors(); find_segment_end(); relative_error(); summarize_segment_records()",
+    },
+    {
+        "metric": "每个子轨迹明细",
+        "report_field": 'report["segment_records"]',
+        "code": "segment_errors(): records; summarize_segment_records()",
+    },
+    {
+        "metric": "速度分箱误差",
+        "report_field": 'report["speed_bins"]',
+        "code": "summarize_by_speed_bins(); describe_clean()",
+    },
+    {
+        "metric": "最差片段 Top-K",
+        "report_field": 'report["worst_segments"]',
+        "code": "build_worst_segments()",
+    },
+    {
+        "metric": "断点 / VO 重置 / 大跳变",
+        "report_field": 'report["discontinuities"]',
+        "code": "detect_associated_discontinuities(); select_evaluation_segments(); summarize_continuity()",
+    },
+    {
+        "metric": "发散检测",
+        "report_field": 'report["divergence"]',
+        "code": "detect_divergence(); classify_tracking_failure(); classify_scale_divergence()",
+    },
+    {
+        "metric": "航程 / 耗时 / 匹配数量 / 覆盖率 / 终点漂移 / 原始尺度比",
+        "report_field": 'report["summary"]',
+        "code": "evaluate_trajectories(): summary dict; path_distance(); _gt_coverage_ratio()",
+    },
+    {
+        "metric": "runtime / CPU / 内存 / FPS",
+        "report_field": 'report["runtime"]',
+        "code": "summarize_runtime(); describe()",
+    },
+    {
+        "metric": "逐帧误差和轨迹可视化数据",
+        "report_field": 'report["per_pose"]',
+        "code": "evaluate_trajectories(): per_pose DataFrame",
+    },
+    {
+        "metric": "统计口径 count/rmse/mean/median/std/min/max/p95/p99",
+        "report_field": "all describe(...) metric summaries",
+        "code": "describe(); describe_clean()",
+    },
+)
+
+
 @dataclass
 class Trajectory:
     """统一后的轨迹数据结构。
@@ -383,6 +489,8 @@ def evaluate_trajectories(
     used_gt_indices: list[np.ndarray] = []
     used_est_indices: list[np.ndarray] = []
     alignments: list[dict[str, Any]] = []
+    sim3_gt_export_frames: list[pd.DataFrame] = []
+    sim3_vo_export_frames: list[pd.DataFrame] = []
     total_gt_path_m = 0.0
     total_raw_est_path_m = 0.0
     total_aligned_est_path_m = 0.0
@@ -417,6 +525,19 @@ def evaluate_trajectories(
 
         est_pos_aligned = apply_alignment(est_pos, alignment)
         est_rot_aligned = apply_rotation_alignment(est_rot, alignment) if est_rot is not None else None
+
+        # Excel 导出需要固定给出 Sim3 结果。这里独立计算 Sim3，不受页面当前 alignment 选项影响；
+        # 这样即使用户临时选择 SE3/首帧对齐，导出的 sim3_vo_tum 仍然是标准 Sim3 对齐输出。
+        sim3_alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode="sim3")
+        sim3_est_pos = apply_alignment(est_pos, sim3_alignment)
+        sim3_est_rot = apply_rotation_alignment(est_rot, sim3_alignment) if est_rot is not None else None
+        sim3_extra = {
+            "segment_id": np.full(len(stamps), int(seg_id), dtype=int),
+            "match_index": np.arange(start, end, dtype=int),
+        }
+        sim3_extra.update(alignment_export_columns(sim3_alignment, len(stamps), "sim3"))
+        sim3_gt_export_frames.append(tum_dataframe_from_arrays(stamps, gt_pos, gt_rot, extra=sim3_extra))
+        sim3_vo_export_frames.append(tum_dataframe_from_arrays(stamps, sim3_est_pos, sim3_est_rot, extra=sim3_extra))
 
         # 6. ATE 逐帧误差：
         #    error_m -> ate_position_m，horizontal_error_m -> ate_horizontal_m，
@@ -624,6 +745,15 @@ def evaluate_trajectories(
     )
 
     # 15. report 是唯一对外返回值。app.py 的所有图表/表格/下载都从这里取数据。
+    #     新增 report 指标时，同步更新 METRIC_CODE_MAP 和 README 的指标-代码总表。
+    trajectory_exports = build_trajectory_export_sheets(
+        original_gt,
+        original_est,
+        gt,
+        est,
+        pd.concat(sim3_gt_export_frames, ignore_index=True) if sim3_gt_export_frames else pd.DataFrame(),
+        pd.concat(sim3_vo_export_frames, ignore_index=True) if sim3_vo_export_frames else pd.DataFrame(),
+    )
     report = {
         "inputs": {
             "ground_truth": {"name": original_gt.name, "format": original_gt.source_format},
@@ -659,6 +789,7 @@ def evaluate_trajectories(
         "divergence": divergence,
         "per_pose": per_pose,
         "segment_records": segment_records,
+        "trajectory_exports": trajectory_exports,
     }
     return report
 
@@ -1326,6 +1457,31 @@ def apply_rotation_alignment(rotations: np.ndarray | None, alignment: dict[str, 
         return None
     rot = np.asarray(alignment["rotation"], dtype=float)
     return np.einsum("ij,njk->nik", rot, rotations)
+
+
+def alignment_export_columns(alignment: dict[str, Any], count: int, prefix: str) -> dict[str, Any]:
+    """把 Sim3/SE3 对齐参数展开成可写入 Excel sheet 的列。
+
+    Sim3 不是只有尺度，还包含完整变换：
+    p_gt = scale * R * p_vo + t。
+    因此导出中间轨迹时同时保留：
+    - scale: 尺度因子；
+    - rotation_r00...r22: 3x3 旋转矩阵；
+    - translation_x/y/z: 平移向量。
+    """
+    rot = np.asarray(alignment["rotation"], dtype=float)
+    trans = np.asarray(alignment["translation"], dtype=float)
+    out: dict[str, Any] = {
+        f"{prefix}_mode": np.asarray([alignment.get("mode", prefix)] * count, dtype=object),
+        f"{prefix}_scale": np.full(count, float(alignment["scale"]), dtype=float),
+        f"{prefix}_translation_x": np.full(count, float(trans[0]), dtype=float),
+        f"{prefix}_translation_y": np.full(count, float(trans[1]), dtype=float),
+        f"{prefix}_translation_z": np.full(count, float(trans[2]), dtype=float),
+    }
+    for row in range(3):
+        for col in range(3):
+            out[f"{prefix}_rotation_r{row}{col}"] = np.full(count, float(rot[row, col]), dtype=float)
+    return out
 
 
 def aggregate_alignment(alignments: list[dict[str, Any]], mode: str) -> dict[str, Any]:
@@ -2676,6 +2832,184 @@ def matrix_to_quaternion(rot: np.ndarray) -> np.ndarray:
     return np.asarray(out, dtype=float)
 
 
+def tum_dataframe_from_arrays(
+    stamps: np.ndarray,
+    positions: np.ndarray,
+    rotations: np.ndarray | None,
+    extra: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    """把轨迹数组转成 TUM 表格，前 8 列固定为 timestamp tx ty tz qx qy qz qw。
+
+    这个函数只负责导出格式，不参与 ATE/RPE 计算：
+    - 有姿态时把旋转矩阵转成 TUM 四元数 qx qy qz qw。
+    - 没有姿态时写单位四元数，并额外标记 has_rotation=False，保证 sheet 仍是 TUM 结构。
+    - extra 列统一追加在 TUM 8 列之后，用于保存 segment_id、source_index、jump 文件名等诊断信息。
+    """
+    stamps = np.asarray(stamps, dtype=float)
+    positions = np.asarray(positions, dtype=float)
+    count = len(positions)
+    if count == 0:
+        quats = np.empty((0, 4), dtype=float)
+        has_rotation = np.asarray([], dtype=bool)
+    elif rotations is not None:
+        quats = matrix_to_quaternion(np.asarray(rotations, dtype=float))
+        has_rotation = np.ones(count, dtype=bool)
+    else:
+        quats = np.zeros((count, 4), dtype=float)
+        quats[:, 3] = 1.0
+        has_rotation = np.zeros(count, dtype=bool)
+
+    frame = pd.DataFrame(
+        {
+            "timestamp": stamps,
+            "tx": positions[:, 0] if count else np.asarray([], dtype=float),
+            "ty": positions[:, 1] if count else np.asarray([], dtype=float),
+            "tz": positions[:, 2] if count else np.asarray([], dtype=float),
+            "qx": quats[:, 0] if count else np.asarray([], dtype=float),
+            "qy": quats[:, 1] if count else np.asarray([], dtype=float),
+            "qz": quats[:, 2] if count else np.asarray([], dtype=float),
+            "qw": quats[:, 3] if count else np.asarray([], dtype=float),
+            "has_rotation": has_rotation,
+        }
+    )
+    if extra:
+        for key, value in extra.items():
+            arr = np.asarray(value)
+            if arr.ndim == 0:
+                frame[key] = arr.item()
+            elif len(arr) == count:
+                frame[key] = arr
+    return frame
+
+
+def trajectory_to_tum_dataframe(traj: Trajectory, extra: dict[str, Any] | None = None) -> pd.DataFrame:
+    """把 Trajectory 转成 TUM 表格。
+
+    原始输入、插值后 GT、筛选后 VO 和 Sim3 输出都通过这个函数统一导出，
+    避免不同 sheet 的列顺序或四元数顺序不一致。
+    """
+    return tum_dataframe_from_arrays(traj.stamps, traj.positions, traj.rotations, extra=extra)
+
+
+def raw_numeric_table(traj: Trajectory) -> np.ndarray | None:
+    """取解析阶段保留的原始数字表，用于检测 VO 倒数第四列跳变。"""
+    table = traj.extras.get("raw_numeric_table")
+    if table is None:
+        return None
+    arr = np.asarray(table, dtype=float)
+    if arr.ndim != 2 or len(arr) != len(traj.positions):
+        return None
+    return arr
+
+
+def jump_export_columns_from_source(
+    source: Trajectory,
+    source_indices: np.ndarray | None,
+    prefix: str,
+) -> dict[str, Any]:
+    """根据原始 VO 倒数第四列的 +1 变化生成导出分段列。
+
+    用户要求：如果 VO 输出文件倒数第四列出现 0->1、1->2 这类 +1 跳变，
+    就把跳变后的数据视为新的 TUM 文件，例如 vo_tum_01、vo_tum_02。
+
+    Excel 只有 6 个固定 sheet，因此这里不额外创建无限多个 sheet，而是在相关 sheet 中写入：
+    - tum_file: 逻辑文件名，如 vo_tum_01。
+    - jump_segment_id: 从 0 开始的分段编号。
+    - jump_source_value: 原始倒数第四列的值，方便复查跳变点。
+    """
+    n = len(source.positions)
+    if source_indices is None:
+        indices = np.arange(n, dtype=int)
+    else:
+        indices = np.asarray(source_indices, dtype=int)
+
+    table = raw_numeric_table(source)
+    all_segment_ids = np.zeros(n, dtype=int)
+    all_values = np.full(n, math.nan, dtype=float)
+    source_column_index = -4
+    if table is not None and table.shape[1] >= 4:
+        source_column_index = int(table.shape[1] - 4)
+        all_values = table[:, source_column_index]
+        diffs = np.diff(all_values)
+        jumps = np.isfinite(diffs) & np.isclose(diffs, 1.0, rtol=0.0, atol=1e-9)
+        all_segment_ids = np.concatenate([[0], np.cumsum(jumps)]).astype(int)
+
+    safe_indices = np.clip(indices, 0, max(0, n - 1)) if n else indices
+    segment_ids = all_segment_ids[safe_indices] if n else np.asarray([], dtype=int)
+    values = all_values[safe_indices] if n else np.asarray([], dtype=float)
+    return {
+        "source_index": indices,
+        "jump_segment_id": segment_ids,
+        "jump_source_column_from_end": np.full(len(indices), -4, dtype=int),
+        "jump_source_column_index": np.full(len(indices), source_column_index, dtype=int),
+        "jump_source_value": values,
+        "tum_file": np.asarray([f"{prefix}_{seg_id + 1:02d}" for seg_id in segment_ids], dtype=object),
+    }
+
+
+def interpolated_gt_extra_columns(gt_eval: Trajectory) -> dict[str, Any]:
+    """整理 GT 插值 sheet 的诊断列，保留左右 GT 样本和 alpha。"""
+    n = len(gt_eval.positions)
+    extra: dict[str, Any] = {"row_index": np.arange(n, dtype=int)}
+    for key in ["original_est_stamp", "target_stamp", "gt_left_index", "gt_right_index", "interp_alpha", "gt_bracket_gap_s"]:
+        value = gt_eval.extras.get(key)
+        if value is not None and len(value) == n:
+            extra[key] = value
+    return extra
+
+
+def build_trajectory_export_sheets(
+    original_gt: Trajectory,
+    original_est: Trajectory,
+    gt_eval: Trajectory,
+    est_eval: Trajectory,
+    sim3_gt_tum: pd.DataFrame,
+    sim3_vo_tum: pd.DataFrame,
+) -> dict[str, pd.DataFrame]:
+    """构造 Excel 导出的 6 张轨迹 sheet。
+
+    Sheet 设计：
+    1. input_gt_tum: 原始 GT 转 TUM。
+    2. input_vo_tum: 原始 VO 转 TUM，并按倒数第四列 +1 跳变标记 vo_tum_XX。
+    3. filtered_vo_tum: 时间同步后保留下来的 VO。
+    4. interpolated_gt_tum: 插值到 VO 时间戳后的 GT。
+    5. sim3_gt_tum: Sim3 评估时使用的 GT。
+    6. sim3_vo_tum: Sim3 对齐后的 VO。
+    """
+    raw_gt_extra = {
+        "source_index": np.arange(len(original_gt.positions), dtype=int),
+        "tum_file": np.asarray(["gt_tum_01"] * len(original_gt.positions), dtype=object),
+    }
+    raw_vo_extra = jump_export_columns_from_source(original_est, None, "vo_tum")
+
+    est_source_index = est_eval.extras.get("source_index")
+    filtered_vo_extra = jump_export_columns_from_source(original_est, est_source_index, "vo_tum")
+    filtered_vo_extra["matched_index"] = np.arange(len(est_eval.positions), dtype=int)
+
+    return {
+        "input_gt_tum": trajectory_to_tum_dataframe(original_gt, raw_gt_extra),
+        "input_vo_tum": trajectory_to_tum_dataframe(original_est, raw_vo_extra),
+        "filtered_vo_tum": trajectory_to_tum_dataframe(est_eval, filtered_vo_extra),
+        "interpolated_gt_tum": trajectory_to_tum_dataframe(gt_eval, interpolated_gt_extra_columns(gt_eval)),
+        "sim3_gt_tum": sim3_gt_tum,
+        "sim3_vo_tum": sim3_vo_tum,
+    }
+
+
+def report_to_excel(report: dict[str, Any]) -> bytes:
+    """把 report 中的六张轨迹导出 sheet 写成一个 xlsx 工作簿。"""
+    sheets = report.get("trajectory_exports") or {}
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for name, frame in sheets.items():
+            safe_name = re.sub(r"[\[\]:*?/\\]", "_", str(name))[:31] or "sheet"
+            if isinstance(frame, pd.DataFrame):
+                frame.to_excel(writer, sheet_name=safe_name, index=False)
+            else:
+                pd.DataFrame(frame).to_excel(writer, sheet_name=safe_name, index=False)
+    return output.getvalue()
+
+
 def report_to_json(report: dict[str, Any]) -> str:
     """导出严格 JSON 报告，供网页下载和 Pyodide 传回 JavaScript。"""
     return json.dumps(_jsonable_report(report), ensure_ascii=False, indent=2, allow_nan=False)
@@ -2854,7 +3188,7 @@ def _parse_numeric_table(lines: list[str], name: str, fmt: str) -> Trajectory:
         stamps = _normalize_timestamps(data[:, 0])
         positions = data[:, 1:4]
         rotations = quaternion_to_matrix(data[:, 4], data[:, 5], data[:, 6], data[:, 7])
-        return Trajectory(name, stamps, positions, rotations, source_format="tum")
+        return Trajectory(name, stamps, positions, rotations, extras={"raw_numeric_table": data}, source_format="tum")
     if fmt == "kitti":
         # KITTI odometry 文件通常没有时间戳；这里用行号当时间，适合按 index 或固定帧间隔评估。
         if data.shape[1] != 12:
@@ -2863,7 +3197,7 @@ def _parse_numeric_table(lines: list[str], name: str, fmt: str) -> Trajectory:
         rotations = mats[:, :, :3]
         positions = mats[:, :, 3]
         stamps = np.arange(len(positions), dtype=float)
-        return Trajectory(name, stamps, positions, rotations, source_format="kitti")
+        return Trajectory(name, stamps, positions, rotations, extras={"raw_numeric_table": data}, source_format="kitti")
     if fmt == "xyz":
         # XYZ 只支持位置指标；没有姿态时 rotation RPE/姿态 ATE 不会生成。
         if data.shape[1] == 3:
@@ -2874,7 +3208,7 @@ def _parse_numeric_table(lines: list[str], name: str, fmt: str) -> Trajectory:
             positions = data[:, 1:4]
         else:
             raise ValueError(f"{name}: XYZ format needs 3 or 4 columns")
-        return Trajectory(name, stamps, positions, None, source_format="xyz")
+        return Trajectory(name, stamps, positions, None, extras={"raw_numeric_table": data}, source_format="xyz")
     raise ValueError(fmt)
 
 
@@ -2963,6 +3297,7 @@ def _parse_csv(text: str, name: str) -> Trajectory:
         rotations = rotations[valid]
 
     extras: dict[str, np.ndarray] = {}
+    extras["raw_numeric_table"] = numeric.to_numpy(dtype=float)[valid]
     for col in frame.columns:
         key = _normalize_col(col)
         # extras 只收集 runtime/资源字段，不参与轨迹几何计算。

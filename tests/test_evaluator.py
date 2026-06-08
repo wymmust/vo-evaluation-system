@@ -1,7 +1,9 @@
 import json
 import math
+import io
 
 import numpy as np
+import pandas as pd
 
 from vo_eval.evaluator import (
     EvaluationConfig,
@@ -10,6 +12,7 @@ from vo_eval.evaluator import (
     evaluate_trajectories,
     euler_yaw_pitch_roll_to_matrix,
     load_trajectory_from_text,
+    report_to_excel,
     report_to_json,
     yaw_from_rot,
 )
@@ -210,6 +213,75 @@ def test_report_json_replaces_non_finite_values_with_null():
     text = report_to_json({"values": [1.0, math.inf, -math.inf, math.nan, np.float64(np.nan)]})
     parsed = json.loads(text)
     assert parsed == {"values": [1.0, None, None, None, None]}
+
+
+def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
+    gt_text = "\n".join(
+        f"{i * 0.1:.1f} {i:.3f} {np.sin(i):.6f} 1.000 0 0 0 1"
+        for i in range(6)
+    )
+    vo_text = """timestamp,x,y,z,aux,reset_id,tail_a,tail_b,tail_c
+0.0,0.0,0.000000,1.0,9,0,0,0,0
+0.1,1.0,0.841471,1.0,9,0,0,0,0
+0.2,2.0,0.909297,1.0,9,1,0,0,0
+0.3,3.0,0.141120,1.0,9,1,0,0,0
+0.4,4.0,-0.756802,1.0,9,2,0,0,0
+0.5,5.0,-0.958924,1.0,9,2,0,0,0
+"""
+    gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
+    est = load_trajectory_from_text(vo_text, fmt="csv", name="vo")
+    report = evaluate_trajectories(
+        gt,
+        est,
+        EvaluationConfig(segment_lengths_m=(1.0,), max_interpolation_gap_s=0.2),
+    )
+
+    sheets = report["trajectory_exports"]
+    assert list(sheets) == [
+        "input_gt_tum",
+        "input_vo_tum",
+        "filtered_vo_tum",
+        "interpolated_gt_tum",
+        "sim3_gt_tum",
+        "sim3_vo_tum",
+    ]
+    for frame in sheets.values():
+        assert list(frame.columns[:8]) == ["timestamp", "tx", "ty", "tz", "qx", "qy", "qz", "qw"]
+
+    assert sheets["input_vo_tum"]["tum_file"].tolist() == [
+        "vo_tum_01",
+        "vo_tum_01",
+        "vo_tum_02",
+        "vo_tum_02",
+        "vo_tum_03",
+        "vo_tum_03",
+    ]
+    sim3_columns = [
+        "sim3_scale",
+        "sim3_rotation_r00",
+        "sim3_rotation_r01",
+        "sim3_rotation_r02",
+        "sim3_rotation_r10",
+        "sim3_rotation_r11",
+        "sim3_rotation_r12",
+        "sim3_rotation_r20",
+        "sim3_rotation_r21",
+        "sim3_rotation_r22",
+        "sim3_translation_x",
+        "sim3_translation_y",
+        "sim3_translation_z",
+    ]
+    for sheet_name in ["sim3_gt_tum", "sim3_vo_tum"]:
+        for column in sim3_columns:
+            assert column in sheets[sheet_name].columns
+        assert np.isfinite(sheets[sheet_name][sim3_columns].to_numpy(dtype=float)).all()
+
+    workbook = report_to_excel(report)
+    xlsx = pd.ExcelFile(io.BytesIO(workbook))
+    assert xlsx.sheet_names == list(sheets)
+    sim3_vo_from_workbook = pd.read_excel(xlsx, sheet_name="sim3_vo_tum")
+    for column in sim3_columns:
+        assert column in sim3_vo_from_workbook.columns
 
 
 def test_auto_orientation_correction_selects_right_rz180():
