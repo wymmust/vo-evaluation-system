@@ -399,7 +399,7 @@ def load_trajectory_from_text(text: str, fmt: str = "auto", name: str = "traject
     """把文本轨迹读成 Trajectory。
 
     这里是输入格式分发层：auto 会先看是否有注释表头，再按列数识别
-    KITTI/TUM/XYZ/CSV。真正的列解析在 _parse_csv() 和 _parse_numeric_table()。
+    SF/VLOC/KITTI/TUM/XYZ/CSV。真正的列解析在 _parse_sf()、_parse_vloc()、_parse_csv() 和 _parse_numeric_table()。
 
     指标影响：
     - 识别成 KITTI/TUM/CSV 会决定时间戳、姿态和单位如何解析。
@@ -412,8 +412,15 @@ def load_trajectory_from_text(text: str, fmt: str = "auto", name: str = "traject
 
     normalized_fmt = fmt.lower()
     if normalized_fmt == "auto":
-        normalized_fmt = "csv" if _comment_header(text) else _detect_format(lines)
+        if _comment_header(text):
+            normalized_fmt = _detect_commented_format(text)
+        else:
+            normalized_fmt = _detect_plain_header_format(lines) or _detect_format(lines)
 
+    if normalized_fmt == "sf":
+        return _parse_sf(text, name)
+    if normalized_fmt == "vloc":
+        return _parse_vloc(text, name)
     if normalized_fmt == "csv":
         return _parse_csv(text, name)
     if normalized_fmt == "tum":
@@ -551,9 +558,12 @@ def evaluate_trajectories(
         #    来源：error_m 直接对应 Sturm12/Zhang18 的 ATE；
         #    horizontal/vertical 是本系统面向无人机航线偏差和高度安全做的 ATE 分量扩展。
         errors = est_pos_aligned - gt_pos
+        x_error_m = errors[:, 0]
+        y_error_m = errors[:, 1]
+        z_error_m = errors[:, 2]
         pos_error_m = np.linalg.norm(errors, axis=1)
         horizontal_error_m = np.linalg.norm(errors[:, :2], axis=1)
-        vertical_error_signed_m = errors[:, 2]
+        vertical_error_signed_m = z_error_m
         vertical_error_abs_m = np.abs(vertical_error_signed_m)
         local_distance_m = path_distance(gt_pos)
         plot_distance_m = local_distance_m + distance_offset
@@ -561,12 +571,23 @@ def evaluate_trajectories(
         orientation_error_deg = None
         yaw_error_signed_deg = None
         yaw_error_abs_deg = None
+        gt_ypr_deg = None
+        est_ypr_deg = None
+        ypr_error_signed_deg = None
+        ypr_error_abs_deg = None
         if gt_rot is not None and est_rot_aligned is not None:
             # 7. 如果输入含姿态，额外统计 orientation/yaw ATE。
             #    来源：orientation_error_deg 来自 Zhang18/Schubert18 的 SE(3) 姿态误差语境；
             #    yaw_error_deg 是无人机航向分析扩展，不是 5 篇论文的独立排行榜指标。
             orientation_error_deg = np.degrees(rotation_errors(gt_rot, est_rot_aligned))
-            yaw_error_signed_deg = np.degrees(wrap_pi(yaw_from_rot(est_rot_aligned) - yaw_from_rot(gt_rot)))
+            gt_ypr = euler_yaw_pitch_roll_from_matrix(gt_rot)
+            est_ypr = euler_yaw_pitch_roll_from_matrix(est_rot_aligned)
+            ypr_error_signed = wrap_pi(est_ypr - gt_ypr)
+            gt_ypr_deg = np.degrees(gt_ypr)
+            est_ypr_deg = np.degrees(est_ypr)
+            ypr_error_signed_deg = np.degrees(ypr_error_signed)
+            ypr_error_abs_deg = np.abs(ypr_error_signed_deg)
+            yaw_error_signed_deg = ypr_error_signed_deg[:, 0]
             yaw_error_abs_deg = np.abs(yaw_error_signed_deg)
             orientation_error_parts.append(orientation_error_deg)
             yaw_error_signed_parts.append(yaw_error_signed_deg)
@@ -642,6 +663,9 @@ def evaluate_trajectories(
                 "est_x_aligned_m": est_pos_aligned[:, 0],
                 "est_y_aligned_m": est_pos_aligned[:, 1],
                 "est_z_aligned_m": est_pos_aligned[:, 2],
+                "x_error_m": x_error_m,
+                "y_error_m": y_error_m,
+                "z_error_m": z_error_m,
                 "error_m": pos_error_m,
                 "horizontal_error_m": horizontal_error_m,
                 "vertical_error_signed_m": vertical_error_signed_m,
@@ -651,9 +675,19 @@ def evaluate_trajectories(
         )
         if orientation_error_deg is not None:
             frame["orientation_error_deg"] = orientation_error_deg
+            frame["gt_yaw_deg"] = gt_ypr_deg[:, 0]
+            frame["gt_pitch_deg"] = gt_ypr_deg[:, 1]
+            frame["gt_roll_deg"] = gt_ypr_deg[:, 2]
+            frame["est_yaw_aligned_deg"] = est_ypr_deg[:, 0]
+            frame["est_pitch_aligned_deg"] = est_ypr_deg[:, 1]
+            frame["est_roll_aligned_deg"] = est_ypr_deg[:, 2]
             frame["yaw_error_signed_deg"] = yaw_error_signed_deg
             frame["yaw_error_abs_deg"] = yaw_error_abs_deg
             frame["yaw_error_deg"] = yaw_error_abs_deg
+            frame["pitch_error_signed_deg"] = ypr_error_signed_deg[:, 1]
+            frame["pitch_error_abs_deg"] = ypr_error_abs_deg[:, 1]
+            frame["roll_error_signed_deg"] = ypr_error_signed_deg[:, 2]
+            frame["roll_error_abs_deg"] = ypr_error_abs_deg[:, 2]
 
         per_pose_frames.append(frame)
         pos_error_parts.append(pos_error_m)
@@ -2763,6 +2797,20 @@ def yaw_from_rot(rotations: np.ndarray) -> np.ndarray:
     return np.arctan2(rotations[:, 1, 0], rotations[:, 0, 0])
 
 
+def euler_yaw_pitch_roll_from_matrix(rotations: np.ndarray) -> np.ndarray:
+    """从旋转矩阵提取 ZYX yaw/pitch/roll，输出弧度。
+
+    这和 euler_yaw_pitch_roll_to_matrix() 使用同一约定：
+    R = Rz(yaw) * Ry(pitch) * Rx(roll)。
+    输出列顺序固定为 yaw, pitch, roll，用于 per_pose 里的 6 张姿态时间序列图和 3 张姿态误差图。
+    """
+    rot = np.asarray(rotations, dtype=float)
+    yaw = np.arctan2(rot[:, 1, 0], rot[:, 0, 0])
+    pitch = np.arcsin(np.clip(-rot[:, 2, 0], -1.0, 1.0))
+    roll = np.arctan2(rot[:, 2, 1], rot[:, 2, 2])
+    return np.column_stack([yaw, pitch, roll])
+
+
 def wrap_pi(values: np.ndarray) -> np.ndarray:
     """把角度差包到 [-pi, pi)，避免 359 度和 1 度被看成差 358 度。"""
     return (values + np.pi) % (2.0 * np.pi) - np.pi
@@ -3442,8 +3490,215 @@ def _parse_numeric_table(lines: list[str], name: str, fmt: str) -> Trajectory:
             positions = data[:, 1:4]
         else:
             raise ValueError(f"{name}: XYZ format needs 3 or 4 columns")
-        return Trajectory(name, stamps, positions, None, extras={"raw_numeric_table": data}, source_format="xyz")
+    return Trajectory(name, stamps, positions, None, extras={"raw_numeric_table": data}, source_format="xyz")
     raise ValueError(fmt)
+
+
+SF_EXTRA_CANONICAL = {
+    "status": "status",
+    "flightmode": "flight_mode",
+    "vx": "vx",
+    "vy": "vy",
+    "vz": "vz",
+    "resetcount1": "reset_count1",
+    "resetcount2": "reset_count2",
+    "resetcount3": "reset_count3",
+    "lati": "lati",
+    "longi": "longi",
+    "alti": "alti",
+    "altimsl": "alti_msl",
+    "height": "height",
+    "numinliers": "num_inliers",
+    "iskeyframe": "is_keyframe",
+    "framecost": "frame_cost",
+    "resetcount": "reset_count",
+    "depthmean": "depth_mean",
+    "depthmin": "depth_min",
+    "depthmax": "depth_max",
+}
+
+
+VLOC_EXTRA_CANONICAL = {
+    "status": "status",
+    "numinliers": "num_inliers",
+    "resetcount": "reset_count",
+    "latitude": "latitude",
+    "longitude": "longitude",
+    "altitude": "altitude",
+}
+
+
+def _parse_sf(text: str, name: str) -> Trajectory:
+    """解析 SF 项目格式。
+
+    支持两种表头：
+    - GT: #ts1 ts2 status flight_mode x y z yaw pitch roll vx vy vz reset_count1 ...
+    - VO: # ts num_inliers tx ty tz yaw pitch roll(degree) is_keyframe ...
+
+    解析规则：
+    - GT 位置固定读取 x/y/z；VO 位置固定读取 tx/ty/tz。
+    - yaw/pitch/roll 固定按角度制读取，再转成内部统一的弧度旋转矩阵。
+    - GT 同时有 ts1/ts2 时优先把 ts2 当作与 VO 对齐的秒级时间戳；如果 ts2 不像独立时间轴，
+      则退回 ts1 + ts2 的秒/纳秒组合。
+    - reset、速度、深度等不参与几何误差，但会放入 extras 供导出和诊断使用。
+    """
+    frame = _read_dataframe(text)
+    if frame.empty:
+        raise ValueError(f"{name}: empty SF trajectory")
+    normalized = {_normalize_col(col): col for col in frame.columns}
+    numeric = frame.apply(pd.to_numeric, errors="coerce")
+
+    sf_kind = _detect_sf_kind_from_columns(normalized)
+    if sf_kind == "gt":
+        stamps = _sf_gt_stamps(numeric, normalized)
+        position_cols = [_required_col(normalized, col, name, "SF GT") for col in ["x", "y", "z"]]
+        source_format = "sf_gt"
+    elif sf_kind == "vo":
+        ts_col = _required_col(normalized, "ts", name, "SF VO")
+        stamps = _normalize_timestamps(numeric[ts_col].to_numpy(dtype=float), _timestamp_unit_hint(text, str(ts_col)))
+        position_cols = [_required_col(normalized, col, name, "SF VO") for col in ["tx", "ty", "tz"]]
+        source_format = "sf_vo"
+    else:
+        raise ValueError(f"{name}: SF format needs either GT or VO SF header columns")
+
+    positions = numeric[position_cols].to_numpy(dtype=float)
+    yaw_col = _required_col(normalized, "yaw", name, "SF")
+    pitch_col = _required_col(normalized, "pitch", name, "SF")
+    roll_col = _required_col(normalized, "roll", name, "SF")
+    angles = numeric[[yaw_col, pitch_col, roll_col]].to_numpy(dtype=float)
+    unit = _angle_unit_for_columns([yaw_col, pitch_col, roll_col], frame.attrs.get("angle_unit"), angles)
+    if unit == "deg":
+        angles = np.deg2rad(angles)
+    rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
+
+    valid = np.isfinite(stamps) & np.isfinite(positions).all(axis=1)
+    valid &= np.isfinite(rotations.reshape(len(rotations), -1)).all(axis=1)
+    stamps = stamps[valid]
+    positions = positions[valid]
+    rotations = rotations[valid]
+
+    extras: dict[str, np.ndarray] = {"raw_numeric_table": numeric.to_numpy(dtype=float)[valid]}
+    for norm_name, col in normalized.items():
+        canonical = SF_EXTRA_CANONICAL.get(norm_name)
+        if canonical is not None:
+            extras[canonical] = numeric[col].to_numpy(dtype=float)[valid]
+
+    return Trajectory(name, stamps, positions, rotations, extras=extras, source_format=source_format)
+
+
+def _parse_vloc(text: str, name: str) -> Trajectory:
+    """解析 VLOC VO 输出格式。
+
+    表头：
+    ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
+
+    解析规则：
+    - ts 是秒级或可由 _normalize_timestamps() 推断的时间戳。
+    - tx/ty/tz 是 VO 位置。
+    - yaw/pitch/roll 按角度制读取，再转成内部统一的旋转矩阵。
+    - status、num_inliers、reset_count、latitude/longitude/altitude 存入 extras 供导出和诊断。
+    """
+    frame = _read_dataframe(text)
+    if frame.empty:
+        raise ValueError(f"{name}: empty VLOC trajectory")
+    normalized = {_normalize_col(col): col for col in frame.columns}
+    if not _is_vloc_columns(normalized):
+        raise ValueError(f"{name}: VLOC format needs ts/status/num_inliers/reset_count/tx/ty/tz/yaw/pitch/roll/latitude/longitude/altitude")
+    numeric = frame.apply(pd.to_numeric, errors="coerce")
+
+    ts_col = _required_col(normalized, "ts", name, "VLOC")
+    stamps = _normalize_timestamps(numeric[ts_col].to_numpy(dtype=float), _timestamp_unit_hint(text, str(ts_col)))
+    position_cols = [_required_col(normalized, col, name, "VLOC") for col in ["tx", "ty", "tz"]]
+    positions = numeric[position_cols].to_numpy(dtype=float)
+
+    yaw_col = _required_col(normalized, "yaw", name, "VLOC")
+    pitch_col = _required_col(normalized, "pitch", name, "VLOC")
+    roll_col = _required_col(normalized, "roll", name, "VLOC")
+    angles = numeric[[yaw_col, pitch_col, roll_col]].to_numpy(dtype=float)
+    unit = _angle_unit_for_columns([yaw_col, pitch_col, roll_col], frame.attrs.get("angle_unit"), angles)
+    if unit == "deg":
+        angles = np.deg2rad(angles)
+    rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
+
+    valid = np.isfinite(stamps) & np.isfinite(positions).all(axis=1)
+    valid &= np.isfinite(rotations.reshape(len(rotations), -1)).all(axis=1)
+    stamps = stamps[valid]
+    positions = positions[valid]
+    rotations = rotations[valid]
+
+    extras: dict[str, np.ndarray] = {"raw_numeric_table": numeric.to_numpy(dtype=float)[valid]}
+    for norm_name, col in normalized.items():
+        canonical = VLOC_EXTRA_CANONICAL.get(norm_name)
+        if canonical is not None:
+            extras[canonical] = numeric[col].to_numpy(dtype=float)[valid]
+
+    return Trajectory(name, stamps, positions, rotations, extras=extras, source_format="vloc")
+
+
+def _detect_sf_kind_from_columns(normalized: dict[str, Any]) -> str | None:
+    """根据归一化列名判断 SF 表头属于 GT 还是 VO。"""
+    keys = set(normalized)
+    has_gt_pose = {"ts1", "ts2", "x", "y", "z", "yaw", "pitch", "roll"}.issubset(keys)
+    has_gt_marker = bool({"flightmode", "resetcount1", "lati", "longi"} & keys)
+    if has_gt_pose and has_gt_marker:
+        return "gt"
+    has_vo_pose = {"ts", "tx", "ty", "tz", "yaw", "pitch", "roll"}.issubset(keys)
+    has_vo_marker = bool({"iskeyframe", "framecost", "depthmean", "depthmin", "depthmax"} & keys)
+    if has_vo_pose and has_vo_marker:
+        return "vo"
+    return None
+
+
+def _is_vloc_columns(normalized: dict[str, Any]) -> bool:
+    """判断表头是否满足 VLOC VO 输出格式。"""
+    keys = set(normalized)
+    return {
+        "ts",
+        "status",
+        "numinliers",
+        "resetcount",
+        "tx",
+        "ty",
+        "tz",
+        "yaw",
+        "pitch",
+        "roll",
+        "latitude",
+        "longitude",
+        "altitude",
+    }.issubset(keys)
+
+
+def _sf_gt_stamps(numeric: pd.DataFrame, normalized: dict[str, Any]) -> np.ndarray:
+    """读取 SF GT 时间戳。
+
+    ts2 在用户数据中通常是与 VO 对齐的秒级时间轴，因此优先使用；
+    如果 ts2 像纳秒/微秒余量，则使用 ts1 + ts2 组合，兼容 sec/nsec 拆分式日志。
+    """
+    ts1_col = _required_col(normalized, "ts1", "SF GT", "SF GT")
+    ts2_col = _required_col(normalized, "ts2", "SF GT", "SF GT")
+    ts1 = numeric[ts1_col].to_numpy(dtype=float)
+    ts2 = numeric[ts2_col].to_numpy(dtype=float)
+
+    finite_ts2 = ts2[np.isfinite(ts2)]
+    if len(finite_ts2):
+        ts2_duration = float(np.nanmax(finite_ts2) - np.nanmin(finite_ts2))
+        ts2_has_fraction = bool(np.any(np.abs(finite_ts2 - np.round(finite_ts2)) > 1e-9))
+        ts2_median_abs = float(np.nanmedian(np.abs(finite_ts2)))
+        if ts2_duration > 0 and (ts2_has_fraction or ts2_median_abs < 1e6):
+            return _normalize_timestamps(ts2, "s")
+
+    ts1_seconds = _normalize_timestamps(ts1)
+    ts2_seconds = _normalize_timestamps(ts2)
+    return ts1_seconds + ts2_seconds
+
+
+def _required_col(normalized: dict[str, Any], name: str, trajectory_name: str, fmt_name: str) -> Any:
+    """按归一化列名取必需列，缺失时给出清晰错误。"""
+    col = _pick(normalized, [name])
+    if col is None:
+        raise ValueError(f"{trajectory_name}: {fmt_name} format needs column {name}")
+    return col
 
 
 def _parse_csv(text: str, name: str) -> Trajectory:
@@ -3588,6 +3843,39 @@ def _read_dataframe(text: str) -> pd.DataFrame:
         except Exception:
             continue
     raise ValueError("Could not parse CSV-like trajectory")
+
+
+def _detect_commented_format(text: str) -> str:
+    """识别带 # 注释表头的文本应走 SF、VLOC 还是通用 CSV。
+
+    SF 是项目内固定表头；一旦检测到 flight_mode/reset_count1 或 num_inliers/depth_* 等标记，
+    就走 _parse_sf()，让 ts1/ts2 和角度单位按 SF 规则处理。
+    """
+    header = _comment_header(text)
+    if not header:
+        return "csv"
+    normalized = {_normalize_col(token): token for token in header}
+    if _is_vloc_columns(normalized):
+        return "vloc"
+    return "sf" if _detect_sf_kind_from_columns(normalized) is not None else "csv"
+
+
+def _detect_plain_header_format(lines: list[str]) -> str | None:
+    """识别普通第一行表头的项目格式。
+
+    例如 VLOC 文件的第一行不是注释，而是：
+    ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
+    """
+    if not lines:
+        return None
+    first = lines[0]
+    if not re.search(r"[A-Za-z_]", first):
+        return None
+    tokens = _comment_header_tokens(first)
+    normalized = {_normalize_col(token): token for token in tokens}
+    if _is_vloc_columns(normalized):
+        return "vloc"
+    return None
 
 
 def _comment_header(text: str) -> list[str] | None:

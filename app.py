@@ -23,12 +23,18 @@ import streamlit as st
 import vo_eval.evaluator as vo_evaluator
 
 
-FORMAT_OPTIONS = {
+GT_FORMAT_OPTIONS = {
     "自动识别": "auto",
+    "SF: gt(ts1 ts2 x y z ypr) / vo(ts tx ty tz ypr)": "sf",
     "TUM: timestamp tx ty tz qx qy qz qw": "tum",
     "KITTI: 3x4 pose matrix": "kitti",
     "CSV/TSV 表格": "csv",
     "XYZ: [t] x y z": "xyz",
+}
+
+EST_FORMAT_OPTIONS = {
+    **GT_FORMAT_OPTIONS,
+    "VLOC: ts status inliers reset tx ty tz ypr lat lon alt": "vloc",
 }
 
 ALIGNMENT_OPTIONS = {
@@ -85,8 +91,8 @@ def main() -> None:
         # rpe_delta_value/unit -> RPE；segment_* -> 长航程子轨迹误差；
         # divergence_* -> 发散检测阈值。
         st.header("输入设置")
-        gt_format_label = st.selectbox("Ground truth 格式", list(FORMAT_OPTIONS), index=0)
-        est_format_label = st.selectbox("VO 输出格式", list(FORMAT_OPTIONS), index=0)
+        gt_format_label = st.selectbox("Ground truth 格式", list(GT_FORMAT_OPTIONS), index=0)
+        est_format_label = st.selectbox("VO 输出格式", list(EST_FORMAT_OPTIONS), index=0)
         alignment_label = st.selectbox("轨迹对齐", list(ALIGNMENT_OPTIONS), index=1)
         orientation_label = st.selectbox("VO 姿态修正", list(ORIENTATION_CORRECTION_OPTIONS), index=0)
         association_label = st.selectbox("时间同步方式", list(ASSOCIATION_OPTIONS), index=0)
@@ -158,8 +164,8 @@ def main() -> None:
             divergence_abs_m=float(divergence_abs),
             divergence_rel_percent=float(divergence_rel),
         )
-        gt = load_uploaded(gt_file, FORMAT_OPTIONS[gt_format_label], evaluator)
-        est = load_uploaded(est_file, FORMAT_OPTIONS[est_format_label], evaluator)
+        gt = load_uploaded(gt_file, GT_FORMAT_OPTIONS[gt_format_label], evaluator)
+        est = load_uploaded(est_file, EST_FORMAT_OPTIONS[est_format_label], evaluator)
         report = evaluator.evaluate_trajectories(gt, est, cfg)
     except Exception as exc:
         st.error(f"评估失败：{exc}")
@@ -422,9 +428,15 @@ def show_visuals(report: dict[str, Any]) -> None:
     - 高度与垂直误差：per_pose.gt_z_m / est_z_aligned_m / vertical_error_m。
     - 按距离子轨迹误差：segment_errors。
     - 速度分箱误差：speed_bins。
+    - x/y/z/yaw/pitch/roll 随时间变化：用于逐轴检查 GT 和 VO 是否同趋势。
+    - x/y/z/yaw/pitch/roll 误差随时间变化：用于定位某个时间段的单轴异常。
+    - RPE 平移/旋转误差随时间变化：使用当前 RPE 帧数或距离配置。
     """
     per_pose = report["per_pose"]
     segment_records = report["segment_records"]
+    trajectory_exports = report.get("trajectory_exports") or {}
+    sim3_vo_tum = pd.DataFrame(trajectory_exports.get("sim3_vo_tum", pd.DataFrame()))
+    rpe_per_frame = pd.DataFrame(trajectory_exports.get("rpe_per_frame", pd.DataFrame()))
 
     fig3d = make_trajectory_3d(per_pose)
     fig_xy = make_trajectory_xy(per_pose)
@@ -432,6 +444,27 @@ def show_visuals(report: dict[str, Any]) -> None:
     fig_alt = make_altitude_distance(per_pose)
     fig_segment = make_segment_error(report["segment_errors"])
     fig_speed = make_speed_error(report["speed_bins"])
+    fig_sim3_scale = make_sim3_scale_time_series(sim3_vo_tum)
+    time_series_figs = [
+        make_gt_vo_time_series(per_pose, "X 随时间变化", "gt_x_m", "est_x_aligned_m", "m"),
+        make_gt_vo_time_series(per_pose, "Y 随时间变化", "gt_y_m", "est_y_aligned_m", "m"),
+        make_gt_vo_time_series(per_pose, "Z 随时间变化", "gt_z_m", "est_z_aligned_m", "m"),
+        make_gt_vo_time_series(per_pose, "Yaw 随时间变化", "gt_yaw_deg", "est_yaw_aligned_deg", "deg", unwrap_angles=True),
+        make_gt_vo_time_series(per_pose, "Pitch 随时间变化", "gt_pitch_deg", "est_pitch_aligned_deg", "deg", unwrap_angles=True),
+        make_gt_vo_time_series(per_pose, "Roll 随时间变化", "gt_roll_deg", "est_roll_aligned_deg", "deg", unwrap_angles=True),
+    ]
+    error_time_figs = [
+        make_error_time_series(per_pose, "X 误差随时间变化", "x_error_m", "m"),
+        make_error_time_series(per_pose, "Y 误差随时间变化", "y_error_m", "m"),
+        make_error_time_series(per_pose, "Z 误差随时间变化", "z_error_m", "m"),
+        make_error_time_series(per_pose, "Yaw 误差随时间变化", "yaw_error_signed_deg", "deg", unwrap_angles=True),
+        make_error_time_series(per_pose, "Pitch 误差随时间变化", "pitch_error_signed_deg", "deg", unwrap_angles=True),
+        make_error_time_series(per_pose, "Roll 误差随时间变化", "roll_error_signed_deg", "deg", unwrap_angles=True),
+    ]
+    rpe_time_figs = [
+        make_rpe_time_series(rpe_per_frame, "RPE 平移误差随时间变化", "rpe_translation_m", "m"),
+        make_rpe_time_series(rpe_per_frame, "RPE 旋转误差随时间变化", "rpe_rotation_deg", "deg"),
+    ]
 
     st.subheader("可视化")
     top_left, top_right = st.columns(2)
@@ -446,11 +479,23 @@ def show_visuals(report: dict[str, Any]) -> None:
     low_left.plotly_chart(fig_segment, use_container_width=True)
     low_right.plotly_chart(fig_speed, use_container_width=True)
 
+    sim3_left, _ = st.columns(2)
+    sim3_left.plotly_chart(fig_sim3_scale, use_container_width=True)
+
+    st.markdown("#### GT / VO 随时间变化")
+    render_figure_grid(time_series_figs)
+
+    st.markdown("#### 误差随时间变化")
+    render_figure_grid(error_time_figs)
+
+    st.markdown("#### RPE 随时间变化")
+    render_figure_grid(rpe_time_figs)
+
     if not segment_records.empty:
         with st.expander("按距离子轨迹原始记录"):
             st.dataframe(segment_records, use_container_width=True, hide_index=True)
 
-    html = build_html_report(report, [fig3d, fig_xy, fig_error, fig_alt, fig_segment, fig_speed])
+    html = build_html_report(report, [fig3d, fig_xy, fig_error, fig_alt, fig_segment, fig_speed, fig_sim3_scale, *time_series_figs, *error_time_figs, *rpe_time_figs])
     st.download_button("下载 HTML 可视化报告", html, file_name="vo_evaluation_report.html", mime="text/html")
 
 
@@ -596,6 +641,115 @@ def make_speed_error(speed_bins: list[dict[str, Any]]) -> go.Figure:
         fig.add_trace(go.Bar(x=labels, y=p95, name="p95 %"))
     fig.update_layout(title="速度分箱误差", xaxis_title="speed m/s", yaxis_title="translation error %", barmode="group", height=360)
     return fig
+
+
+def make_sim3_scale_time_series(df: pd.DataFrame) -> go.Figure:
+    """Sim3 尺度随时间戳变化图。
+
+    数据来自 trajectory_exports.sim3_vo_tum.sim3_scale。这个表保存的是每帧应用
+    Sim3 后的导出轨迹，同时重复写入该连续段使用的 Sim3 scale。图上如果 scale
+    随不同连续段明显变化，说明 VO 的原始尺度可能不稳定。
+    """
+    fig = go.Figure()
+    if {"timestamp", "sim3_scale"}.issubset(df.columns):
+        clean = df.copy()
+        clean["timestamp"] = pd.to_numeric(clean["timestamp"], errors="coerce")
+        clean["sim3_scale"] = pd.to_numeric(clean["sim3_scale"], errors="coerce")
+        clean = clean.dropna(subset=["timestamp", "sim3_scale"])
+        if not clean.empty:
+            timestamps, scales = segmented_values(clean, ["timestamp", "sim3_scale"])
+            fig.add_trace(go.Scatter(x=timestamps, y=scales, mode="lines+markers", name="sim3_scale"))
+    fig.update_layout(title="Sim3 尺度随时间戳变化", xaxis_title="timestamp s", yaxis_title="Sim3 scale", height=360)
+    return fig
+
+
+def make_gt_vo_time_series(
+    df: pd.DataFrame,
+    title: str,
+    gt_col: str,
+    est_col: str,
+    unit: str,
+    unwrap_angles: bool = False,
+) -> go.Figure:
+    """GT 和 VO 对齐后某个 x/y/z/yaw/pitch/roll 分量随时间变化。"""
+    fig = go.Figure()
+    if {"timestamp", gt_col, est_col}.issubset(df.columns):
+        t_gt, gt_values = segmented_values(df, ["timestamp", gt_col])
+        t_est, est_values = segmented_values(df, ["timestamp", est_col])
+        if unwrap_angles:
+            gt_values = unwrap_degrees(gt_values)
+            est_values = unwrap_degrees(est_values)
+        fig.add_trace(go.Scatter(x=t_gt, y=gt_values, mode="lines", name="Ground truth"))
+        fig.add_trace(go.Scatter(x=t_est, y=est_values, mode="lines", name="VO aligned"))
+    fig.update_layout(title=title, xaxis_title="timestamp s", yaxis_title=unit, height=360)
+    return fig
+
+
+def unwrap_degrees(values: list[float | None]) -> list[float | None]:
+    """把角度显示值从 [-180, 180] 展开成连续曲线，避免图上出现边界竖线。"""
+    out: list[float | None] = []
+    previous_raw: float | None = None
+    offset = 0.0
+    for value in values:
+        if value is None:
+            out.append(None)
+            previous_raw = None
+            offset = 0.0
+            continue
+        raw = float(value)
+        if not math.isfinite(raw):
+            out.append(value)
+            previous_raw = None
+            offset = 0.0
+            continue
+        if previous_raw is not None:
+            delta = raw - previous_raw
+            if delta > 180.0:
+                offset -= 360.0
+            elif delta < -180.0:
+                offset += 360.0
+        out.append(raw + offset)
+        previous_raw = raw
+    return out
+
+
+def make_error_time_series(
+    df: pd.DataFrame,
+    title: str,
+    error_col: str,
+    unit: str,
+    unwrap_angles: bool = False,
+) -> go.Figure:
+    """某个 x/y/z/yaw/pitch/roll 误差随时间变化。"""
+    fig = go.Figure()
+    if {"timestamp", error_col}.issubset(df.columns):
+        timestamps, values = segmented_values(df, ["timestamp", error_col])
+        if unwrap_angles:
+            values = unwrap_degrees(values)
+        fig.add_trace(go.Scatter(x=timestamps, y=values, mode="lines", name=error_col))
+    fig.update_layout(title=title, xaxis_title="timestamp s", yaxis_title=f"error {unit}", height=360)
+    return fig
+
+
+def make_rpe_time_series(df: pd.DataFrame, title: str, error_col: str, unit: str) -> go.Figure:
+    """当前 RPE 帧数/距离配置下，每个起点时间戳对应的 RPE 误差。"""
+    fig = go.Figure()
+    if {"timestamp", error_col, "rpe_available"}.issubset(df.columns):
+        clean = df[df["rpe_available"].astype(bool)].copy()
+        clean = clean[pd.to_numeric(clean[error_col], errors="coerce").notna()]
+        if not clean.empty:
+            timestamps, values = segmented_values(clean, ["timestamp", error_col])
+            fig.add_trace(go.Scatter(x=timestamps, y=values, mode="lines+markers", name=error_col))
+    fig.update_layout(title=title, xaxis_title="timestamp s", yaxis_title=unit, height=360)
+    return fig
+
+
+def render_figure_grid(figures: list[go.Figure]) -> None:
+    """两列展示一组 Plotly 图。"""
+    for start in range(0, len(figures), 2):
+        cols = st.columns(2)
+        for col, fig in zip(cols, figures[start : start + 2]):
+            col.plotly_chart(fig, use_container_width=True)
 
 
 def metric(col: Any, label: str, value: Any, unit: str) -> None:

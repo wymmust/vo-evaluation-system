@@ -18,6 +18,66 @@ from vo_eval.evaluator import (
 )
 
 
+def test_streamlit_angle_time_series_unwraps_180_degree_boundary():
+    from app import make_gt_vo_time_series
+
+    frame = pd.DataFrame(
+        {
+            "timestamp": [0, 1, 2],
+            "segment_id": [0, 0, 0],
+            "gt_roll_deg": [0, 1, 2],
+            "est_roll_aligned_deg": [179, -179, 178],
+        }
+    )
+    fig = make_gt_vo_time_series(
+        frame,
+        "Roll",
+        "gt_roll_deg",
+        "est_roll_aligned_deg",
+        "deg",
+        unwrap_angles=True,
+    )
+
+    assert list(fig.data[1].y) == [179, 181, 178, None]
+
+
+def test_streamlit_angle_error_time_series_unwraps_180_degree_boundary():
+    from app import make_error_time_series
+
+    frame = pd.DataFrame(
+        {
+            "timestamp": [0, 1, 2],
+            "segment_id": [0, 0, 0],
+            "roll_error_signed_deg": [179, -179, 178],
+        }
+    )
+    fig = make_error_time_series(
+        frame,
+        "Roll error",
+        "roll_error_signed_deg",
+        "deg",
+        unwrap_angles=True,
+    )
+
+    assert list(fig.data[0].y) == [179, 181, 178, None]
+
+
+def test_streamlit_sim3_scale_time_series_uses_exported_scale_by_timestamp():
+    from app import make_sim3_scale_time_series
+
+    frame = pd.DataFrame(
+        {
+            "timestamp": [10, 11, 20],
+            "segment_id": [0, 0, 1],
+            "sim3_scale": [2.0, 2.0, 3.0],
+        }
+    )
+    fig = make_sim3_scale_time_series(frame)
+
+    assert list(fig.data[0].x) == [10, 11, None, 20, None]
+    assert list(fig.data[0].y) == [2.0, 2.0, None, 3.0, None]
+
+
 def make_tum(rows=120):
     lines = []
     for i in range(rows):
@@ -71,6 +131,62 @@ def test_commented_header_ypr_units_are_detected():
     deg_traj = load_trajectory_from_text(deg_text, fmt="auto", name="deg")
     assert abs(yaw_from_rot(rad_traj.rotations)[0] - np.pi / 2) < 1e-9
     assert abs(yaw_from_rot(deg_traj.rotations)[0] - np.pi / 2) < 1e-9
+
+
+def test_sf_gt_format_uses_ts2_position_ypr_and_extra_fields():
+    text = """#ts1 ts2 status flight_mode x y z yaw pitch roll vx vy vz reset_count1 reset_count2 reset_count3 lati longi alti alti_msl height
+1000000000 1882.60 1 3 1 2 3 90 2 -1 0.1 0.2 0.3 0 1 2 31.1 121.2 50 51 5
+1005000000 1882.65 1 3 2 3 4 91 3 -2 0.2 0.3 0.4 0 1 2 31.1 121.2 51 52 6
+"""
+    traj = load_trajectory_from_text(text, fmt="sf", name="sf_gt")
+
+    assert traj.source_format == "sf_gt"
+    assert np.allclose(traj.stamps, [1882.60, 1882.65])
+    assert np.allclose(traj.positions[0], [1, 2, 3])
+    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
+    for key in ["status", "flight_mode", "vx", "vy", "vz", "reset_count1", "lati", "longi", "height"]:
+        assert key in traj.extras
+
+
+def test_sf_gt_format_auto_detects_radian_ypr_without_degree_hint():
+    text = """#ts1 ts2 status flight_mode x y z yaw pitch roll vx vy vz reset_count1 reset_count2 reset_count3 lati longi alti alti_msl height
+1000000000 1882.60 1 3 1 2 3 1.57079632679 0 0 0.1 0.2 0.3 0 1 2 31.1 121.2 50 51 5
+1005000000 1882.65 1 3 2 3 4 1.57079632679 0 0 0.2 0.3 0.4 0 1 2 31.1 121.2 51 52 6
+"""
+    traj = load_trajectory_from_text(text, fmt="sf", name="sf_gt_rad")
+
+    assert traj.source_format == "sf_gt"
+    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
+
+
+def test_sf_vo_format_uses_ts_txtyz_ypr_and_reset_fields_in_auto_mode():
+    text = """# ts num_inliers tx ty tz yaw pitch roll(degree) is_keyframe frame_cost reset_count depth_mean depth_min depth_max
+1882.60 42 1 2 3 90 2 -1 1 12.5 0 4.0 1.0 8.0
+1882.65 43 2 3 4 91 3 -2 0 13.5 1 4.2 1.1 8.1
+"""
+    traj = load_trajectory_from_text(text, fmt="auto", name="sf_vo")
+
+    assert traj.source_format == "sf_vo"
+    assert np.allclose(traj.stamps, [1882.60, 1882.65])
+    assert np.allclose(traj.positions[1], [2, 3, 4])
+    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
+    for key in ["num_inliers", "is_keyframe", "frame_cost", "reset_count", "depth_mean", "depth_min", "depth_max"]:
+        assert key in traj.extras
+
+
+def test_vloc_vo_format_uses_plain_header_txtyz_ypr_and_gps_fields_in_auto_mode():
+    text = """ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
+1882.60 1 42 0 1 2 3 90 2 -1 31.1 121.2 50.5
+1882.65 1 43 1 2 3 4 91 3 -2 31.2 121.3 50.8
+"""
+    traj = load_trajectory_from_text(text, fmt="auto", name="vloc_vo")
+
+    assert traj.source_format == "vloc"
+    assert np.allclose(traj.stamps, [1882.60, 1882.65])
+    assert np.allclose(traj.positions[1], [2, 3, 4])
+    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
+    for key in ["status", "num_inliers", "reset_count", "latitude", "longitude", "altitude"]:
+        assert key in traj.extras
 
 
 def test_euroc_commented_header_uses_seconds_and_qw_order():
@@ -407,3 +523,49 @@ def test_auto_orientation_correction_selects_right_rz180():
     assert report["orientation_correction"]["selected"] == "rz180_right"
     assert report["ate_orientation_deg"]["rmse"] < 1e-9
     assert report["rpe_frame_delta"]["rotation_deg"]["rmse"] < 1e-6
+
+
+def test_per_pose_contains_position_and_ypr_series_for_visualization():
+    stamps = np.arange(5, dtype=float) * 0.1
+    positions = np.column_stack([stamps, 2.0 * stamps, 3.0 * stamps])
+    gt_rot = euler_yaw_pitch_roll_to_matrix(
+        0.2 * stamps,
+        0.1 * stamps,
+        -0.05 * stamps,
+    )
+    est_rot = euler_yaw_pitch_roll_to_matrix(
+        0.2 * stamps + 0.01,
+        0.1 * stamps - 0.02,
+        -0.05 * stamps + 0.03,
+    )
+    est_positions = positions + np.array([1.0, -2.0, 3.0])
+    gt = Trajectory("gt", stamps, positions, gt_rot)
+    est = Trajectory("est", stamps, est_positions, est_rot)
+
+    report = evaluate_trajectories(
+        gt,
+        est,
+        EvaluationConfig(alignment="none", segment_lengths_m=(0.1,), max_interpolation_gap_s=0.2),
+    )
+    per_pose = report["per_pose"]
+
+    expected_columns = {
+        "x_error_m",
+        "y_error_m",
+        "z_error_m",
+        "gt_yaw_deg",
+        "gt_pitch_deg",
+        "gt_roll_deg",
+        "est_yaw_aligned_deg",
+        "est_pitch_aligned_deg",
+        "est_roll_aligned_deg",
+        "pitch_error_signed_deg",
+        "roll_error_signed_deg",
+    }
+    assert expected_columns.issubset(per_pose.columns)
+    assert np.allclose(per_pose["x_error_m"].to_numpy(), 1.0)
+    assert np.allclose(per_pose["y_error_m"].to_numpy(), -2.0)
+    assert np.allclose(per_pose["z_error_m"].to_numpy(), 3.0)
+    assert np.allclose(per_pose["yaw_error_signed_deg"].to_numpy(), np.degrees(0.01), atol=1e-9)
+    assert np.allclose(per_pose["pitch_error_signed_deg"].to_numpy(), np.degrees(-0.02), atol=1e-9)
+    assert np.allclose(per_pose["roll_error_signed_deg"].to_numpy(), np.degrees(0.03), atol=1e-9)
