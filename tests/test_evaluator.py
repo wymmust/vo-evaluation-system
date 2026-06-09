@@ -113,6 +113,87 @@ def test_gt_is_interpolated_to_vo_timestamps_by_default():
     assert report["ate_position_m"]["rmse"] < 1e-12
 
 
+def test_rpe_frame_mode_uses_configured_frame_delta_in_per_frame_sheet():
+    gt = load_trajectory_from_text(make_tum(rows=8), fmt="tum", name="gt")
+    est = load_trajectory_from_text(make_tum(rows=8), fmt="tum", name="est")
+    report = evaluate_trajectories(
+        gt,
+        est,
+        EvaluationConfig(
+            alignment="none",
+            rpe_delta_value=3,
+            rpe_delta_unit="frames",
+            segment_lengths_m=(1.0,),
+            max_interpolation_gap_s=0.3,
+        ),
+    )
+
+    rpe = report["rpe_frame_delta"]
+    assert rpe["delta_unit"] == "frames"
+    assert rpe["delta_value"] == 3
+    assert rpe["delta_frames"] == 3
+    assert rpe["count"] == 5
+
+    sheet = report["trajectory_exports"]["rpe_per_frame"]
+    assert sheet["rpe_delta_unit"].tolist() == ["frames"] * len(sheet)
+    assert sheet["rpe_end_match_index"].tolist()[:2] == [3, 4]
+    assert sheet["rpe_available"].tolist() == [True, True, True, True, True, False, False, False]
+
+
+def test_rpe_distance_mode_uses_gt_distance_window_and_best_error_candidate():
+    stamps = np.arange(6, dtype=float)
+    gt_pos = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [96.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0],
+            [104.0, 0.0, 0.0],
+            [196.0, 0.0, 0.0],
+            [205.0, 0.0, 0.0],
+        ]
+    )
+    est_pos = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [106.0, 0.0, 0.0],
+            [105.0, 0.0, 0.0],
+            [105.0, 0.0, 0.0],
+            [195.0, 0.0, 0.0],
+            [205.0, 0.0, 0.0],
+        ]
+    )
+    gt = Trajectory("gt", stamps, gt_pos)
+    est = Trajectory("est", stamps, est_pos)
+
+    report = evaluate_trajectories(
+        gt,
+        est,
+        EvaluationConfig(
+            alignment="none",
+            rpe_delta_value=100.0,
+            rpe_delta_unit="meters",
+            rpe_distance_tolerance_ratio=0.05,
+            segment_lengths_m=(10.0,),
+            discontinuity_step_m=1000.0,
+        ),
+    )
+
+    rpe = report["rpe_frame_delta"]
+    assert rpe["delta_unit"] == "meters"
+    assert rpe["delta_distance_m"] == 100.0
+    assert rpe["distance_tolerance_ratio"] == 0.05
+    assert rpe["count"] == 4
+
+    sheet = report["trajectory_exports"]["rpe_per_frame"]
+    first = sheet.iloc[0]
+    assert bool(first["rpe_available"]) is True
+    assert first["rpe_end_match_index"] == 3
+    assert first["rpe_actual_distance_m"] == 104.0
+    assert first["rpe_candidate_count"] == 3
+    assert first["rpe_translation_m"] == 1.0
+    assert sheet["rpe_available"].tolist()[-2:] == [False, False]
+
+
 def test_build_associated_trajectories_linearly_interpolates_gt_position():
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
     est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))

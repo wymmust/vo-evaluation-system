@@ -128,8 +128,14 @@
             <input id="timeOffset" type="number" value="0" step="0.01" />
           </label>
           <label>
-            RPE 固定帧间隔 Δ
-            <input id="rpeDelta" type="number" value="1" min="1" step="1" />
+            RPE 统计间隔
+            <div class="inline-fields">
+              <input id="rpeDeltaValue" type="number" value="1" min="0.001" step="1" />
+              <select id="rpeDeltaUnit" aria-label="RPE unit">
+                <option value="frames" selected>f</option>
+                <option value="meters">m</option>
+              </select>
+            </div>
           </label>
           <label>
             长航程子轨迹长度 m

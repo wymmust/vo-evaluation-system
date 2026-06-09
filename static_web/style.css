@@ -193,6 +193,17 @@ input[type="file"] {
   background: var(--panel-soft);
 }
 
+.inline-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 82px;
+  gap: 8px;
+}
+
+.inline-fields input,
+.inline-fields select {
+  margin-top: 7px;
+}
+
 button {
   cursor: pointer;
   border-color: var(--accent);

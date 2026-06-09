@@ -163,6 +163,8 @@ async function runEvaluation() {
 function buildConfig() {
   const maxTimeDiff = numberOf("maxTimeDiff");
   const maxInterpolationGap = numberOf("maxInterpolationGap");
+  const rpeDeltaValue = numberOf("rpeDeltaValue");
+  const rpeDeltaUnit = valueOf("rpeDeltaUnit");
   return {
     profile: "monocular_long_range_uav",
     alignment: valueOf("alignment"),
@@ -175,7 +177,10 @@ function buildConfig() {
     interpolation_position_method: "linear",
     interpolation_rotation_method: "slerp",
     time_offset_s: numberOf("timeOffset"),
-    rpe_delta_frames: integerOf("rpeDelta"),
+    rpe_delta_frames: rpeDeltaUnit === "frames" ? Math.max(1, Math.round(rpeDeltaValue)) : 1,
+    rpe_delta_value: rpeDeltaValue,
+    rpe_delta_unit: rpeDeltaUnit,
+    rpe_distance_tolerance_ratio: 0.05,
     rpe_delta_seconds: [1, 5, 10],
     segment_lengths_m: parseFloatList(valueOf("segmentLengths")),
     max_segments_per_length: integerOf("maxSegments"),
@@ -258,7 +263,7 @@ function renderMetrics(report) {
   const estCoverage = 100 * summary.est_pose_coverage_ratio;
   const metrics = [
     { label: "ATE RMSE", value: ate.rmse, unit: "m", note: Number.isFinite(ateRel) ? `${formatNumber(ateRel)} % 路程` : "全局位置一致性", status: ateRel > 2 ? "high" : ateRel > 1 ? "warning" : "good" },
-    { label: "RPE RMSE", value: rpe.rmse, unit: "m", note: `Δ=${report.rpe_frame_delta?.delta_frames ?? "N/A"} frames`, status: Number.isFinite(rpe.rmse) && Number.isFinite(ate.rmse) && rpe.rmse > ate.rmse ? "warning" : "neutral" },
+    { label: "RPE RMSE", value: rpe.rmse, unit: "m", note: rpeDeltaLabel(report.rpe_frame_delta), status: Number.isFinite(rpe.rmse) && Number.isFinite(ate.rmse) && rpe.rmse > ate.rmse ? "warning" : "neutral" },
     { label: "终点漂移", value: summary.endpoint_error_m, unit: "m", note: Number.isFinite(endpointRel) ? `${formatNumber(endpointRel)} % 路程` : "最终定位偏差", status: endpointRel > 2 ? "high" : endpointRel > 1 ? "warning" : "neutral" },
     { label: "长航程路程", value: summary.gt_path_length_m, unit: "m", note: `${formatValue(summary.duration_s, "s")} / ${summary.matched_poses ?? "N/A"} 帧`, status: "neutral" },
     { label: "垂直 RMSE", value: vertical.rmse, unit: "m", note: "高度方向误差", status: Number.isFinite(vertical.rmse) && Number.isFinite(ate.rmse) && Math.abs(vertical.rmse) > ate.rmse ? "warning" : "neutral" },
@@ -874,7 +879,7 @@ function buildHealthDashboardCards(report) {
     {
       label: "Frame-to-frame RPE",
       value: formatValue(report.rpe_frame_delta?.translation_m?.rmse, "m"),
-      note: `固定帧相对平移误差，delta=${report.rpe_frame_delta?.delta_frames ?? "N/A"} frame；偏高说明帧间估计不稳。`,
+      note: `${rpeDeltaLabel(report.rpe_frame_delta)} 相对平移误差；偏高说明局部相对运动估计不稳。`,
       source: "rpe_frame_delta.translation_m.rmse",
       severity: "info",
     },
@@ -1120,7 +1125,7 @@ function buildAuxiliaryMetricCards(report) {
     {
       label: "Frame-to-frame RPE translation",
       value: formatValue(report.rpe_frame_delta?.translation_m?.rmse, "m"),
-      note: `固定帧间隔 delta=${report.rpe_frame_delta?.delta_frames ?? "N/A"}；反映局部相对运动稳定性。`,
+      note: `${rpeDeltaLabel(report.rpe_frame_delta)}；反映局部相对运动稳定性。`,
       source: "rpe_frame_delta.translation_m.rmse",
       severity: "info",
     },
@@ -1474,6 +1479,7 @@ function buildConfigRows(report) {
     { label: "时间同步", value: `${assoc.method || assoc.mode || "N/A"}，匹配 ${assoc.matches ?? "N/A"} 帧` },
     { label: "轨迹对齐", value: cfg.alignment || "N/A" },
     { label: "姿态修正", value: correction.auto ? `auto -> ${correction.selected}` : (correction.selected || cfg.orientation_correction || "N/A") },
+    { label: "RPE 间隔", value: rpeDeltaLabel(report.rpe_frame_delta || cfg) },
     { label: "断点策略", value: cfg.continuous_segment_policy || "N/A" },
     { label: "评估路程/耗时", value: `${formatValue(summary.gt_path_length_m, "m")} / ${formatValue(summary.duration_s, "s")}` },
   ];
@@ -1681,7 +1687,10 @@ const METRIC_FIELD_LABELS = {
   interpolation_rotation_method: "姿态插值方法",
   orientation_correction: "姿态修正方式",
   time_offset_s: "时间偏移",
-  rpe_delta_frames: "RPE 间隔帧数",
+  rpe_delta_frames: "RPE 间隔帧数（兼容字段）",
+  rpe_delta_value: "RPE 统计间隔数值",
+  rpe_delta_unit: "RPE 统计单位",
+  rpe_distance_tolerance_ratio: "RPE 距离容差比例",
   segment_lengths_m: "子轨迹长度列表",
   max_segments_per_length: "每个长度最大采样数",
   segment_step_frames: "子轨迹采样步长",
@@ -2126,7 +2135,10 @@ function configMetricIssue(field) {
     interpolation_position_method: "reference 位置插值方法；当前支持 linear。",
     interpolation_rotation_method: "reference 姿态插值方法；当前支持 slerp。",
     time_offset_s: "手动时间偏移；用于修正 GT 与 VO 固定延迟。",
-    rpe_delta_frames: "RPE 使用的帧间隔；间隔越大越接近中短程累计漂移。",
+    rpe_delta_frames: "RPE 使用的帧间隔兼容字段；新配置优先看 rpe_delta_value 和 rpe_delta_unit。",
+    rpe_delta_value: "RPE 统计间隔数值；配合 rpe_delta_unit 使用，单位可以是帧 f 或距离 m。",
+    rpe_delta_unit: "RPE 统计单位；frames/f 表示按固定帧数，meters/m 表示按 GT 路程窗口。",
+    rpe_distance_tolerance_ratio: "RPE 距离模式的容差比例；例如 0.05 表示 100m 会在 95-105m 候选中选择误差最小的终点。",
     segment_lengths_m: "长航程子轨迹统计使用的距离列表；决定报告会比较哪些航程长度。",
     max_segments_per_length: "每个子轨迹长度最多抽样数量；限制计算量，过低会降低统计代表性。",
     segment_step_frames: "子轨迹抽样步长；步长越小样本越密，但计算更慢。",
@@ -2161,6 +2173,17 @@ function scaleRangeText(alignment) {
     return "";
   }
   return `${formatNumber(alignment.scale_min)}-${formatNumber(alignment.scale_max)} (${formatNumber(range)}%)`;
+}
+
+function rpeDeltaLabel(rpeInfo) {
+  if (rpeInfo?.delta_unit === "meters") {
+    const tolerance = Number.isFinite(rpeInfo.distance_tolerance_percent) ? ` ±${formatNumber(rpeInfo.distance_tolerance_percent)}%` : "";
+    return `Δ=${formatValue(rpeInfo.delta_distance_m, "m")}${tolerance}`;
+  }
+  if (rpeInfo?.delta_unit === "frames") {
+    return `Δ=${formatValue(rpeInfo.delta_frames, "frames")}`;
+  }
+  return `Δ=${rpeInfo?.delta_frames ?? "N/A"} frames`;
 }
 
 function buildTrajectoryWorkbook(sheets) {

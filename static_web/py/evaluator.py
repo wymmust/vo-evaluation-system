@@ -17,7 +17,7 @@
 - ATE 垂直/高度误差：vertical_error_m -> report["ate_vertical_m"]。
 - VO 姿态修正：select_orientation_correction()/apply_orientation_correction() -> report["orientation_correction"]。
 - 姿态/yaw 误差：rotation_errors()/yaw_from_rot() -> ate_orientation_deg / ate_yaw_deg。
-- RPE 固定帧间隔误差：rpe_error_arrays() -> report["rpe_frame_delta"]。
+- RPE 帧数/距离间隔误差：rpe_frame_dataframe()/relative_error() -> report["rpe_frame_delta"] 和 rpe_per_frame。
 - KITTI/rpg 风格子轨迹误差：segment_errors() -> report["segment_errors"] 和 segment_records。
 - 速度分箱误差：summarize_by_speed_bins() -> report["speed_bins"]。
 - 终点漂移、覆盖率、路程、耗时、原始尺度比：summary dict。
@@ -47,7 +47,8 @@
 - report["ate_vertical_m"]：ATE 的 Z 分量拆分，论文中不是独立排行榜指标；为无人机高度安全扩展。
 - report["ate_orientation_deg"]：Zhang18 的 SE(3) 姿态误差/相对误差思想；Schubert18/TUM VI 的 VIO 评估包含姿态语境。
 - report["ate_yaw_deg"]：姿态误差的 yaw 分量拆分，论文中不是独立排行榜指标；为无人机航向控制扩展。
-- report["rpe_frame_delta"]：Sturm12 的 Relative Pose Error；Schubert18/TUM VI 使用固定时间间隔 RPE 评估 VIO；
+- report["rpe_frame_delta"]：Sturm12 的 Relative Pose Error；frames 模式对应固定帧 RPE，meters 模式是在同一
+  relative_error 公式上按 GT 距离窗口选终点的工程扩展；Schubert18/TUM VI 使用固定时间间隔 RPE 评估 VIO；
   Zhang18 将其归入相对误差。
 - report["segment_errors"]：Geiger12/KITTI odometry 的固定长度子轨迹平移百分比和旋转 deg/m；
   Zhang18/rpg 轨迹评估也使用相对误差和尺度漂移思想。
@@ -121,9 +122,9 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "code": "yaw_from_rot(); wrap_pi(); describe()",
     },
     {
-        "metric": "RPE 固定帧间隔误差",
+        "metric": "RPE 帧数/距离间隔误差",
         "report_field": 'report["rpe_frame_delta"]',
-        "code": "rpe_error_arrays(); relative_error(); describe()",
+        "code": "rpe_frame_dataframe(); normalize_rpe_delta_config(); relative_error(); describe()",
     },
     {
         "metric": "RPE 固定时间间隔误差",
@@ -257,7 +258,8 @@ class EvaluationConfig:
       对应 report["orientation_correction"]，会影响姿态 ATE、RPE 和带姿态的子轨迹误差。
     - association_mode/max_time_diff_s/max_interpolation_gap_s/time_offset_s/allow_extrapolation:
       决定 prepare_evaluation_trajectories() 如何把 GT 和 VO 放到同一时间轴，影响匹配位姿、覆盖率和所有后续误差。
-    - rpe_delta_frames/rpe_delta_seconds: 控制固定帧和固定时间 RPE，对应 report["rpe_frame_delta"]/["rpe_time_delta"]。
+    - rpe_delta_value/rpe_delta_unit: 控制 RPE 按帧数或按 GT 距离统计，对应 report["rpe_frame_delta"] 和 rpe_per_frame。
+      rpe_delta_frames 保留为旧配置兼容字段；rpe_delta_seconds 仍输出固定时间 RPE 参考值。
     - segment_lengths_m/segment_step_frames/max_segments_per_length/max_segment_length_diff_ratio:
       控制 segment_errors() 的长航程子轨迹抽样，对应 report["segment_errors"] 和 report["segment_records"]。
     - continuous_segment_policy/discontinuity_*: 控制断点诊断和跨重置轨迹如何纳入评估，对应 report["discontinuities"]。
@@ -277,6 +279,9 @@ class EvaluationConfig:
     interpolation_rotation_method: str = "slerp"
     time_offset_s: float = 0.0
     rpe_delta_frames: int = 1
+    rpe_delta_value: float | None = None
+    rpe_delta_unit: str = "frames"
+    rpe_distance_tolerance_ratio: float = 0.05
     rpe_delta_seconds: tuple[float, ...] = (1.0, 5.0, 10.0)
     segment_lengths_m: tuple[float, ...] = (50, 100, 200, 500, 1000, 2000, 5000)
     max_segments_per_length: int = 10000
@@ -567,30 +572,29 @@ def evaluate_trajectories(
             yaw_error_signed_parts.append(yaw_error_signed_deg)
             yaw_error_abs_parts.append(yaw_error_abs_deg)
 
-        # 8. RPE 固定帧间隔误差，对应页面“RPE RMSE”。
-        #    来源：Sturm12 的 RPE，Zhang18 的 relative error 解释，Schubert18/TUM VI 的 VIO 评估语境。
-        rpe_trans, rpe_rot = rpe_error_arrays(
+        # 8. RPE 相对位姿误差，对应页面“RPE RMSE”和 Excel 的 rpe_per_frame。
+        #    unit=frames 时每个 i 取 j=i+N；unit=meters 时按 GT 累计路程找目标距离 ± tolerance 内的候选终点，
+        #    并选择 RPE 平移误差最小的候选。来源：Sturm12 RPE；距离窗口是长航程无人机评估扩展。
+        rpe_frame = rpe_frame_dataframe(
             gt_pos,
             est_pos_aligned,
             gt_rot,
             est_rot_aligned,
+            stamps,
+            segment_id=int(seg_id),
+            match_indices=np.arange(start, end, dtype=int),
             delta=max(1, int(cfg.rpe_delta_frames)),
+            delta_value=cfg.rpe_delta_value,
+            delta_unit=cfg.rpe_delta_unit,
+            distance_tolerance_ratio=cfg.rpe_distance_tolerance_ratio,
         )
-        rpe_frame_export_frames.append(
-            rpe_frame_dataframe(
-                gt_pos,
-                est_pos_aligned,
-                gt_rot,
-                est_rot_aligned,
-                stamps,
-                segment_id=int(seg_id),
-                match_indices=np.arange(start, end, dtype=int),
-                delta=max(1, int(cfg.rpe_delta_frames)),
-            )
-        )
+        rpe_frame_export_frames.append(rpe_frame)
+        rpe_valid = rpe_frame["rpe_available"].to_numpy(dtype=bool) if "rpe_available" in rpe_frame else np.asarray([], dtype=bool)
+        rpe_trans = rpe_frame.loc[rpe_valid, "rpe_translation_m"].to_numpy(dtype=float) if len(rpe_frame) else np.asarray([], dtype=float)
+        rpe_rot_deg = rpe_frame.loc[rpe_valid, "rpe_rotation_deg"].dropna().to_numpy(dtype=float) if len(rpe_frame) else np.asarray([], dtype=float)
         rpe_trans_parts.append(rpe_trans)
-        if len(rpe_rot):
-            rpe_rot_parts.append(np.degrees(rpe_rot))
+        if len(rpe_rot_deg):
+            rpe_rot_parts.append(rpe_rot_deg)
         for delta_s in rpe_time_trans_parts:
             time_trans, time_rot = rpe_error_arrays_by_time(
                 gt_pos,
@@ -699,8 +703,9 @@ def evaluate_trajectories(
         cfg,
         alignment,
     )
+    rpe_delta_info = normalize_rpe_delta_config(cfg)
     rpe = {
-        "delta_frames": int(max(1, int(cfg.rpe_delta_frames))),
+        **rpe_delta_info,
         "count": int(len(rpe_trans)),
         "translation_m": describe(rpe_trans),
         "rotation_deg": describe(rpe_rot_deg) if len(rpe_rot_deg) else None,
@@ -1645,16 +1650,25 @@ def score_orientation_correction_candidate(
             continue
         orientation_parts.append(np.degrees(rotation_errors(gt_rot, est_rot_aligned)))
         yaw_parts.append(np.abs(np.degrees(wrap_pi(yaw_from_rot(est_rot_aligned) - yaw_from_rot(gt_rot)))))
-        rpe_trans, rpe_rot = rpe_error_arrays(
+        rpe_frame = rpe_frame_dataframe(
             gt_pos,
             est_pos_aligned,
             gt_rot,
             est_rot_aligned,
+            gt.stamps[cur_gt_idx],
+            segment_id=0,
+            match_indices=np.arange(len(cur_gt_idx), dtype=int),
             delta=max(1, int(cfg.rpe_delta_frames)),
+            delta_value=cfg.rpe_delta_value,
+            delta_unit=cfg.rpe_delta_unit,
+            distance_tolerance_ratio=cfg.rpe_distance_tolerance_ratio,
         )
+        rpe_valid = rpe_frame["rpe_available"].to_numpy(dtype=bool) if "rpe_available" in rpe_frame else np.asarray([], dtype=bool)
+        rpe_trans = rpe_frame.loc[rpe_valid, "rpe_translation_m"].to_numpy(dtype=float) if len(rpe_frame) else np.asarray([], dtype=float)
+        rpe_rot = rpe_frame.loc[rpe_valid, "rpe_rotation_deg"].dropna().to_numpy(dtype=float) if len(rpe_frame) else np.asarray([], dtype=float)
         rpe_trans_parts.append(rpe_trans)
         if len(rpe_rot):
-            rpe_rot_parts.append(np.degrees(rpe_rot))
+            rpe_rot_parts.append(rpe_rot)
     if not orientation_parts:
         return None
 
@@ -3019,6 +3033,44 @@ def ate_frame_dataframe(per_pose: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
+    """把 RPE 的 UI/API 配置统一成 report 可读字段。
+
+    rpe_delta_unit 支持 frames/f 和 meters/m 两类：
+    - frames: 终点固定为 j=i+N。
+    - meters: 终点从 GT 累计路程的 target*(1±tolerance) 范围内选择。
+
+    rpe_delta_value 是新参数；如果为空则退回旧的 rpe_delta_frames，保证旧配置还能复现。
+    """
+    unit_raw = str(cfg.rpe_delta_unit or "frames").strip().lower()
+    if unit_raw in {"f", "frame", "frames"}:
+        value = cfg.rpe_delta_value if cfg.rpe_delta_value is not None else cfg.rpe_delta_frames
+        frames = max(1, int(round(float(value))))
+        return {
+            "delta_unit": "frames",
+            "delta_value": float(frames),
+            "delta_frames": int(frames),
+            "delta_distance_m": None,
+            "distance_tolerance_ratio": None,
+            "distance_tolerance_percent": None,
+        }
+    if unit_raw in {"m", "meter", "meters"}:
+        value = cfg.rpe_delta_value if cfg.rpe_delta_value is not None else cfg.rpe_delta_frames
+        distance_m = float(value)
+        if distance_m <= 0:
+            raise ValueError("RPE distance delta must be positive")
+        tolerance_ratio = max(0.0, float(cfg.rpe_distance_tolerance_ratio))
+        return {
+            "delta_unit": "meters",
+            "delta_value": distance_m,
+            "delta_frames": None,
+            "delta_distance_m": distance_m,
+            "distance_tolerance_ratio": tolerance_ratio,
+            "distance_tolerance_percent": 100.0 * tolerance_ratio,
+        }
+    raise ValueError(f"Unknown rpe_delta_unit: {cfg.rpe_delta_unit}")
+
+
 def rpe_frame_dataframe(
     gt_pos: np.ndarray,
     est_pos: np.ndarray,
@@ -3029,39 +3081,82 @@ def rpe_frame_dataframe(
     segment_id: int,
     match_indices: np.ndarray,
     delta: int,
+    delta_value: float | None = None,
+    delta_unit: str = "frames",
+    distance_tolerance_ratio: float = 0.05,
 ) -> pd.DataFrame:
-    """生成每个时间戳一行的固定帧间隔 RPE 明细 sheet。
+    """生成每个时间戳一行的 RPE 明细 sheet。
 
-    RPE 比较的是从当前帧 i 到未来帧 j=i+delta 的相对运动：
+    RPE 比较的是从当前帧 i 到未来终点帧 j 的相对运动：
+    - frames 模式：j=i+delta。
+    - meters 模式：用 GT 累计路程找 target*(1±tolerance) 范围内的候选 j，
+      逐个计算 RPE 并选 rpe_translation_m 最小的候选。
     - rpe_translation_m: 这段相对位移的误差。
     - rpe_rotation_deg: 这段相对旋转的误差；没有姿态输入时为 NaN。
     - rpe_available: 当前时间戳是否有足够的未来帧可计算 RPE。
 
-    最后 delta 帧没有 j=i+delta，所以保留时间戳但 rpe_available=False。
+    不能找到合法终点时，保留时间戳但 rpe_available=False。
     这样 Excel 里仍然能做到“每个时间戳都有一行”，不会因为 RPE 少几行而和 ATE 对不上。
     """
     stamps = np.asarray(stamps, dtype=float)
     match_indices = np.asarray(match_indices, dtype=int)
     n = len(stamps)
-    delta = max(1, int(delta))
+    unit_raw = str(delta_unit or "frames").strip().lower()
+    if unit_raw in {"f", "frame", "frames"}:
+        unit = "frames"
+    elif unit_raw in {"m", "meter", "meters"}:
+        unit = "meters"
+    else:
+        raise ValueError(f"Unknown rpe_delta_unit: {delta_unit}")
+    delta_frames = max(1, int(round(float(delta_value)))) if unit == "frames" and delta_value is not None else max(1, int(delta))
+    target_distance_m = float(delta_value) if unit == "meters" and delta_value is not None else float(delta)
+    if unit == "meters" and target_distance_m <= 0:
+        raise ValueError("RPE distance delta must be positive")
+    tolerance_ratio = max(0.0, float(distance_tolerance_ratio))
+    min_distance_m = target_distance_m * (1.0 - tolerance_ratio) if unit == "meters" else math.nan
+    max_distance_m = target_distance_m * (1.0 + tolerance_ratio) if unit == "meters" else math.nan
+    gt_distance = path_distance(gt_pos)
+
     rpe_translation = np.full(n, math.nan, dtype=float)
     rpe_rotation = np.full(n, math.nan, dtype=float)
     end_timestamp = np.full(n, math.nan, dtype=float)
     end_match_index = np.full(n, -1, dtype=int)
     time_delta = np.full(n, math.nan, dtype=float)
+    actual_distance = np.full(n, math.nan, dtype=float)
+    distance_error = np.full(n, math.nan, dtype=float)
+    candidate_count = np.zeros(n, dtype=int)
     available = np.zeros(n, dtype=bool)
 
     for i in range(n):
-        j = i + delta
-        if j >= n:
+        if unit == "frames":
+            candidates = [i + delta_frames] if i + delta_frames < n else []
+        else:
+            start_distance = gt_distance[i]
+            left = int(np.searchsorted(gt_distance, start_distance + min_distance_m, side="left"))
+            right = int(np.searchsorted(gt_distance, start_distance + max_distance_m, side="right"))
+            candidates = [idx for idx in range(max(i + 1, left), min(right, n))]
+        candidate_count[i] = len(candidates)
+        if not candidates:
             continue
-        trans_error, rot_error = relative_error(gt_pos, est_pos, gt_rot, est_rot, i, j)
+        best: tuple[float, float, int, float | None] | None = None
+        for j in candidates:
+            trans_error, rot_error = relative_error(gt_pos, est_pos, gt_rot, est_rot, i, j)
+            cur_distance = float(gt_distance[j] - gt_distance[i])
+            cur_distance_error = abs(cur_distance - target_distance_m) if unit == "meters" else math.nan
+            key = (float(trans_error), cur_distance_error if math.isfinite(cur_distance_error) else 0.0, int(j))
+            if best is None or key < (best[0], best[1], best[2]):
+                best = (float(trans_error), cur_distance_error, int(j), rot_error)
+        if best is None:
+            continue
+        trans_error, cur_distance_error, j, rot_error = best
         rpe_translation[i] = trans_error
         if rot_error is not None:
             rpe_rotation[i] = math.degrees(rot_error)
         end_timestamp[i] = stamps[j]
         end_match_index[i] = int(match_indices[j]) if j < len(match_indices) else -1
         time_delta[i] = stamps[j] - stamps[i]
+        actual_distance[i] = float(gt_distance[j] - gt_distance[i])
+        distance_error[i] = cur_distance_error
         available[i] = True
 
     return pd.DataFrame(
@@ -3069,10 +3164,18 @@ def rpe_frame_dataframe(
             "timestamp": stamps,
             "segment_id": np.full(n, int(segment_id), dtype=int),
             "match_index": match_indices if len(match_indices) == n else np.arange(n, dtype=int),
-            "rpe_delta_frames": np.full(n, delta, dtype=int),
+            "rpe_delta_unit": np.asarray([unit] * n, dtype=object),
+            "rpe_delta_value": np.full(n, float(delta_frames if unit == "frames" else target_distance_m), dtype=float),
+            "rpe_delta_frames": np.full(n, delta_frames if unit == "frames" else math.nan, dtype=float),
+            "rpe_target_distance_m": np.full(n, target_distance_m if unit == "meters" else math.nan, dtype=float),
+            "rpe_distance_tolerance_min_m": np.full(n, min_distance_m, dtype=float),
+            "rpe_distance_tolerance_max_m": np.full(n, max_distance_m, dtype=float),
             "rpe_end_match_index": end_match_index,
             "rpe_end_timestamp": end_timestamp,
             "rpe_time_delta_s": time_delta,
+            "rpe_actual_distance_m": actual_distance,
+            "rpe_distance_error_m": distance_error,
+            "rpe_candidate_count": candidate_count,
             "rpe_translation_m": rpe_translation,
             "rpe_rotation_deg": rpe_rotation,
             "rpe_available": available,
@@ -3199,6 +3302,9 @@ def _dataclass_to_jsonable(cfg: EvaluationConfig) -> dict[str, Any]:
         "interpolation_rotation_method": cfg.interpolation_rotation_method,
         "time_offset_s": cfg.time_offset_s,
         "rpe_delta_frames": cfg.rpe_delta_frames,
+        "rpe_delta_value": cfg.rpe_delta_value,
+        "rpe_delta_unit": cfg.rpe_delta_unit,
+        "rpe_distance_tolerance_ratio": cfg.rpe_distance_tolerance_ratio,
         "rpe_delta_seconds": list(cfg.rpe_delta_seconds),
         "segment_lengths_m": list(cfg.segment_lengths_m),
         "max_segments_per_length": cfg.max_segments_per_length,

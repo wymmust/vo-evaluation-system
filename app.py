@@ -82,7 +82,7 @@ def main() -> None:
     with st.sidebar:
         # 这些控件直接映射到 EvaluationConfig：
         # alignment -> 对齐方式；association/max_time_diff/time_offset -> 时间同步；
-        # rpe_delta -> RPE；segment_* -> 长航程子轨迹误差；
+        # rpe_delta_value/unit -> RPE；segment_* -> 长航程子轨迹误差；
         # divergence_* -> 发散检测阈值。
         st.header("输入设置")
         gt_format_label = st.selectbox("Ground truth 格式", list(FORMAT_OPTIONS), index=0)
@@ -101,7 +101,11 @@ def main() -> None:
         allow_extrapolation = st.checkbox("允许外推（不推荐）", value=False)
         interpolate_rotation = st.checkbox("GT 姿态用 SLERP 插值", value=True)
         time_offset = st.number_input("VO 时间戳偏移 s（按 TUM：加到 VO 时间戳）", value=0.0, step=0.01)
-        rpe_delta = st.number_input("RPE 固定帧间隔 Δ", value=1, min_value=1, step=1)
+        rpe_value_col, rpe_unit_col = st.columns([2, 1])
+        with rpe_value_col:
+            rpe_delta_value = st.number_input("RPE 统计间隔", value=1.0, min_value=0.001, step=1.0)
+        with rpe_unit_col:
+            rpe_delta_unit_label = st.selectbox("单位", ["f", "m"], index=0)
         segment_text = st.text_input("长航程子轨迹长度 m", value="50,100,200,500,1000,2000,5000")
         max_segments = st.number_input("每个长度最多抽样段数", value=10000, min_value=100, step=1000)
         segment_step = st.number_input("子轨迹起点步长 frames（KITTI 默认 10）", value=10, min_value=1, step=1)
@@ -140,7 +144,10 @@ def main() -> None:
             interpolation_position_method="linear",
             interpolation_rotation_method="slerp",
             time_offset_s=float(time_offset),
-            rpe_delta_frames=int(rpe_delta),
+            rpe_delta_frames=max(1, int(round(float(rpe_delta_value)))) if rpe_delta_unit_label == "f" else 1,
+            rpe_delta_value=float(rpe_delta_value),
+            rpe_delta_unit="frames" if rpe_delta_unit_label == "f" else "meters",
+            rpe_distance_tolerance_ratio=0.05,
             segment_lengths_m=tuple(segment_lengths),
             max_segments_per_length=int(max_segments),
             segment_step_frames=int(segment_step),
@@ -231,7 +238,7 @@ def show_summary(report: dict[str, Any]) -> None:
         {
             "label": "#02 RPE RMSE",
             "value": report_value(rpe.get("rmse"), "m"),
-            "help": f"Δ={report.get('rpe_frame_delta', {}).get('delta_frames', 'N/A')} frames；p95 {report_value(rpe.get('p95'), 'm')}",
+            "help": f"{rpe_delta_label(report.get('rpe_frame_delta', {}))}；p95 {report_value(rpe.get('p95'), 'm')}",
         },
         {
             "label": "#03 终点漂移",
@@ -355,6 +362,17 @@ def association_label(assoc: dict[str, Any]) -> str:
     if method == "index":
         return "按索引"
     return str(method or "N/A")
+
+
+def rpe_delta_label(rpe_info: dict[str, Any]) -> str:
+    unit = rpe_info.get("delta_unit")
+    if unit == "meters":
+        tol = rpe_info.get("distance_tolerance_percent")
+        tol_text = f" ±{report_number(tol)}%" if tol is not None and math.isfinite(float(tol)) else ""
+        return f"Δ={report_value(rpe_info.get('delta_distance_m'), 'm')}{tol_text}"
+    if unit == "frames":
+        return f"Δ={report_value(rpe_info.get('delta_frames'), 'frames')}"
+    return f"Δ={rpe_info.get('delta_frames', 'N/A')} frames"
 
 
 def orientation_correction_label(info: dict[str, Any]) -> str:
@@ -684,7 +702,7 @@ def build_report_metric_cards(report: dict[str, Any]) -> list[dict[str, str]]:
     divergence = report.get("divergence") or {}
     return [
         {"label": "#01 ATE RMSE", "value": report_value(ate.get("rmse"), "m"), "note": f"{report_number(100 * ate.get('rmse', math.nan) / summary.get('gt_path_length_m', math.nan))} % 路程；p95 {report_value(ate.get('p95'), 'm')}"},
-        {"label": "#02 RPE RMSE", "value": report_value(rpe.get("rmse"), "m"), "note": f"Δ={nested(report, 'rpe_frame_delta', 'delta_frames', default='N/A')} frames；p95 {report_value(rpe.get('p95'), 'm')}"},
+        {"label": "#02 RPE RMSE", "value": report_value(rpe.get("rmse"), "m"), "note": f"{rpe_delta_label(report.get('rpe_frame_delta', {}))}；p95 {report_value(rpe.get('p95'), 'm')}"},
         {
             "label": "#03 终点漂移",
             "value": report_value(summary.get("endpoint_error_m"), "m"),
@@ -1012,7 +1030,10 @@ METRIC_FIELD_LABELS = {
     "association_mode": "时间同步方式",
     "orientation_correction": "姿态修正方式",
     "time_offset_s": "时间偏移",
-    "rpe_delta_frames": "RPE 间隔帧数",
+    "rpe_delta_frames": "RPE 间隔帧数（兼容字段）",
+    "rpe_delta_value": "RPE 统计间隔数值",
+    "rpe_delta_unit": "RPE 统计单位",
+    "rpe_distance_tolerance_ratio": "RPE 距离容差比例",
     "segment_lengths_m": "子轨迹长度列表",
     "max_segments_per_length": "每个长度最大采样数",
     "segment_step_frames": "子轨迹采样步长",
@@ -1356,7 +1377,10 @@ def config_metric_issue(field: str) -> str:
         "max_time_diff_s": "最近邻匹配允许的最大时间差；过大可能错配，过小可能丢帧。",
         "max_interpolation_gap_s": "GT 插值允许跨越的最大采样间隔；用于避免跨 GT 空洞插值。",
         "time_offset_s": "手动时间偏移；用于修正 GT 与 VO 固定延迟。",
-        "rpe_delta_frames": "RPE 使用的帧间隔；间隔越大越接近中短程累计漂移。",
+        "rpe_delta_frames": "RPE 使用的帧间隔兼容字段；新配置优先看 rpe_delta_value 和 rpe_delta_unit。",
+        "rpe_delta_value": "RPE 统计间隔数值；配合 rpe_delta_unit 使用，单位可以是帧 f 或距离 m。",
+        "rpe_delta_unit": "RPE 统计单位；frames/f 表示按固定帧数，meters/m 表示按 GT 路程窗口。",
+        "rpe_distance_tolerance_ratio": "RPE 距离模式的容差比例；例如 0.05 表示 100m 会在 95-105m 候选中选择误差最小的终点。",
         "segment_lengths_m": "长航程子轨迹统计使用的距离列表；决定报告会比较哪些航程长度。",
         "max_segments_per_length": "每个子轨迹长度最多抽样数量；限制计算量，过低会降低统计代表性。",
         "segment_step_frames": "子轨迹抽样步长；步长越小样本越密，但计算更慢。",
