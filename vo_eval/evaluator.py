@@ -282,6 +282,9 @@ class EvaluationConfig:
     rpe_delta_value: float | None = None
     rpe_delta_unit: str = "frames"
     rpe_distance_tolerance_ratio: float = 0.05
+    scale_delta_value: float | None = None
+    scale_delta_unit: str = "frames"
+    scale_distance_tolerance_ratio: float = 0.05
     rpe_delta_seconds: tuple[float, ...] = (1.0, 5.0, 10.0)
     segment_lengths_m: tuple[float, ...] = (50, 100, 200, 500, 1000, 2000, 5000)
     max_segments_per_length: int = 10000
@@ -504,6 +507,7 @@ def evaluate_trajectories(
     sim3_gt_export_frames: list[pd.DataFrame] = []
     sim3_vo_export_frames: list[pd.DataFrame] = []
     rpe_frame_export_frames: list[pd.DataFrame] = []
+    scale_frame_export_frames: list[pd.DataFrame] = []
     total_gt_path_m = 0.0
     total_raw_est_path_m = 0.0
     total_aligned_est_path_m = 0.0
@@ -629,6 +633,19 @@ def evaluate_trajectories(
             if len(time_rot):
                 rpe_time_rot_parts[delta_s].append(np.degrees(time_rot))
 
+        scale_frame = scale_frame_dataframe(
+            gt_pos,
+            est_pos,
+            stamps,
+            segment_id=int(seg_id),
+            match_indices=np.arange(start, end, dtype=int),
+            delta=max(1, int(cfg.rpe_delta_frames)),
+            delta_value=cfg.scale_delta_value,
+            delta_unit=cfg.scale_delta_unit,
+            distance_tolerance_ratio=cfg.scale_distance_tolerance_ratio,
+        )
+        scale_frame_export_frames.append(scale_frame)
+
         # 9. 长航程核心指标：按固定距离 L 抽子轨迹，统计漂移百分比、旋转误差和尺度漂移。
         #    来源：Geiger12/KITTI 的长度子轨迹平移/旋转漂移；尺度漂移解释参考 Zhang18。
         cur_segments = segment_errors(
@@ -713,6 +730,7 @@ def evaluate_trajectories(
     per_pose = pd.concat(per_pose_frames, ignore_index=True)
     segment_records = pd.concat(segment_record_frames, ignore_index=True) if segment_record_frames else pd.DataFrame()
     rpe_per_frame = pd.concat(rpe_frame_export_frames, ignore_index=True) if rpe_frame_export_frames else pd.DataFrame()
+    scale_per_frame = pd.concat(scale_frame_export_frames, ignore_index=True) if scale_frame_export_frames else pd.DataFrame()
     # 12. 统计汇总：describe() 会统一给出 count/rmse/mean/median/std/min/max/p95/p99。
     segment_summary = summarize_segment_records(segment_records)
     speed_bins = summarize_by_speed_bins(segment_records, cfg.speed_bins_mps)
@@ -745,6 +763,18 @@ def evaluate_trajectories(
         "rotation_deg": describe(rpe_rot_deg) if len(rpe_rot_deg) else None,
     }
     rpe_time_delta = summarize_time_rpe(rpe_time_trans_parts, rpe_time_rot_parts)
+    scale_valid = scale_per_frame["scale_available"].to_numpy(dtype=bool) if "scale_available" in scale_per_frame else np.asarray([], dtype=bool)
+    local_sim3_scale = scale_per_frame.loc[scale_valid, "local_sim3_scale"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
+    local_scale_ratio = scale_per_frame.loc[scale_valid, "local_scale_ratio_est_over_gt"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
+    local_scale_drift = scale_per_frame.loc[scale_valid, "local_scale_drift_percent"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
+    scale_delta_info = normalize_scale_delta_config(cfg)
+    scale_frame_delta = {
+        **scale_delta_info,
+        "count": int(len(local_sim3_scale)),
+        "local_sim3_scale": describe(local_sim3_scale),
+        "local_scale_ratio_est_over_gt": describe(local_scale_ratio),
+        "local_scale_drift_percent": describe(local_scale_drift),
+    }
     selected_segment = {
         "policy": cfg.continuous_segment_policy,
         "segments": [{"start_index": int(seg["start"]), "end_index": int(seg["end"]), "count": int(seg["count"])} for seg in eval_ranges],
@@ -808,6 +838,7 @@ def evaluate_trajectories(
         pd.concat(sim3_vo_export_frames, ignore_index=True) if sim3_vo_export_frames else pd.DataFrame(),
         ate_frame_dataframe(per_pose),
         rpe_per_frame,
+        scale_per_frame,
     )
     report = {
         "inputs": {
@@ -836,6 +867,7 @@ def evaluate_trajectories(
         "yaw_error_signed_deg": describe(yaw_error_signed_deg) if yaw_error_signed_deg is not None else None,
         "yaw_error_abs_deg": describe(yaw_error_abs_deg) if yaw_error_abs_deg is not None else None,
         "rpe_frame_delta": rpe,
+        "scale_frame_delta": scale_frame_delta,
         "rpe_time_delta": rpe_time_delta,
         "segment_errors": segment_summary,
         "worst_segments": worst_segments,
@@ -3119,6 +3151,45 @@ def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
     raise ValueError(f"Unknown rpe_delta_unit: {cfg.rpe_delta_unit}")
 
 
+def normalize_scale_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
+    """把尺度图的窗口配置统一成 report 可读字段。
+
+    这个配置独立于 RPE，但单位和语义保持一致：
+    - frames: 从每个起点 i 往后取固定帧数 j=i+N。
+    - meters: 从每个起点 i 往后找 GT 路程 target*(1±tolerance) 内的候选终点。
+
+    meters 模式和 RPE 的差别在于：尺度图选 GT 距离最接近目标距离的候选，
+    不按误差最小选择，避免把尺度问题人为挑好。
+    """
+    unit_raw = str(cfg.scale_delta_unit or "frames").strip().lower()
+    if unit_raw in {"f", "frame", "frames"}:
+        value = cfg.scale_delta_value if cfg.scale_delta_value is not None else cfg.rpe_delta_frames
+        frames = max(1, int(round(float(value))))
+        return {
+            "delta_unit": "frames",
+            "delta_value": float(frames),
+            "delta_frames": int(frames),
+            "delta_distance_m": None,
+            "distance_tolerance_ratio": None,
+            "distance_tolerance_percent": None,
+        }
+    if unit_raw in {"m", "meter", "meters"}:
+        value = cfg.scale_delta_value if cfg.scale_delta_value is not None else cfg.rpe_delta_frames
+        distance_m = float(value)
+        if distance_m <= 0:
+            raise ValueError("Scale distance delta must be positive")
+        tolerance_ratio = max(0.0, float(cfg.scale_distance_tolerance_ratio))
+        return {
+            "delta_unit": "meters",
+            "delta_value": distance_m,
+            "delta_frames": None,
+            "delta_distance_m": distance_m,
+            "distance_tolerance_ratio": tolerance_ratio,
+            "distance_tolerance_percent": 100.0 * tolerance_ratio,
+        }
+    raise ValueError(f"Unknown scale_delta_unit: {cfg.scale_delta_unit}")
+
+
 def rpe_frame_dataframe(
     gt_pos: np.ndarray,
     est_pos: np.ndarray,
@@ -3231,6 +3302,117 @@ def rpe_frame_dataframe(
     )
 
 
+def scale_frame_dataframe(
+    gt_pos: np.ndarray,
+    est_pos_raw: np.ndarray,
+    stamps: np.ndarray,
+    *,
+    segment_id: int,
+    match_indices: np.ndarray,
+    delta: int,
+    delta_value: float | None = None,
+    delta_unit: str = "frames",
+    distance_tolerance_ratio: float = 0.05,
+) -> pd.DataFrame:
+    """生成每个起点时间戳对应的局部尺度明细。
+
+    对每个起点 i 选择未来终点 j，计算该窗口内的路程比例：
+    - local_scale_ratio_est_over_gt = VO_raw_window_length / GT_window_length。
+    - local_sim3_scale = GT_window_length / VO_raw_window_length。
+    - local_scale_drift_percent = (local_scale_ratio_est_over_gt - 1) * 100。
+
+    注意这里使用未对齐的 VO 位置 est_pos_raw。否则 Sim3 对齐后的轨迹已经被整体缩放，
+    会掩盖原始 VO 的局部尺度变化。
+    """
+    stamps = np.asarray(stamps, dtype=float)
+    match_indices = np.asarray(match_indices, dtype=int)
+    n = len(stamps)
+    unit_raw = str(delta_unit or "frames").strip().lower()
+    if unit_raw in {"f", "frame", "frames"}:
+        unit = "frames"
+    elif unit_raw in {"m", "meter", "meters"}:
+        unit = "meters"
+    else:
+        raise ValueError(f"Unknown scale_delta_unit: {delta_unit}")
+    delta_frames = max(1, int(round(float(delta_value)))) if unit == "frames" and delta_value is not None else max(1, int(delta))
+    target_distance_m = float(delta_value) if unit == "meters" and delta_value is not None else float(delta)
+    if unit == "meters" and target_distance_m <= 0:
+        raise ValueError("Scale distance delta must be positive")
+    tolerance_ratio = max(0.0, float(distance_tolerance_ratio))
+    min_distance_m = target_distance_m * (1.0 - tolerance_ratio) if unit == "meters" else math.nan
+    max_distance_m = target_distance_m * (1.0 + tolerance_ratio) if unit == "meters" else math.nan
+    gt_distance = path_distance(gt_pos)
+    est_distance = path_distance(est_pos_raw)
+
+    local_scale_ratio = np.full(n, math.nan, dtype=float)
+    local_sim3_scale = np.full(n, math.nan, dtype=float)
+    local_scale_drift = np.full(n, math.nan, dtype=float)
+    end_timestamp = np.full(n, math.nan, dtype=float)
+    end_match_index = np.full(n, -1, dtype=int)
+    time_delta = np.full(n, math.nan, dtype=float)
+    actual_distance = np.full(n, math.nan, dtype=float)
+    est_actual_distance = np.full(n, math.nan, dtype=float)
+    distance_error = np.full(n, math.nan, dtype=float)
+    candidate_count = np.zeros(n, dtype=int)
+    available = np.zeros(n, dtype=bool)
+
+    for i in range(n):
+        if unit == "frames":
+            candidates = [i + delta_frames] if i + delta_frames < n else []
+        else:
+            start_distance = gt_distance[i]
+            left = int(np.searchsorted(gt_distance, start_distance + min_distance_m, side="left"))
+            right = int(np.searchsorted(gt_distance, start_distance + max_distance_m, side="right"))
+            candidates = [idx for idx in range(max(i + 1, left), min(right, n))]
+        candidate_count[i] = len(candidates)
+        if not candidates:
+            continue
+        if unit == "meters":
+            j = min(candidates, key=lambda idx: (abs(float(gt_distance[idx] - gt_distance[i]) - target_distance_m), idx))
+        else:
+            j = candidates[0]
+        gt_len = float(gt_distance[j] - gt_distance[i])
+        est_len = float(est_distance[j] - est_distance[i])
+        if gt_len <= 0 or est_len <= 0:
+            continue
+        ratio = est_len / gt_len
+        local_scale_ratio[i] = ratio
+        local_sim3_scale[i] = gt_len / est_len
+        local_scale_drift[i] = (ratio - 1.0) * 100.0
+        end_timestamp[i] = stamps[j]
+        end_match_index[i] = int(match_indices[j]) if j < len(match_indices) else -1
+        time_delta[i] = stamps[j] - stamps[i]
+        actual_distance[i] = gt_len
+        est_actual_distance[i] = est_len
+        distance_error[i] = abs(gt_len - target_distance_m) if unit == "meters" else math.nan
+        available[i] = True
+
+    return pd.DataFrame(
+        {
+            "timestamp": stamps,
+            "local_sim3_scale": local_sim3_scale,
+            "local_scale_ratio_est_over_gt": local_scale_ratio,
+            "local_scale_drift_percent": local_scale_drift,
+            "scale_available": available,
+            "segment_id": np.full(n, int(segment_id), dtype=int),
+            "match_index": match_indices if len(match_indices) == n else np.arange(n, dtype=int),
+            "scale_delta_unit": np.asarray([unit] * n, dtype=object),
+            "scale_delta_value": np.full(n, float(delta_frames if unit == "frames" else target_distance_m), dtype=float),
+            "scale_delta_frames": np.full(n, delta_frames if unit == "frames" else math.nan, dtype=float),
+            "scale_target_distance_m": np.full(n, target_distance_m if unit == "meters" else math.nan, dtype=float),
+            "scale_distance_tolerance_min_m": np.full(n, min_distance_m, dtype=float),
+            "scale_distance_tolerance_max_m": np.full(n, max_distance_m, dtype=float),
+            "scale_end_match_index": end_match_index,
+            "scale_end_timestamp": end_timestamp,
+            "scale_time_delta_s": time_delta,
+            "scale_actual_distance_m": actual_distance,
+            "scale_est_actual_distance_m": est_actual_distance,
+            "scale_distance_error_m": distance_error,
+            "scale_candidate_count": candidate_count,
+        }
+    )
+
+
 def build_trajectory_export_sheets(
     original_gt: Trajectory,
     original_est: Trajectory,
@@ -3240,8 +3422,9 @@ def build_trajectory_export_sheets(
     sim3_vo_tum: pd.DataFrame,
     ate_per_frame: pd.DataFrame,
     rpe_per_frame: pd.DataFrame,
+    scale_per_frame: pd.DataFrame,
 ) -> dict[str, pd.DataFrame]:
-    """构造 Excel 导出的 8 张中间结果 sheet。
+    """构造 Excel 导出的中间结果 sheet。
 
     Sheet 设计：
     1. input_gt_tum: 原始 GT 转 TUM。
@@ -3251,7 +3434,8 @@ def build_trajectory_export_sheets(
     5. sim3_gt_tum: Sim3 评估时使用的 GT。
     6. sim3_vo_tum: Sim3 对齐后的 VO。
     7. ate_per_frame: 每个评估时间戳的 ATE 明细。
-    8. rpe_per_frame: 每个评估时间戳起算的固定帧间隔 RPE 明细。
+    8. rpe_per_frame: 每个评估时间戳起算的固定帧/距离 RPE 明细。
+    9. scale_per_frame: 每个评估时间戳起算的局部尺度比例/尺度漂移明细。
     """
     raw_gt_extra = {
         "source_index": np.arange(len(original_gt.positions), dtype=int),
@@ -3272,6 +3456,7 @@ def build_trajectory_export_sheets(
         "sim3_vo_tum": sim3_vo_tum,
         "ate_per_frame": ate_per_frame,
         "rpe_per_frame": rpe_per_frame,
+        "scale_per_frame": scale_per_frame,
     }
 
 
@@ -3353,6 +3538,9 @@ def _dataclass_to_jsonable(cfg: EvaluationConfig) -> dict[str, Any]:
         "rpe_delta_value": cfg.rpe_delta_value,
         "rpe_delta_unit": cfg.rpe_delta_unit,
         "rpe_distance_tolerance_ratio": cfg.rpe_distance_tolerance_ratio,
+        "scale_delta_value": cfg.scale_delta_value,
+        "scale_delta_unit": cfg.scale_delta_unit,
+        "scale_distance_tolerance_ratio": cfg.scale_distance_tolerance_ratio,
         "rpe_delta_seconds": list(cfg.rpe_delta_seconds),
         "segment_lengths_m": list(cfg.segment_lengths_m),
         "max_segments_per_length": cfg.max_segments_per_length,
@@ -3594,7 +3782,10 @@ def _parse_vloc(text: str, name: str) -> Trajectory:
 
     解析规则：
     - ts 是秒级或可由 _normalize_timestamps() 推断的时间戳。
-    - tx/ty/tz 是 VO 位置。
+    - tx/ty 是 VO 水平位置。
+    - 如果 latitude/longitude/altitude 中存在有效 GPS 高度，则使用 -altitude 作为 z。
+      这和当前 SF IMU 的 z 轴方向一致；lat/lon/alt 为 0 的初始化/无效定位行会被过滤。
+    - 如果整份 VLOC 没有有效 GPS 高度，则退回旧行为，使用 tx/ty/tz。
     - yaw/pitch/roll 按角度制读取，再转成内部统一的旋转矩阵。
     - status、num_inliers、reset_count、latitude/longitude/altitude 存入 extras 供导出和诊断。
     """
@@ -3608,8 +3799,34 @@ def _parse_vloc(text: str, name: str) -> Trajectory:
 
     ts_col = _required_col(normalized, "ts", name, "VLOC")
     stamps = _normalize_timestamps(numeric[ts_col].to_numpy(dtype=float), _timestamp_unit_hint(text, str(ts_col)))
-    position_cols = [_required_col(normalized, col, name, "VLOC") for col in ["tx", "ty", "tz"]]
-    positions = numeric[position_cols].to_numpy(dtype=float)
+    tx_col = _required_col(normalized, "tx", name, "VLOC")
+    ty_col = _required_col(normalized, "ty", name, "VLOC")
+    tz_col = _required_col(normalized, "tz", name, "VLOC")
+    positions = numeric[[tx_col, ty_col, tz_col]].to_numpy(dtype=float)
+
+    # VLOC 日志里同时有 tx/ty/tz 和 latitude/longitude/altitude。
+    # 当前 2839_traj 数据的 MATLAB 对比图使用的是 tx、ty、-altitude：
+    #   - tx/ty 与 IMU x/y 同坐标系；
+    #   - altitude 为向上为正，高度方向和 IMU z 相反，因此写入 z 时取负；
+    #   - latitude/longitude/altitude 为 0 的行是初始化或无效定位输出，不应纳入轨迹评估。
+    # 为了不破坏没有 GPS 高度的 VLOC 文件，只有当文件中确实存在足够的有效经纬高行时才启用该规则。
+    lat_col = _required_col(normalized, "latitude", name, "VLOC")
+    lon_col = _required_col(normalized, "longitude", name, "VLOC")
+    alt_col = _required_col(normalized, "altitude", name, "VLOC")
+    lat_values = numeric[lat_col].to_numpy(dtype=float)
+    lon_values = numeric[lon_col].to_numpy(dtype=float)
+    alt_values = numeric[alt_col].to_numpy(dtype=float)
+    gps_height_valid = (
+        np.isfinite(lat_values)
+        & np.isfinite(lon_values)
+        & np.isfinite(alt_values)
+        & (np.abs(lat_values) > 1e-9)
+        & (np.abs(lon_values) > 1e-9)
+        & (np.abs(alt_values) > 1e-9)
+    )
+    use_gps_height = int(np.count_nonzero(gps_height_valid)) >= 2
+    if use_gps_height:
+        positions[:, 2] = -alt_values
 
     yaw_col = _required_col(normalized, "yaw", name, "VLOC")
     pitch_col = _required_col(normalized, "pitch", name, "VLOC")
@@ -3621,6 +3838,8 @@ def _parse_vloc(text: str, name: str) -> Trajectory:
     rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
 
     valid = np.isfinite(stamps) & np.isfinite(positions).all(axis=1)
+    if use_gps_height:
+        valid &= gps_height_valid
     valid &= np.isfinite(rotations.reshape(len(rotations), -1)).all(axis=1)
     stamps = stamps[valid]
     positions = positions[valid]

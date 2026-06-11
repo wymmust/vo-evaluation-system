@@ -112,6 +112,11 @@ def main() -> None:
             rpe_delta_value = st.number_input("RPE 统计间隔", value=1.0, min_value=0.001, step=1.0)
         with rpe_unit_col:
             rpe_delta_unit_label = st.selectbox("单位", ["f", "m"], index=0)
+        scale_value_col, scale_unit_col = st.columns([2, 1])
+        with scale_value_col:
+            scale_delta_value = st.number_input("尺度图间隔", value=1.0, min_value=0.001, step=1.0)
+        with scale_unit_col:
+            scale_delta_unit_label = st.selectbox("单位 ", ["f", "m"], index=0)
         segment_text = st.text_input("长航程子轨迹长度 m", value="50,100,200,500,1000,2000,5000")
         max_segments = st.number_input("每个长度最多抽样段数", value=10000, min_value=100, step=1000)
         segment_step = st.number_input("子轨迹起点步长 frames（KITTI 默认 10）", value=10, min_value=1, step=1)
@@ -154,6 +159,9 @@ def main() -> None:
             rpe_delta_value=float(rpe_delta_value),
             rpe_delta_unit="frames" if rpe_delta_unit_label == "f" else "meters",
             rpe_distance_tolerance_ratio=0.05,
+            scale_delta_value=float(scale_delta_value),
+            scale_delta_unit="frames" if scale_delta_unit_label == "f" else "meters",
+            scale_distance_tolerance_ratio=0.05,
             segment_lengths_m=tuple(segment_lengths),
             max_segments_per_length=int(max_segments),
             segment_step_frames=int(segment_step),
@@ -435,7 +443,7 @@ def show_visuals(report: dict[str, Any]) -> None:
     per_pose = report["per_pose"]
     segment_records = report["segment_records"]
     trajectory_exports = report.get("trajectory_exports") or {}
-    sim3_vo_tum = pd.DataFrame(trajectory_exports.get("sim3_vo_tum", pd.DataFrame()))
+    scale_per_frame = pd.DataFrame(trajectory_exports.get("scale_per_frame", trajectory_exports.get("sim3_vo_tum", pd.DataFrame())))
     rpe_per_frame = pd.DataFrame(trajectory_exports.get("rpe_per_frame", pd.DataFrame()))
 
     fig3d = make_trajectory_3d(per_pose)
@@ -444,7 +452,7 @@ def show_visuals(report: dict[str, Any]) -> None:
     fig_alt = make_altitude_distance(per_pose)
     fig_segment = make_segment_error(report["segment_errors"])
     fig_speed = make_speed_error(report["speed_bins"])
-    fig_sim3_scale = make_sim3_scale_time_series(sim3_vo_tum)
+    fig_sim3_scale = make_sim3_scale_time_series(scale_per_frame)
     time_series_figs = [
         make_gt_vo_time_series(per_pose, "X 随时间变化", "gt_x_m", "est_x_aligned_m", "m"),
         make_gt_vo_time_series(per_pose, "Y 随时间变化", "gt_y_m", "est_y_aligned_m", "m"),
@@ -644,22 +652,25 @@ def make_speed_error(speed_bins: list[dict[str, Any]]) -> go.Figure:
 
 
 def make_sim3_scale_time_series(df: pd.DataFrame) -> go.Figure:
-    """Sim3 尺度随时间戳变化图。
+    """局部 Sim3 尺度随时间戳变化图。
 
-    数据来自 trajectory_exports.sim3_vo_tum.sim3_scale。这个表保存的是每帧应用
-    Sim3 后的导出轨迹，同时重复写入该连续段使用的 Sim3 scale。图上如果 scale
-    随不同连续段明显变化，说明 VO 的原始尺度可能不稳定。
+    优先读取 trajectory_exports.scale_per_frame.local_sim3_scale：
+    每个时间戳从当前帧向后取用户设置的帧数/距离窗口，计算 GT 窗口路程 / VO 原始窗口路程。
+    如果旧报告没有 scale_per_frame，则兼容读取 sim3_scale。
     """
     fig = go.Figure()
-    if {"timestamp", "sim3_scale"}.issubset(df.columns):
+    scale_col = "local_sim3_scale" if "local_sim3_scale" in df.columns else "sim3_scale"
+    if {"timestamp", scale_col}.issubset(df.columns):
         clean = df.copy()
         clean["timestamp"] = pd.to_numeric(clean["timestamp"], errors="coerce")
-        clean["sim3_scale"] = pd.to_numeric(clean["sim3_scale"], errors="coerce")
-        clean = clean.dropna(subset=["timestamp", "sim3_scale"])
+        clean[scale_col] = pd.to_numeric(clean[scale_col], errors="coerce")
+        if "scale_available" in clean.columns:
+            clean = clean[clean["scale_available"].astype(bool)]
+        clean = clean.dropna(subset=["timestamp", scale_col])
         if not clean.empty:
-            timestamps, scales = segmented_values(clean, ["timestamp", "sim3_scale"])
-            fig.add_trace(go.Scatter(x=timestamps, y=scales, mode="lines+markers", name="sim3_scale"))
-    fig.update_layout(title="Sim3 尺度随时间戳变化", xaxis_title="timestamp s", yaxis_title="Sim3 scale", height=360)
+            timestamps, scales = segmented_values(clean, ["timestamp", scale_col])
+            fig.add_trace(go.Scatter(x=timestamps, y=scales, mode="lines+markers", name="local_sim3_scale"))
+    fig.update_layout(title="局部 Sim3 尺度随时间戳变化", xaxis_title="timestamp s", yaxis_title="GT/VO local scale", height=360)
     return fig
 
 
@@ -1188,6 +1199,9 @@ METRIC_FIELD_LABELS = {
     "rpe_delta_value": "RPE 统计间隔数值",
     "rpe_delta_unit": "RPE 统计单位",
     "rpe_distance_tolerance_ratio": "RPE 距离容差比例",
+    "scale_delta_value": "尺度图间隔数值",
+    "scale_delta_unit": "尺度图统计单位",
+    "scale_distance_tolerance_ratio": "尺度图距离容差比例",
     "segment_lengths_m": "子轨迹长度列表",
     "max_segments_per_length": "每个长度最大采样数",
     "segment_step_frames": "子轨迹采样步长",
@@ -1535,6 +1549,9 @@ def config_metric_issue(field: str) -> str:
         "rpe_delta_value": "RPE 统计间隔数值；配合 rpe_delta_unit 使用，单位可以是帧 f 或距离 m。",
         "rpe_delta_unit": "RPE 统计单位；frames/f 表示按固定帧数，meters/m 表示按 GT 路程窗口。",
         "rpe_distance_tolerance_ratio": "RPE 距离模式的容差比例；例如 0.05 表示 100m 会在 95-105m 候选中选择误差最小的终点。",
+        "scale_delta_value": "尺度图统计间隔数值；配合 scale_delta_unit 使用，单位可以是帧 f 或距离 m。",
+        "scale_delta_unit": "尺度图统计单位；frames/f 表示按固定帧数，meters/m 表示按 GT 路程窗口。",
+        "scale_distance_tolerance_ratio": "尺度图距离模式的容差比例；例如 0.05 表示 100m 会在 95-105m 候选中取 GT 距离最接近 100m 的终点。",
         "segment_lengths_m": "长航程子轨迹统计使用的距离列表；决定报告会比较哪些航程长度。",
         "max_segments_per_length": "每个子轨迹长度最多抽样数量；限制计算量，过低会降低统计代表性。",
         "segment_step_frames": "子轨迹抽样步长；步长越小样本越密，但计算更慢。",

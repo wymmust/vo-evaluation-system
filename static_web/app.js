@@ -189,6 +189,8 @@ function buildConfig() {
   const maxInterpolationGap = numberOf("maxInterpolationGap");
   const rpeDeltaValue = numberOf("rpeDeltaValue");
   const rpeDeltaUnit = valueOf("rpeDeltaUnit");
+  const scaleDeltaValue = numberOf("scaleDeltaValue");
+  const scaleDeltaUnit = valueOf("scaleDeltaUnit");
   return {
     profile: "monocular_long_range_uav",
     alignment: valueOf("alignment"),
@@ -205,6 +207,9 @@ function buildConfig() {
     rpe_delta_value: rpeDeltaValue,
     rpe_delta_unit: rpeDeltaUnit,
     rpe_distance_tolerance_ratio: 0.05,
+    scale_delta_value: scaleDeltaValue,
+    scale_delta_unit: scaleDeltaUnit,
+    scale_distance_tolerance_ratio: 0.05,
     rpe_delta_seconds: [1, 5, 10],
     segment_lengths_m: parseFloatList(valueOf("segmentLengths")),
     max_segments_per_length: integerOf("maxSegments"),
@@ -391,7 +396,7 @@ function renderCharts(report) {
   const perPose = report.per_pose || [];
   const segmentSummary = report.segment_errors || [];
   const speedBins = report.speed_bins || [];
-  const sim3Rows = report.trajectory_exports?.sim3_vo_tum || [];
+  const sim3Rows = report.trajectory_exports?.scale_per_frame || report.trajectory_exports?.sim3_vo_tum || [];
   const rpeRows = report.trajectory_exports?.rpe_per_frame || [];
 
   const [gtX, gtY, gtZ] = segmentedValues(perPose, ["gt_x_m", "gt_y_m", "gt_z_m"]);
@@ -507,20 +512,26 @@ function renderRpeTimeChart(id, rows, spec) {
 
 function renderSim3ScaleTimeChart(id, rows, alignment = {}) {
   const cleanRows = rows.filter((row) => (
-    Number.isFinite(Number(row.timestamp)) && Number.isFinite(Number(row.sim3_scale))
+    row.scale_available !== false
+    && Number.isFinite(Number(row.timestamp))
+    && (Number.isFinite(Number(row.local_sim3_scale)) || Number.isFinite(Number(row.sim3_scale)))
   ));
-  const [timestamps, scales] = segmentedValues(cleanRows, ["timestamp", "sim3_scale"]);
+  const displayRows = cleanRows.map((row) => ({
+    ...row,
+    display_scale: Number.isFinite(Number(row.local_sim3_scale)) ? row.local_sim3_scale : row.sim3_scale,
+  }));
+  const [timestamps, scales] = segmentedValues(displayRows, ["timestamp", "display_scale"]);
   const fallbackScale = Number(alignment?.scale);
   const data = timestamps.length
-    ? [{ x: timestamps, y: scales, mode: "lines+markers", type: "scatter", name: "sim3_scale" }]
+    ? [{ x: timestamps, y: scales, mode: "lines+markers", type: "scatter", name: "local_sim3_scale" }]
     : [{
         x: Number.isFinite(fallbackScale) ? [0] : [],
         y: Number.isFinite(fallbackScale) ? [fallbackScale] : [],
         mode: "markers",
         type: "scatter",
-        name: "sim3_scale",
+        name: "local_sim3_scale",
       }];
-  Plotly.newPlot(id, data, layout("Sim3 尺度随时间戳变化", { xaxis: { title: "timestamp s" }, yaxis: { title: "Sim3 scale" } }));
+  Plotly.newPlot(id, data, layout("局部 Sim3 尺度随时间戳变化", { xaxis: { title: "timestamp s" }, yaxis: { title: "GT/VO local scale" } }));
 }
 
 function segmentedValues(rows, columns) {
@@ -1616,6 +1627,7 @@ function buildConfigRows(report) {
     { label: "轨迹对齐", value: cfg.alignment || "N/A" },
     { label: "姿态修正", value: correction.auto ? `auto -> ${correction.selected}` : (correction.selected || cfg.orientation_correction || "N/A") },
     { label: "RPE 间隔", value: rpeDeltaLabel(report.rpe_frame_delta || cfg) },
+    { label: "尺度图间隔", value: rpeDeltaLabel(report.scale_frame_delta || cfg) },
     { label: "断点策略", value: cfg.continuous_segment_policy || "N/A" },
     { label: "评估路程/耗时", value: `${formatValue(summary.gt_path_length_m, "m")} / ${formatValue(summary.duration_s, "s")}` },
   ];
@@ -1827,6 +1839,9 @@ const METRIC_FIELD_LABELS = {
   rpe_delta_value: "RPE 统计间隔数值",
   rpe_delta_unit: "RPE 统计单位",
   rpe_distance_tolerance_ratio: "RPE 距离容差比例",
+  scale_delta_value: "尺度图间隔数值",
+  scale_delta_unit: "尺度图统计单位",
+  scale_distance_tolerance_ratio: "尺度图距离容差比例",
   segment_lengths_m: "子轨迹长度列表",
   max_segments_per_length: "每个长度最大采样数",
   segment_step_frames: "子轨迹采样步长",
@@ -2275,6 +2290,9 @@ function configMetricIssue(field) {
     rpe_delta_value: "RPE 统计间隔数值；配合 rpe_delta_unit 使用，单位可以是帧 f 或距离 m。",
     rpe_delta_unit: "RPE 统计单位；frames/f 表示按固定帧数，meters/m 表示按 GT 路程窗口。",
     rpe_distance_tolerance_ratio: "RPE 距离模式的容差比例；例如 0.05 表示 100m 会在 95-105m 候选中选择误差最小的终点。",
+    scale_delta_value: "尺度图统计间隔数值；配合 scale_delta_unit 使用，单位可以是帧 f 或距离 m。",
+    scale_delta_unit: "尺度图统计单位；frames/f 表示按固定帧数，meters/m 表示按 GT 路程窗口。",
+    scale_distance_tolerance_ratio: "尺度图距离模式的容差比例；例如 0.05 表示 100m 会在 95-105m 候选中取 GT 距离最接近 100m 的终点。",
     segment_lengths_m: "长航程子轨迹统计使用的距离列表；决定报告会比较哪些航程长度。",
     max_segments_per_length: "每个子轨迹长度最多抽样数量；限制计算量，过低会降低统计代表性。",
     segment_step_frames: "子轨迹抽样步长；步长越小样本越密，但计算更慢。",
@@ -2332,6 +2350,7 @@ function buildTrajectoryWorkbook(sheets) {
     "sim3_vo_tum",
     "ate_per_frame",
     "rpe_per_frame",
+    "scale_per_frame",
   ];
   const entries = orderedNames.map((name) => ({
     name,

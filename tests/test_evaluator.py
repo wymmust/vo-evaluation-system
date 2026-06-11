@@ -69,7 +69,7 @@ def test_streamlit_sim3_scale_time_series_uses_exported_scale_by_timestamp():
         {
             "timestamp": [10, 11, 20],
             "segment_id": [0, 0, 1],
-            "sim3_scale": [2.0, 2.0, 3.0],
+            "local_sim3_scale": [2.0, 2.0, 3.0],
         }
     )
     fig = make_sim3_scale_time_series(frame)
@@ -174,19 +174,32 @@ def test_sf_vo_format_uses_ts_txtyz_ypr_and_reset_fields_in_auto_mode():
         assert key in traj.extras
 
 
-def test_vloc_vo_format_uses_plain_header_txtyz_ypr_and_gps_fields_in_auto_mode():
+def test_vloc_vo_format_uses_plain_header_tx_ty_negative_altitude_and_gps_fields_in_auto_mode():
     text = """ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
-1882.60 1 42 0 1 2 3 90 2 -1 31.1 121.2 50.5
-1882.65 1 43 1 2 3 4 91 3 -2 31.2 121.3 50.8
+1882.55 0 10 0 9 9 0 89 1 -1 0 0 0
+1882.60 1 42 0 1 2 220 90 2 -1 31.1 121.2 50.5
+1882.65 1 43 1 2 3 221 91 3 -2 31.2 121.3 50.8
 """
     traj = load_trajectory_from_text(text, fmt="auto", name="vloc_vo")
 
     assert traj.source_format == "vloc"
     assert np.allclose(traj.stamps, [1882.60, 1882.65])
-    assert np.allclose(traj.positions[1], [2, 3, 4])
+    assert np.allclose(traj.positions[1], [2, 3, -50.8])
     assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
     for key in ["status", "num_inliers", "reset_count", "latitude", "longitude", "altitude"]:
         assert key in traj.extras
+
+
+def test_vloc_vo_format_falls_back_to_tz_when_gps_altitude_is_not_available():
+    text = """ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
+1882.60 1 42 0 1 2 3 90 2 -1 0 0 0
+1882.65 1 43 1 2 3 4 91 3 -2 0 0 0
+"""
+    traj = load_trajectory_from_text(text, fmt="vloc", name="vloc_vo_no_gps")
+
+    assert traj.source_format == "vloc"
+    assert np.allclose(traj.stamps, [1882.60, 1882.65])
+    assert np.allclose(traj.positions[1], [2, 3, 4])
 
 
 def test_euroc_commented_header_uses_seconds_and_qw_order():
@@ -308,6 +321,86 @@ def test_rpe_distance_mode_uses_gt_distance_window_and_best_error_candidate():
     assert first["rpe_candidate_count"] == 3
     assert first["rpe_translation_m"] == 1.0
     assert sheet["rpe_available"].tolist()[-2:] == [False, False]
+
+
+def test_scale_frame_mode_outputs_local_scale_per_start_timestamp():
+    stamps = np.arange(5, dtype=float)
+    gt = Trajectory(
+        "gt",
+        stamps,
+        np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [20.0, 0.0, 0.0], [30.0, 0.0, 0.0], [40.0, 0.0, 0.0]]),
+    )
+    est = Trajectory(
+        "est",
+        stamps,
+        np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [10.0, 0.0, 0.0], [15.0, 0.0, 0.0], [20.0, 0.0, 0.0]]),
+    )
+
+    report = evaluate_trajectories(
+        gt,
+        est,
+        EvaluationConfig(
+            alignment="none",
+            scale_delta_value=2,
+            scale_delta_unit="frames",
+            segment_lengths_m=(1.0,),
+            max_interpolation_gap_s=1.1,
+        ),
+    )
+
+    scale_info = report["scale_frame_delta"]
+    assert scale_info["delta_unit"] == "frames"
+    assert scale_info["delta_frames"] == 2
+    assert scale_info["count"] == 3
+    assert scale_info["local_sim3_scale"]["mean"] == 2.0
+
+    sheet = report["trajectory_exports"]["scale_per_frame"]
+    assert sheet["scale_available"].tolist() == [True, True, True, False, False]
+    assert sheet["scale_end_match_index"].tolist()[:3] == [2, 3, 4]
+    assert sheet["local_scale_ratio_est_over_gt"].tolist()[:3] == [0.5, 0.5, 0.5]
+    assert sheet["local_sim3_scale"].tolist()[:3] == [2.0, 2.0, 2.0]
+    assert sheet["local_scale_drift_percent"].tolist()[:3] == [-50.0, -50.0, -50.0]
+
+
+def test_scale_distance_mode_uses_gt_distance_window_closest_to_target():
+    stamps = np.arange(5, dtype=float)
+    gt = Trajectory(
+        "gt",
+        stamps,
+        np.array([[0.0, 0.0, 0.0], [96.0, 0.0, 0.0], [100.0, 0.0, 0.0], [104.0, 0.0, 0.0], [205.0, 0.0, 0.0]]),
+    )
+    est = Trajectory(
+        "est",
+        stamps,
+        np.array([[0.0, 0.0, 0.0], [48.0, 0.0, 0.0], [50.0, 0.0, 0.0], [52.0, 0.0, 0.0], [102.5, 0.0, 0.0]]),
+    )
+
+    report = evaluate_trajectories(
+        gt,
+        est,
+        EvaluationConfig(
+            alignment="none",
+            scale_delta_value=100.0,
+            scale_delta_unit="meters",
+            scale_distance_tolerance_ratio=0.05,
+            segment_lengths_m=(1.0,),
+            discontinuity_step_m=1000.0,
+        ),
+    )
+
+    scale_info = report["scale_frame_delta"]
+    assert scale_info["delta_unit"] == "meters"
+    assert scale_info["delta_distance_m"] == 100.0
+    assert scale_info["distance_tolerance_ratio"] == 0.05
+
+    sheet = report["trajectory_exports"]["scale_per_frame"]
+    first = sheet.iloc[0]
+    assert bool(first["scale_available"]) is True
+    assert first["scale_end_match_index"] == 2
+    assert first["scale_candidate_count"] == 3
+    assert first["scale_actual_distance_m"] == 100.0
+    assert first["local_scale_ratio_est_over_gt"] == 0.5
+    assert first["local_sim3_scale"] == 2.0
 
 
 def test_build_associated_trajectories_linearly_interpolates_gt_position():
@@ -443,6 +536,7 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
         "sim3_vo_tum",
         "ate_per_frame",
         "rpe_per_frame",
+        "scale_per_frame",
     ]
     for frame in [sheets[name] for name in list(sheets)[:6]]:
         assert list(frame.columns[:8]) == ["timestamp", "tx", "ty", "tz", "qx", "qy", "qz", "qw"]

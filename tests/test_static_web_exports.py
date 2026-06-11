@@ -24,6 +24,68 @@ def test_static_python_sources_are_fetched_without_browser_cache():
     assert "cacheBust" in app_js
 
 
+def test_static_scale_interval_controls_are_wired_into_config():
+    html = Path("static_web/index.html").read_text()
+    assert 'id="scaleDeltaValue"' in html
+    assert 'id="scaleDeltaUnit"' in html
+
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const elements = {
+          maxTimeDiff: { value: "0.02" },
+          maxInterpolationGap: { value: "0.15" },
+          allowExtrapolation: { value: "false" },
+          interpolateRotation: { value: "true" },
+          timeOffset: { value: "0" },
+          rpeDeltaValue: { value: "1" },
+          rpeDeltaUnit: { value: "frames" },
+          scaleDeltaValue: { value: "100" },
+          scaleDeltaUnit: { value: "meters" },
+          segmentLengths: { value: "50,100" },
+          maxSegments: { value: "10000" },
+          segmentStep: { value: "10" },
+          lengthTolerance: { value: "0.2" },
+          alignment: { value: "sim3" },
+          orientationCorrection: { value: "auto" },
+          associationMode: { value: "interpolate_gt" },
+          discontinuityStep: { value: "100" },
+          discontinuityGap: { value: "5" },
+          divergenceAbs: { value: "10" },
+          divergenceRel: { value: "2" },
+          segmentPolicy: { value: "segments" },
+        };
+        const element = { addEventListener() {}, classList: { add() {}, remove() {} }, style: {}, files: [], value: "" };
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || element; },
+          createElement() { return { ...element, click() {}, remove() {} }; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot() {}, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+        process.stdout.write(JSON.stringify(context.buildConfig()));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    config = json.loads(result.stdout)
+    assert config["scale_delta_value"] == 100
+    assert config["scale_delta_unit"] == "meters"
+    assert config["scale_distance_tolerance_ratio"] == 0.05
+
+
 def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets():
     script = textwrap.dedent(
         r"""
@@ -70,6 +132,7 @@ def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets(
               sim3_vo_tum: [{ timestamp: 1, tx: 0, ty: 0, tz: 0 }],
               ate_per_frame: [{ timestamp: 1, ate_position_m: 0.1 }],
               rpe_per_frame: [{ timestamp: 1, rpe_translation_m: 0.2, rpe_available: true }],
+              scale_per_frame: [{ timestamp: 1, local_sim3_scale: 2, scale_available: true }],
             },
           };
         const sanitized = context.reportForHtmlExport(report);
@@ -98,11 +161,13 @@ def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets(
         "sim3_vo_tum",
         "ate_per_frame",
         "rpe_per_frame",
+        "scale_per_frame",
     ]
     assert workbook["input_gt_tum"]["A1"].value == "timestamp"
     assert workbook["input_gt_tum"]["A2"].value == 1
     assert workbook["ate_per_frame"]["B1"].value == "ate_position_m"
     assert workbook["rpe_per_frame"]["B1"].value == "rpe_translation_m"
+    assert workbook["scale_per_frame"]["B1"].value == "local_sim3_scale"
 
 
 def test_static_visualization_renders_time_series_and_rpe_charts():
@@ -201,6 +266,10 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
               { timestamp: 0, rpe_translation_m: 0.3, rpe_rotation_deg: 1.1, rpe_available: true },
               { timestamp: 1, rpe_translation_m: 0.4, rpe_rotation_deg: 1.2, rpe_available: true },
             ],
+            scale_per_frame: [
+              { timestamp: 0, segment_id: 0, local_sim3_scale: 2, scale_available: true },
+              { timestamp: 1, segment_id: 0, local_sim3_scale: 2, scale_available: true },
+            ],
           },
         });
         process.stdout.write(JSON.stringify(plots.map((plot) => plot.id)));
@@ -211,7 +280,7 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
     assert set(expected_ids).issubset(rendered_ids)
 
 
-def test_static_sim3_scale_chart_uses_exported_scale_by_timestamp():
+def test_static_sim3_scale_chart_uses_local_scale_by_timestamp():
     script = textwrap.dedent(
         r"""
         const fs = require("fs");
@@ -247,9 +316,9 @@ def test_static_sim3_scale_chart_uses_exported_scale_by_timestamp():
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         context.renderSim3ScaleTimeChart("sim3ScaleTime", [
-          { timestamp: 10, segment_id: 0, sim3_scale: 2 },
-          { timestamp: 11, segment_id: 0, sim3_scale: 2 },
-          { timestamp: 20, segment_id: 1, sim3_scale: 3 },
+          { timestamp: 10, segment_id: 0, local_sim3_scale: 2, scale_available: true },
+          { timestamp: 11, segment_id: 0, local_sim3_scale: 2, scale_available: true },
+          { timestamp: 20, segment_id: 1, local_sim3_scale: 3, scale_available: true },
         ], {});
         process.stdout.write(JSON.stringify({ x: plots[0].data[0].x, y: plots[0].data[0].y }));
         """
