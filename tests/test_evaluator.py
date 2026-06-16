@@ -4,14 +4,18 @@ import io
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from vo_eval.evaluator import (
     EvaluationConfig,
+    SUPPORTED_EVALUATION_FORMATS,
     Trajectory,
     build_associated_trajectories,
     evaluate_trajectories,
     euler_yaw_pitch_roll_to_matrix,
+    get_evaluation_format_spec,
     load_trajectory_from_text,
+    normalize_evaluation_format,
     report_to_excel,
     report_to_json,
     yaw_from_rot,
@@ -87,6 +91,44 @@ def make_tum(rows=120):
         z = 50.0 + 0.01 * i
         lines.append(f"{t:.3f} {x:.6f} {y:.6f} {z:.6f} 0 0 0 1")
     return "\n".join(lines)
+
+
+def test_public_evaluation_formats_match_requirement_doc():
+    assert SUPPORTED_EVALUATION_FORMATS == ("sf_vloc", "sf_vo", "tum")
+
+    sf_vloc = get_evaluation_format_spec("sf_vloc")
+    assert sf_vloc.mode == "sf_vloc"
+    assert sf_vloc.required_files == (
+        "data_dir/imu.txt",
+        "log_dir/vloc.txt",
+        "log_dir/home_point.txt",
+        "log_dir/calib_raw.yaml",
+    )
+
+    sf_vo = get_evaluation_format_spec("sf_vo")
+    assert sf_vo.mode == "sf_vo"
+    assert sf_vo.required_files == (
+        "data_dir/imu.txt",
+        "log_dir/vo.txt",
+        "log_dir/home_point.txt",
+        "log_dir/calib_raw.yaml",
+    )
+
+    tum = get_evaluation_format_spec("tum")
+    assert tum.mode == "tum"
+    assert tum.required_files == ("ground_truth.tum", "estimate.tum")
+
+
+def test_public_evaluation_format_rejects_legacy_parser_formats():
+    for fmt in ["auto", "sf", "vloc", "csv", "kitti", "xyz"]:
+        with pytest.raises(ValueError, match="Supported evaluation formats"):
+            normalize_evaluation_format(fmt)
+
+
+def test_public_evaluation_format_normalizes_common_separators():
+    assert normalize_evaluation_format("SF-VLOC") == "sf_vloc"
+    assert normalize_evaluation_format("sf vo") == "sf_vo"
+    assert normalize_evaluation_format("Tum") == "tum"
 
 
 def test_tum_zero_error_after_se3_alignment():
