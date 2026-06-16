@@ -1,6 +1,7 @@
 const state = {
   pyodide: null,
-  evaluateJson: null,
+  evaluateVlocBundleJson: null,
+  evaluateVoBundleJson: null,
   report: null,
   loadingStep: "",
 };
@@ -11,8 +12,14 @@ const els = {
   status: document.getElementById("runtimeStatus"),
   message: document.getElementById("message"),
   runButton: document.getElementById("runButton"),
-  gtFile: document.getElementById("gtFile"),
-  estFile: document.getElementById("estFile"),
+  entryMode: document.getElementById("entryMode"),
+  entryModeHint: document.getElementById("entryModeHint"),
+  dataDirFiles: document.getElementById("dataDirFiles"),
+  logDirFiles: document.getElementById("logDirFiles"),
+  dataDirButton: document.getElementById("dataDirButton"),
+  logDirButton: document.getElementById("logDirButton"),
+  dataDirStatus: document.getElementById("dataDirStatus"),
+  logDirStatus: document.getElementById("logDirStatus"),
   downloadJson: document.getElementById("downloadJson"),
   downloadPoseCsv: document.getElementById("downloadPoseCsv"),
   downloadSegmentCsv: document.getElementById("downloadSegmentCsv"),
@@ -62,7 +69,12 @@ async function init() {
 }
 
 function wireEvents() {
-  [els.gtFile, els.estFile].forEach((input) => input.addEventListener("change", updateRunButton));
+  [els.entryMode, els.dataDirFiles, els.logDirFiles].forEach((input) => input.addEventListener("change", updateRunButton));
+  els.dataDirFiles.addEventListener("change", () => updateDirectoryStatus("data"));
+  els.logDirFiles.addEventListener("change", () => updateDirectoryStatus("log"));
+  els.entryMode.addEventListener("change", updateEntryModeHint);
+  els.dataDirButton.addEventListener("click", () => els.dataDirFiles.click());
+  els.logDirButton.addEventListener("click", () => els.logDirFiles.click());
   document.getElementById("interpolationPreset").addEventListener("change", applyInterpolationPreset);
   els.runButton.addEventListener("click", runEvaluation);
   els.downloadJson.addEventListener("click", () => downloadText("vo_evaluation_metrics.json", JSON.stringify(state.report, null, 2), "application/json"));
@@ -76,6 +88,9 @@ function wireEvents() {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ));
   els.downloadHtml.addEventListener("click", () => downloadText("vo_evaluation_report.html", buildHtmlReport(), "text/html"));
+  updateEntryModeHint();
+  updateDirectoryStatus("data");
+  updateDirectoryStatus("log");
 }
 
 async function initPyodide() {
@@ -107,9 +122,10 @@ async function initPyodide() {
   state.pyodide.runPython(`
 import sys
 sys.path.insert(0, "/")
-from browser_runner import evaluate_json
+from browser_runner import evaluate_vloc_bundle_json, evaluate_vo_bundle_json
 `);
-  state.evaluateJson = state.pyodide.globals.get("evaluate_json");
+  state.evaluateVlocBundleJson = state.pyodide.globals.get("evaluate_vloc_bundle_json");
+  state.evaluateVoBundleJson = state.pyodide.globals.get("evaluate_vo_bundle_json");
 }
 
 async function fetchText(url) {
@@ -153,26 +169,41 @@ function describeRuntimeError(error) {
 }
 
 function updateRunButton() {
-  els.runButton.disabled = !(state.evaluateJson && els.gtFile.files.length && els.estFile.files.length);
+  const hasRuntime = Boolean(state.evaluateVlocBundleJson && state.evaluateVoBundleJson);
+  const missing = missingBundleFiles();
+  els.runButton.disabled = !(hasRuntime && missing.length === 0);
 }
 
 async function runEvaluation() {
   clearMessage();
   setBusy(true);
   try {
-    const gtFile = els.gtFile.files[0];
-    const estFile = els.estFile.files[0];
-    const [gtText, estText] = await Promise.all([gtFile.text(), estFile.text()]);
+    const entryMode = valueOf("entryMode");
+    const payload = await buildBundlePayload(entryMode);
     const config = buildConfig();
-    const reportJson = state.evaluateJson(
-      gtText,
-      estText,
-      valueOf("gtFormat"),
-      valueOf("estFormat"),
-      JSON.stringify(config),
-      gtFile.name,
-      estFile.name,
-    );
+    const reportJson = entryMode === "vloc"
+      ? state.evaluateVlocBundleJson(
+        payload.imuText,
+        payload.estimateText,
+        payload.homePointText,
+        payload.calibRawText,
+        JSON.stringify(config),
+        payload.imuName,
+        payload.estimateName,
+        payload.homePointName,
+        payload.calibRawName,
+      )
+      : state.evaluateVoBundleJson(
+        payload.imuText,
+        payload.estimateText,
+        payload.homePointText,
+        payload.calibRawText,
+        JSON.stringify(config),
+        payload.imuName,
+        payload.estimateName,
+        payload.homePointName,
+        payload.calibRawName,
+      );
     state.report = JSON.parse(String(reportJson));
     renderReport(state.report);
     enableDownloads(true);
@@ -234,6 +265,111 @@ function applyInterpolationPreset() {
   document.getElementById("maxInterpolationGap").value = preset;
 }
 
+function requiredBundleFiles(entryMode) {
+  const estimateName = entryMode === "vloc" ? "vloc.txt" : "vo.txt";
+  return {
+    data: ["imu.txt"],
+    log: [estimateName, "home_point.txt", "calib_raw.yaml"],
+  };
+}
+
+function selectedFiles(input) {
+  return Array.from(input?.files || []);
+}
+
+function directoryFileMap(input) {
+  const files = selectedFiles(input);
+  const out = new Map();
+  for (const file of files) {
+    const relative = file.webkitRelativePath || file.name;
+    const parts = relative.split("/");
+    const basename = parts[parts.length - 1];
+    if (!out.has(basename)) {
+      out.set(basename, file);
+    }
+  }
+  return out;
+}
+
+function directoryNameFromFiles(files) {
+  if (!files.length) {
+    return "";
+  }
+  const relative = files[0].webkitRelativePath || "";
+  if (relative.includes("/")) {
+    return relative.split("/")[0];
+  }
+  return files[0].name || "";
+}
+
+function updateDirectoryStatus(kind) {
+  const isData = kind === "data";
+  const input = isData ? els.dataDirFiles : els.logDirFiles;
+  const target = isData ? els.dataDirStatus : els.logDirStatus;
+  const files = selectedFiles(input);
+  if (!files.length) {
+    target.textContent = "未选择目录";
+    return;
+  }
+  const name = directoryNameFromFiles(files) || (isData ? "data_dir" : "log_dir");
+  target.textContent = `${name} · ${files.length} 个文件`;
+}
+
+function missingBundleFiles() {
+  const entryMode = valueOf("entryMode");
+  const required = requiredBundleFiles(entryMode);
+  const dataFiles = directoryFileMap(els.dataDirFiles);
+  const logFiles = directoryFileMap(els.logDirFiles);
+  const missing = [];
+  for (const name of required.data) {
+    if (!dataFiles.has(name)) {
+      missing.push(`data_dir/${name}`);
+    }
+  }
+  for (const name of required.log) {
+    if (!logFiles.has(name)) {
+      missing.push(`log_dir/${name}`);
+    }
+  }
+  return missing;
+}
+
+async function buildBundlePayload(entryMode) {
+  const missing = missingBundleFiles();
+  if (missing.length) {
+    throw new Error(`缺少必需文件：${missing.join("，")}`);
+  }
+  const required = requiredBundleFiles(entryMode);
+  const dataFiles = directoryFileMap(els.dataDirFiles);
+  const logFiles = directoryFileMap(els.logDirFiles);
+  const imuFile = dataFiles.get(required.data[0]);
+  const estimateFile = logFiles.get(required.log[0]);
+  const homePointFile = logFiles.get("home_point.txt");
+  const calibRawFile = logFiles.get("calib_raw.yaml");
+  const [imuText, estimateText, homePointText, calibRawText] = await Promise.all([
+    imuFile.text(),
+    estimateFile.text(),
+    homePointFile.text(),
+    calibRawFile.text(),
+  ]);
+  return {
+    imuText,
+    estimateText,
+    homePointText,
+    calibRawText,
+    imuName: imuFile.name,
+    estimateName: estimateFile.name,
+    homePointName: homePointFile.name,
+    calibRawName: calibRawFile.name,
+  };
+}
+
+function updateEntryModeHint() {
+  const entryMode = valueOf("entryMode");
+  const estimateName = entryMode === "vloc" ? "vloc.txt" : "vo.txt";
+  els.entryModeHint.innerHTML = `当前模式会读取 <code>log_dir/${estimateName}</code>、<code>home_point.txt</code> 和 <code>calib_raw.yaml</code>。`;
+}
+
 function valueOf(id) {
   return document.getElementById(id).value;
 }
@@ -267,7 +403,8 @@ function parseFloatList(text) {
 }
 
 function setBusy(isBusy) {
-  els.runButton.disabled = isBusy || !(els.gtFile.files.length && els.estFile.files.length && state.evaluateJson);
+  const hasRuntime = Boolean(state.evaluateVlocBundleJson && state.evaluateVoBundleJson);
+  els.runButton.disabled = isBusy || !hasRuntime || missingBundleFiles().length > 0;
   els.runButton.textContent = isBusy ? "计算中..." : "运行评估";
 }
 

@@ -1,28 +1,70 @@
 """Browser wrapper for the static Pyodide build.
 
-The static web app loads this module inside Pyodide. It keeps the public API
-small: JavaScript passes file text and config JSON, Python returns report JSON.
+The static web app loads this module inside Pyodide. It now follows the same
+fixed-contract entry model as the refactor backend:
+- VLOC mode: data_dir/imu.txt + log_dir/vloc.txt + home_point + calib_raw
+- VO mode:   data_dir/imu.txt + log_dir/vo.txt   + home_point + calib_raw
+
+JavaScript passes file contents, Python validates/parses them with the fixed
+parsers, then returns report JSON.
 """
 
 from __future__ import annotations
 
 import json
 
-from vo_eval.evaluator import EvaluationConfig, evaluate_trajectories, load_trajectory_from_text, report_to_json
+from vo_eval.evaluator import (
+    EvaluationConfig,
+    evaluate_trajectories,
+    parse_calib_raw_fixed,
+    parse_home_point_fixed,
+    parse_imu_fixed,
+    parse_vloc_fixed,
+    parse_vo_fixed,
+    report_to_json,
+)
 
 
-def evaluate_json(
-    gt_text: str,
-    est_text: str,
-    gt_fmt: str,
-    est_fmt: str,
-    config_json: str,
-    gt_name: str = "ground_truth",
-    est_name: str = "vo_output",
-) -> str:
+def _config_from_json(config_json: str) -> EvaluationConfig:
     config_data = json.loads(config_json)
-    config = EvaluationConfig(**config_data)
-    gt = load_trajectory_from_text(gt_text, fmt=gt_fmt, name=gt_name)
-    est = load_trajectory_from_text(est_text, fmt=est_fmt, name=est_name)
-    report = evaluate_trajectories(gt, est, config)
+    return EvaluationConfig(**config_data)
+
+
+def evaluate_vloc_bundle_json(
+    imu_text: str,
+    vloc_text: str,
+    home_point_text: str,
+    calib_raw_text: str,
+    config_json: str,
+    imu_name: str = "imu.txt",
+    vloc_name: str = "vloc.txt",
+    home_point_name: str = "home_point.txt",
+    calib_raw_name: str = "calib_raw.yaml",
+) -> str:
+    config = _config_from_json(config_json)
+    nav = parse_imu_fixed(imu_text, name=imu_name)
+    est = parse_vloc_fixed(vloc_text, name=vloc_name)
+    parse_home_point_fixed(home_point_text, name=home_point_name)
+    parse_calib_raw_fixed(calib_raw_text, name=calib_raw_name)
+    report = evaluate_trajectories(nav, est, config)
+    return report_to_json(report)
+
+
+def evaluate_vo_bundle_json(
+    imu_text: str,
+    vo_text: str,
+    home_point_text: str,
+    calib_raw_text: str,
+    config_json: str,
+    imu_name: str = "imu.txt",
+    vo_name: str = "vo.txt",
+    home_point_name: str = "home_point.txt",
+    calib_raw_name: str = "calib_raw.yaml",
+) -> str:
+    config = _config_from_json(config_json)
+    nav = parse_imu_fixed(imu_text, name=imu_name)
+    est = parse_vo_fixed(vo_text, name=vo_name)
+    parse_home_point_fixed(home_point_text, name=home_point_name)
+    parse_calib_raw_fixed(calib_raw_text, name=calib_raw_name)
+    report = evaluate_trajectories(nav, est, config)
     return report_to_json(report)

@@ -20,42 +20,37 @@
     <main class="layout">
       <aside class="panel controls" aria-label="评估设置">
         <section>
-          <h2>输入文件</h2>
+          <h2>输入目录</h2>
           <label>
-            Ground truth
-            <input id="gtFile" type="file" accept=".txt,.csv,.tsv,.log" />
+            评估入口
+            <select id="entryMode">
+              <option value="vloc" selected>VLOC 评估</option>
+              <option value="vo">VO 评估</option>
+            </select>
           </label>
           <label>
-            VO 输出
-            <input id="estFile" type="file" accept=".txt,.csv,.tsv,.log" />
+            data_dir 目录
+            <div class="directory-picker-row">
+              <button id="dataDirButton" type="button" class="directory-picker-button">选择 data_dir 目录</button>
+              <div id="dataDirStatus" class="directory-status">未选择目录</div>
+            </div>
+            <input id="dataDirFiles" class="directory-input-hidden" type="file" webkitdirectory directory multiple />
           </label>
+          <p class="section-hint">固定读取 <code>data_dir/imu.txt</code>。</p>
+          <label>
+            log_dir 目录
+            <div class="directory-picker-row">
+              <button id="logDirButton" type="button" class="directory-picker-button">选择 log_dir 目录</button>
+              <div id="logDirStatus" class="directory-status">未选择目录</div>
+            </div>
+            <input id="logDirFiles" class="directory-input-hidden" type="file" webkitdirectory directory multiple />
+          </label>
+          <p id="entryModeHint" class="section-hint">当前模式会读取 <code>log_dir/vloc.txt</code>、<code>home_point.txt</code> 和 <code>calib_raw.yaml</code>。</p>
+          <p class="section-hint">浏览器不会暴露本地绝对路径，这里只显示目录名和文件数量。</p>
         </section>
 
         <section>
-          <h2>格式与对齐</h2>
-          <label>
-            Ground truth 格式
-            <select id="gtFormat">
-              <option value="auto">自动识别</option>
-              <option value="sf">SF</option>
-              <option value="tum">TUM</option>
-              <option value="kitti">KITTI</option>
-              <option value="csv">CSV/TSV 表格</option>
-              <option value="xyz">XYZ</option>
-            </select>
-          </label>
-          <label>
-            VO 输出格式
-            <select id="estFormat">
-              <option value="auto">自动识别</option>
-              <option value="sf">SF</option>
-              <option value="vloc">VLOC</option>
-              <option value="tum">TUM</option>
-              <option value="kitti">KITTI</option>
-              <option value="csv">CSV/TSV 表格</option>
-              <option value="xyz">XYZ</option>
-            </select>
-          </label>
+          <h2>模式与对齐</h2>
           <label>
             轨迹对齐
             <select id="alignment">
@@ -210,7 +205,7 @@
             </div>
           </div>
           <div id="metrics" class="metric-grid">
-            <div class="empty-state">上传 Ground truth 和 VO 输出后运行评估。</div>
+            <div class="empty-state">选择评估入口并导入 data_dir / log_dir 后运行评估。</div>
           </div>
         </section>
 

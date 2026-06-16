@@ -329,6 +329,65 @@ class Trajectory:
         return float(path_distance(self.positions)[-1]) if len(self.positions) else 0.0
 
 
+@dataclass(frozen=True)
+class HomePoint:
+    """SF 评估目录中的 home_point.txt。
+
+    固定格式：longitude latitude altitude_msl。
+    这里只负责读取固定三列，后续 NED 转换再使用这个原点。
+    """
+
+    longitude: float
+    latitude: float
+    altitude_msl: float
+
+
+@dataclass(frozen=True)
+class Calibration:
+    """SF 评估目录中的 calib_raw.yaml 关键外参。
+
+    只提取需求文档后续坐标变换会用到的 4x4 矩阵。
+    """
+
+    t_imu_body: np.ndarray
+    t_cam_imu: np.ndarray
+    t_cn_cnm1: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class SfVlocBundle:
+    """VLOC 评估入口读取结果。
+
+    这个 bundle 明确代表 VLOC 流程，只包含 vloc.txt，不会尝试读取 vo.txt。
+    后续 VLOC 专用预处理会在这个结构上继续做时间插值、NED 和外参转换。
+    """
+
+    nav: Trajectory
+    vloc: Trajectory
+    home_point: HomePoint
+    calibration: Calibration
+    data_dir: Path
+    log_dir: Path
+    files: dict[str, Path]
+
+
+@dataclass(frozen=True)
+class SfVoBundle:
+    """VO 评估入口读取结果。
+
+    这个 bundle 明确代表 VO 流程，只包含 vo.txt，不会尝试读取 vloc.txt。
+    后续 VO 专用预处理会按 reset_count 分段并做每段 Sim3。
+    """
+
+    nav: Trajectory
+    vo: Trajectory
+    home_point: HomePoint
+    calibration: Calibration
+    data_dir: Path
+    log_dir: Path
+    files: dict[str, Path]
+
+
 @dataclass
 class EvaluationConfig:
     """评估配置，基本都由 app.py/静态网页侧边栏控件传入。
@@ -382,60 +441,6 @@ class EvaluationConfig:
     top_k_worst_segments: int = 10
 
 
-# 下面这些候选列名用于 CSV/TSV/注释表头自动识别。
-# 目的：不要求用户改原始数据列名，只要能识别到所需字段即可。
-TIME_COLUMN_CANDIDATES = ["timestamp", "time", "t", "stamp", "sec", "seconds", "ts", "ts1", "frame", "index"]
-X_COLUMN_CANDIDATES = [
-    "x",
-    "tx",
-    "px",
-    "p_x",
-    "p_RS_R_x",
-    "p_W_B_x",
-    "p_W_C_x",
-    "posx",
-    "positionx",
-    "translationx",
-    "utmex",
-    "east",
-    "easting",
-]
-Y_COLUMN_CANDIDATES = [
-    "y",
-    "ty",
-    "py",
-    "p_y",
-    "p_RS_R_y",
-    "p_W_B_y",
-    "p_W_C_y",
-    "posy",
-    "positiony",
-    "translationy",
-    "utmnorth",
-    "north",
-    "northing",
-]
-Z_COLUMN_CANDIDATES = [
-    "z",
-    "tz",
-    "pz",
-    "p_z",
-    "p_RS_R_z",
-    "p_W_B_z",
-    "p_W_C_z",
-    "posz",
-    "positionz",
-    "translationz",
-    "alt",
-    "altitude",
-    "height",
-    "up",
-]
-QX_COLUMN_CANDIDATES = ["qx", "q_x", "q_RS_x", "q_W_B_x", "q_B_W_x", "quatx", "quaternionx", "orientationx"]
-QY_COLUMN_CANDIDATES = ["qy", "q_y", "q_RS_y", "q_W_B_y", "q_B_W_y", "quaty", "quaterniony", "orientationy"]
-QZ_COLUMN_CANDIDATES = ["qz", "q_z", "q_RS_z", "q_W_B_z", "q_B_W_z", "quatz", "quaternionz", "orientationz"]
-QW_COLUMN_CANDIDATES = ["qw", "q_w", "q_RS_w", "q_W_B_w", "q_B_W_w", "quatw", "quaternionw", "orientationw"]
-
 AUTO_ORIENTATION_CORRECTION_CANDIDATES = (
     "none",
     "inverse",
@@ -460,59 +465,329 @@ AUTO_ORIENTATION_CORRECTION_CANDIDATES = (
 )
 
 
-def load_trajectory(source: str | bytes | Path | io.BytesIO, fmt: str = "auto", name: str | None = None) -> Trajectory:
-    """从文件、上传对象或纯文本中读取轨迹。
+IMU_FIXED_COLUMNS = (
+    "ts",
+    "ts_fcc",
+    "status",
+    "flight_mode",
+    "x",
+    "y",
+    "z",
+    "yaw",
+    "pitch",
+    "roll",
+    "vx",
+    "vy",
+    "vz",
+    "position_reset_count",
+    "altitude_reset_count",
+    "heading_reset_count",
+    "latitude",
+    "longitude",
+    "altitude",
+    "altitude_msl",
+    "height",
+)
 
-    支持的常见格式：
-    - TUM: timestamp tx ty tz qx qy qz qw
-    - KITTI odometry: 12 values per row, row-major 3x4 pose matrix
-    - CSV/TSV/空格表：time/x/y/z，可选 quaternion、rotation matrix 或 yaw/pitch/roll。
+VLOC_FIXED_COLUMNS = (
+    "ts",
+    "status",
+    "num_inliers",
+    "reset_count",
+    "x",
+    "y",
+    "z",
+    "yaw",
+    "pitch",
+    "roll",
+    "latitude",
+    "longitude",
+    "height",
+)
 
-    代码意义：
-    - 这里只负责把输入对象变成文本，真正的格式识别在 load_trajectory_from_text()。
-    - 保留 name 是为了 report["inputs"] 能告诉用户本次评估到底用了哪个文件。
+VO_FIXED_COLUMNS = (
+    "ts",
+    "num_inliers",
+    "x",
+    "y",
+    "z",
+    "yaw",
+    "pitch",
+    "roll",
+    "is_keyframe",
+    "time_cost",
+    "reset_count",
+)
 
-    指标影响：
-    - 读取错误会影响所有指标；因此解析失败时宁愿报错，也不默默生成错误轨迹。
+
+def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVlocBundle:
+    """读取 VLOC 评估目录。
+
+    固定目录契约：
+    - data_dir/imu.txt
+    - log_dir/vloc.txt
+    - log_dir/home_point.txt
+    - log_dir/calib_raw.yaml
+
+    这个入口不接受 vo.txt，也不会调用旧的自动表头识别 parser。
     """
+
+    data_path = _require_directory(data_dir, "data_dir")
+    log_path = _require_directory(log_dir, "log_dir")
+    imu_path = _required_bundle_file(data_path, "imu.txt", "data_dir/imu.txt")
+    vloc_path = _required_bundle_file(log_path, "vloc.txt", "log_dir/vloc.txt")
+    home_path = _required_bundle_file(log_path, "home_point.txt", "log_dir/home_point.txt")
+    calib_path = _required_bundle_file(log_path, "calib_raw.yaml", "log_dir/calib_raw.yaml")
+
+    return SfVlocBundle(
+        nav=parse_imu_fixed(imu_path.read_text(encoding="utf-8", errors="replace"), name=str(imu_path)),
+        vloc=parse_vloc_fixed(vloc_path.read_text(encoding="utf-8", errors="replace"), name=str(vloc_path)),
+        home_point=parse_home_point_fixed(home_path.read_text(encoding="utf-8", errors="replace"), name=str(home_path)),
+        calibration=parse_calib_raw_fixed(calib_path.read_text(encoding="utf-8", errors="replace"), name=str(calib_path)),
+        data_dir=data_path,
+        log_dir=log_path,
+        files={
+            "nav": imu_path,
+            "estimate": vloc_path,
+            "home_point": home_path,
+            "calib_raw": calib_path,
+        },
+    )
+
+
+def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVoBundle:
+    """读取 VO 评估目录。
+
+    固定目录契约：
+    - data_dir/imu.txt
+    - log_dir/vo.txt
+    - log_dir/home_point.txt
+    - log_dir/calib_raw.yaml
+
+    这个入口不接受 vloc.txt，也不会调用旧的自动表头识别 parser。
+    """
+
+    data_path = _require_directory(data_dir, "data_dir")
+    log_path = _require_directory(log_dir, "log_dir")
+    imu_path = _required_bundle_file(data_path, "imu.txt", "data_dir/imu.txt")
+    vo_path = _required_bundle_file(log_path, "vo.txt", "log_dir/vo.txt")
+    home_path = _required_bundle_file(log_path, "home_point.txt", "log_dir/home_point.txt")
+    calib_path = _required_bundle_file(log_path, "calib_raw.yaml", "log_dir/calib_raw.yaml")
+
+    return SfVoBundle(
+        nav=parse_imu_fixed(imu_path.read_text(encoding="utf-8", errors="replace"), name=str(imu_path)),
+        vo=parse_vo_fixed(vo_path.read_text(encoding="utf-8", errors="replace"), name=str(vo_path)),
+        home_point=parse_home_point_fixed(home_path.read_text(encoding="utf-8", errors="replace"), name=str(home_path)),
+        calibration=parse_calib_raw_fixed(calib_path.read_text(encoding="utf-8", errors="replace"), name=str(calib_path)),
+        data_dir=data_path,
+        log_dir=log_path,
+        files={
+            "nav": imu_path,
+            "estimate": vo_path,
+            "home_point": home_path,
+            "calib_raw": calib_path,
+        },
+    )
+
+
+def parse_imu_fixed(text: str, name: str = "imu.txt") -> Trajectory:
+    """按需求文档固定 21 列解析 IMU/nav GT。
+
+    不根据表头猜列名；表头只会被当作非数字说明行跳过。
+    yaw/pitch/roll 固定为弧度。
+    """
+
+    data = _read_fixed_numeric_table(text, len(IMU_FIXED_COLUMNS), name, "IMU")
+    _require_finite_numeric_table(data, name)
+    status = data[:, 2].astype(np.int64)
+    extras = {
+        "raw_numeric_table": data,
+        "ts_fcc": data[:, 1],
+        "status": data[:, 2],
+        "flight_mode": data[:, 3],
+        "vx": data[:, 10],
+        "vy": data[:, 11],
+        "vz": data[:, 12],
+        "position_reset_count": data[:, 13],
+        "altitude_reset_count": data[:, 14],
+        "heading_reset_count": data[:, 15],
+        "latitude": data[:, 16],
+        "longitude": data[:, 17],
+        "altitude": data[:, 18],
+        "altitude_msl": data[:, 19],
+        "height": data[:, 20],
+        "navi_mode": (status & 0x0F).astype(float),
+        "rtk_yaw": ((status & (1 << 22)) != 0).astype(float),
+        "rtk_altitude": ((status & (1 << 28)) != 0).astype(float),
+    }
+    rotations = euler_yaw_pitch_roll_to_matrix(data[:, 7], data[:, 8], data[:, 9])
+    return Trajectory(
+        name,
+        _normalize_timestamps(data[:, 0], "s"),
+        data[:, 4:7],
+        rotations,
+        extras=extras,
+        source_format="sf_imu",
+    )
+
+
+def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
+    """按需求文档固定 13 列解析 VLOC 输出。
+
+    不根据表头猜列名；yaw/pitch/roll 固定为角度。
+    """
+
+    data = _read_fixed_numeric_table(text, len(VLOC_FIXED_COLUMNS), name, "VLOC")
+    _require_finite_numeric_table(data, name)
+    status = data[:, 1].astype(np.int64)
+    extras = {
+        "raw_numeric_table": data,
+        "status": data[:, 1],
+        "num_inliers": data[:, 2],
+        "reset_count": data[:, 3],
+        "latitude": data[:, 10],
+        "longitude": data[:, 11],
+        "height": data[:, 12],
+        "vloc_mode": (status & 0x0F).astype(float),
+    }
+    angles = np.deg2rad(data[:, 7:10])
+    rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
+    return Trajectory(
+        name,
+        _normalize_timestamps(data[:, 0], "s"),
+        data[:, 4:7],
+        rotations,
+        extras=extras,
+        source_format="sf_vloc",
+    )
+
+
+def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
+    """按需求文档固定 11 列解析 VO 输出。
+
+    不根据表头猜列名；yaw/pitch/roll 固定为角度。
+    """
+
+    data = _read_fixed_numeric_table(text, len(VO_FIXED_COLUMNS), name, "VO")
+    _require_finite_numeric_table(data, name)
+    extras = {
+        "raw_numeric_table": data,
+        "num_inliers": data[:, 1],
+        "is_keyframe": data[:, 8],
+        "time_cost": data[:, 9],
+        "reset_count": data[:, 10],
+    }
+    angles = np.deg2rad(data[:, 5:8])
+    rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
+    return Trajectory(
+        name,
+        _normalize_timestamps(data[:, 0], "s"),
+        data[:, 2:5],
+        rotations,
+        extras=extras,
+        source_format="sf_vo",
+    )
+
+
+def parse_home_point_fixed(text: str, name: str = "home_point.txt") -> HomePoint:
+    """按固定三列解析 home_point.txt：longitude latitude altitude_msl。"""
+
+    data = _read_fixed_numeric_table(text, 3, name, "home_point")
+    _require_finite_numeric_table(data, name)
+    if len(data) != 1:
+        raise ValueError(f"{name}: home_point format expects exactly one numeric row")
+    return HomePoint(longitude=float(data[0, 0]), latitude=float(data[0, 1]), altitude_msl=float(data[0, 2]))
+
+
+def parse_calib_raw_fixed(text: str, name: str = "calib_raw.yaml") -> Calibration:
+    """读取 calib_raw.yaml 中后续坐标变换需要的固定 4x4 矩阵。"""
+
+    return Calibration(
+        t_imu_body=_extract_fixed_yaml_matrix(text, "T_imu_body", name, required=True),
+        t_cam_imu=_extract_fixed_yaml_matrix(text, "T_cam_imu", name, required=True),
+        t_cn_cnm1=_extract_fixed_yaml_matrix(text, "T_cn_cnm1", name, required=False),
+    )
+
+
+def _require_directory(path: str | Path, label: str) -> Path:
+    resolved = Path(path).expanduser()
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"{label} must be a directory: {resolved}")
+    return resolved
+
+
+def _required_bundle_file(base_dir: Path, filename: str, requirement_label: str) -> Path:
+    path = base_dir / filename
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing required file {requirement_label}: {path}")
+    return path
+
+
+def _read_fixed_numeric_table(text: str, expected_cols: int, name: str, fmt_name: str) -> np.ndarray:
+    """读取固定列数字表。
+
+    为了兼容文件首行写死的表头，非数字说明行只允许出现在第一条数据之前。
+    真正的数据行必须严格满足固定列数。
+    """
+
+    rows: list[list[float]] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = [token for token in re.split(r"[\s,;]+", line) if token]
+        try:
+            values = [float(token) for token in tokens]
+        except ValueError:
+            if not rows:
+                continue
+            raise ValueError(f"{name}: {fmt_name} line {line_no} contains non-numeric values after data started")
+        if len(values) != expected_cols:
+            raise ValueError(f"{name}: {fmt_name} format expects {expected_cols} columns, got {len(values)} on line {line_no}")
+        rows.append(values)
+    if not rows:
+        raise ValueError(f"{name}: {fmt_name} file contains no numeric data rows")
+    return np.asarray(rows, dtype=float)
+
+
+def _require_finite_numeric_table(data: np.ndarray, name: str) -> None:
+    if not np.isfinite(data).all():
+        raise ValueError(f"{name}: fixed-format input contains NaN or infinite values")
+
+
+def _extract_fixed_yaml_matrix(text: str, key: str, name: str, required: bool) -> np.ndarray | None:
+    match = re.search(rf"{re.escape(key)}\s*:\s*\[([^\]]+)\]", text, flags=re.DOTALL)
+    if not match:
+        if required:
+            raise ValueError(f"{name}: missing required calibration matrix {key}")
+        return None
+    values = [float(token) for token in re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", match.group(1))]
+    if len(values) != 16:
+        raise ValueError(f"{name}: calibration matrix {key} expects 16 values, got {len(values)}")
+    return np.asarray(values, dtype=float).reshape(4, 4)
+
+
+def load_trajectory(source: str | bytes | Path | io.BytesIO, fmt: str = "tum", name: str | None = None) -> Trajectory:
+    """从文件、上传对象或纯文本中读取单条 TUM 轨迹。"""
     text, inferred_name = _read_text(source)
     return load_trajectory_from_text(text, fmt=fmt, name=name or inferred_name)
 
 
-def load_trajectory_from_text(text: str, fmt: str = "auto", name: str = "trajectory") -> Trajectory:
+def load_trajectory_from_text(text: str, fmt: str = "tum", name: str = "trajectory") -> Trajectory:
     """把文本轨迹读成 Trajectory。
 
-    这里是输入格式分发层：auto 会先看是否有注释表头，再按列数识别
-    SF/VLOC/KITTI/TUM/XYZ/CSV。真正的列解析在 _parse_sf()、_parse_vloc()、_parse_csv() 和 _parse_numeric_table()。
-
-    指标影响：
-    - 识别成 KITTI/TUM/CSV 会决定时间戳、姿态和单位如何解析。
-    - 如果误把带表头文件当无表头数字表，后续 ATE/RPE 可能完全失真，所以 auto 优先检查注释表头。
+    当前单文件入口只保留 TUM。
+    SF VLOC/VO 主流程必须走目录入口：
+    - load_vloc_evaluation_bundle()
+    - load_vo_evaluation_bundle()
     """
-
     lines = _meaningful_lines(text)
     if not lines:
         raise ValueError(f"{name}: empty trajectory file")
 
     normalized_fmt = fmt.lower()
-    if normalized_fmt == "auto":
-        if _comment_header(text):
-            normalized_fmt = _detect_commented_format(text)
-        else:
-            normalized_fmt = _detect_plain_header_format(lines) or _detect_format(lines)
-
-    if normalized_fmt == "sf":
-        return _parse_sf(text, name)
-    if normalized_fmt == "vloc":
-        return _parse_vloc(text, name)
-    if normalized_fmt == "csv":
-        return _parse_csv(text, name)
     if normalized_fmt == "tum":
-        return _parse_numeric_table(lines, name, "tum")
-    if normalized_fmt == "kitti":
-        return _parse_numeric_table(lines, name, "kitti")
-    if normalized_fmt == "xyz":
-        return _parse_numeric_table(lines, name, "xyz")
+        return _parse_tum_numeric_table(lines, name)
     raise ValueError(f"Unsupported trajectory format: {fmt}")
 
 
@@ -2958,7 +3233,7 @@ def euler_yaw_pitch_roll_to_matrix(yaw: np.ndarray, pitch: np.ndarray, roll: np.
 
     代码意义：
     - 用户的 imu.txt/vo.txt 可能只给 yaw/pitch/roll，而不是四元数。
-    - 单位已经在 _angle_unit_for_columns() 中统一成弧度。
+    - 调用方必须先把输入角度统一成弧度；固定格式 parser 会在进入这里之前完成这一步。
 
     注意：
     - 这里默认列语义是 yaw, pitch, roll。
@@ -3684,30 +3959,6 @@ def _meaningful_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
 
 
-def _detect_format(lines: list[str]) -> str:
-    """根据第一行内容粗略识别无表头轨迹格式。
-
-    规则：
-    - 含字母/下划线：认为是 CSV 表头。
-    - 12 列数字：KITTI 3x4 pose。
-    - 8 列数字：TUM timestamp tx ty tz qx qy qz qw。
-    - 3/4 列数字：XYZ 或 timestamp XYZ。
-
-    只用第一行是为了快速分发；真正的宽度一致性和字段校验在后续 parser 中完成。
-    """
-    first = lines[0]
-    if re.search(r"[A-Za-z_]", first):
-        return "csv"
-    values = _parse_float_line(first)
-    if len(values) == 12:
-        return "kitti"
-    if len(values) == 8:
-        return "tum"
-    if len(values) in {3, 4}:
-        return "xyz"
-    return "csv"
-
-
 def _parse_float_line(line: str) -> list[float]:
     """解析一行纯数字，支持空格、逗号和分号分隔。"""
     tokens = re.split(r"[\s,;]+", line.strip())
@@ -3719,574 +3970,19 @@ def _parse_float_line(line: str) -> list[float]:
     return values
 
 
-def _parse_numeric_table(lines: list[str], name: str, fmt: str) -> Trajectory:
-    """解析无表头数字表。
-
-    TUM: timestamp tx ty tz qx qy qz qw。
-    KITTI: 每行 12 个数，表示 3x4 pose matrix。
-    XYZ: x y z 或 timestamp x y z。
-    TUM/XYZ 的 timestamp 会调用 _normalize_timestamps()，避免 ns 被当成秒。
-    """
+def _parse_tum_numeric_table(lines: list[str], name: str) -> Trajectory:
+    """解析无表头 TUM 数字表：timestamp tx ty tz qx qy qz qw。"""
     rows = [_parse_float_line(line) for line in lines]
     width = max(len(row) for row in rows)
     if any(len(row) != width for row in rows):
         raise ValueError(f"{name}: inconsistent number of columns")
     data = np.asarray(rows, dtype=float)
-    if fmt == "tum":
-        # TUM 口径保留论文/开源工具常用格式，姿态直接由四元数转矩阵。
-        if data.shape[1] < 8:
-            raise ValueError(f"{name}: TUM format needs at least 8 columns")
-        stamps = _normalize_timestamps(data[:, 0])
-        positions = data[:, 1:4]
-        rotations = quaternion_to_matrix(data[:, 4], data[:, 5], data[:, 6], data[:, 7])
-        return Trajectory(name, stamps, positions, rotations, extras={"raw_numeric_table": data}, source_format="tum")
-    if fmt == "kitti":
-        # KITTI odometry 文件通常没有时间戳；这里用行号当时间，适合按 index 或固定帧间隔评估。
-        if data.shape[1] != 12:
-            raise ValueError(f"{name}: KITTI format needs exactly 12 columns")
-        mats = data.reshape((-1, 3, 4))
-        rotations = mats[:, :, :3]
-        positions = mats[:, :, 3]
-        stamps = np.arange(len(positions), dtype=float)
-        return Trajectory(name, stamps, positions, rotations, extras={"raw_numeric_table": data}, source_format="kitti")
-    if fmt == "xyz":
-        # XYZ 只支持位置指标；没有姿态时 rotation RPE/姿态 ATE 不会生成。
-        if data.shape[1] == 3:
-            stamps = np.arange(len(data), dtype=float)
-            positions = data[:, 0:3]
-        elif data.shape[1] >= 4:
-            stamps = _normalize_timestamps(data[:, 0])
-            positions = data[:, 1:4]
-        else:
-            raise ValueError(f"{name}: XYZ format needs 3 or 4 columns")
-    return Trajectory(name, stamps, positions, None, extras={"raw_numeric_table": data}, source_format="xyz")
-    raise ValueError(fmt)
-
-
-SF_EXTRA_CANONICAL = {
-    "status": "status",
-    "flightmode": "flight_mode",
-    "vx": "vx",
-    "vy": "vy",
-    "vz": "vz",
-    "resetcount1": "reset_count1",
-    "resetcount2": "reset_count2",
-    "resetcount3": "reset_count3",
-    "lati": "lati",
-    "longi": "longi",
-    "alti": "alti",
-    "altimsl": "alti_msl",
-    "height": "height",
-    "numinliers": "num_inliers",
-    "iskeyframe": "is_keyframe",
-    "framecost": "frame_cost",
-    "resetcount": "reset_count",
-    "depthmean": "depth_mean",
-    "depthmin": "depth_min",
-    "depthmax": "depth_max",
-}
-
-
-VLOC_EXTRA_CANONICAL = {
-    "status": "status",
-    "numinliers": "num_inliers",
-    "resetcount": "reset_count",
-    "latitude": "latitude",
-    "longitude": "longitude",
-    "altitude": "altitude",
-}
-
-
-def _parse_sf(text: str, name: str) -> Trajectory:
-    """解析 SF 项目格式。
-
-    支持两种表头：
-    - GT: #ts1 ts2 status flight_mode x y z yaw pitch roll vx vy vz reset_count1 ...
-    - VO: # ts num_inliers tx ty tz yaw pitch roll(degree) is_keyframe ...
-
-    解析规则：
-    - GT 位置固定读取 x/y/z；VO 位置固定读取 tx/ty/tz。
-    - yaw/pitch/roll 固定按角度制读取，再转成内部统一的弧度旋转矩阵。
-    - GT 同时有 ts1/ts2 时优先把 ts2 当作与 VO 对齐的秒级时间戳；如果 ts2 不像独立时间轴，
-      则退回 ts1 + ts2 的秒/纳秒组合。
-    - reset、速度、深度等不参与几何误差，但会放入 extras 供导出和诊断使用。
-    """
-    frame = _read_dataframe(text)
-    if frame.empty:
-        raise ValueError(f"{name}: empty SF trajectory")
-    normalized = {_normalize_col(col): col for col in frame.columns}
-    numeric = frame.apply(pd.to_numeric, errors="coerce")
-
-    sf_kind = _detect_sf_kind_from_columns(normalized)
-    if sf_kind == "gt":
-        stamps = _sf_gt_stamps(numeric, normalized)
-        position_cols = [_required_col(normalized, col, name, "SF GT") for col in ["x", "y", "z"]]
-        source_format = "sf_gt"
-    elif sf_kind == "vo":
-        ts_col = _required_col(normalized, "ts", name, "SF VO")
-        stamps = _normalize_timestamps(numeric[ts_col].to_numpy(dtype=float), _timestamp_unit_hint(text, str(ts_col)))
-        position_cols = [_required_col(normalized, col, name, "SF VO") for col in ["tx", "ty", "tz"]]
-        source_format = "sf_vo"
-    else:
-        raise ValueError(f"{name}: SF format needs either GT or VO SF header columns")
-
-    positions = numeric[position_cols].to_numpy(dtype=float)
-    yaw_col = _required_col(normalized, "yaw", name, "SF")
-    pitch_col = _required_col(normalized, "pitch", name, "SF")
-    roll_col = _required_col(normalized, "roll", name, "SF")
-    angles = numeric[[yaw_col, pitch_col, roll_col]].to_numpy(dtype=float)
-    unit = _angle_unit_for_columns([yaw_col, pitch_col, roll_col], frame.attrs.get("angle_unit"), angles)
-    if unit == "deg":
-        angles = np.deg2rad(angles)
-    rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
-
-    valid = np.isfinite(stamps) & np.isfinite(positions).all(axis=1)
-    valid &= np.isfinite(rotations.reshape(len(rotations), -1)).all(axis=1)
-    stamps = stamps[valid]
-    positions = positions[valid]
-    rotations = rotations[valid]
-
-    extras: dict[str, np.ndarray] = {"raw_numeric_table": numeric.to_numpy(dtype=float)[valid]}
-    for norm_name, col in normalized.items():
-        canonical = SF_EXTRA_CANONICAL.get(norm_name)
-        if canonical is not None:
-            extras[canonical] = numeric[col].to_numpy(dtype=float)[valid]
-
-    return Trajectory(name, stamps, positions, rotations, extras=extras, source_format=source_format)
-
-
-def _parse_vloc(text: str, name: str) -> Trajectory:
-    """解析 VLOC VO 输出格式。
-
-    表头：
-    ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
-
-    解析规则：
-    - ts 是秒级或可由 _normalize_timestamps() 推断的时间戳。
-    - tx/ty 是 VO 水平位置。
-    - 如果 latitude/longitude/altitude 中存在有效 GPS 高度，则使用 -altitude 作为 z。
-      这和当前 SF IMU 的 z 轴方向一致；lat/lon/alt 为 0 的初始化/无效定位行会被过滤。
-    - 如果整份 VLOC 没有有效 GPS 高度，则退回旧行为，使用 tx/ty/tz。
-    - yaw/pitch/roll 按角度制读取，再转成内部统一的旋转矩阵。
-    - status、num_inliers、reset_count、latitude/longitude/altitude 存入 extras 供导出和诊断。
-    """
-    frame = _read_dataframe(text)
-    if frame.empty:
-        raise ValueError(f"{name}: empty VLOC trajectory")
-    normalized = {_normalize_col(col): col for col in frame.columns}
-    if not _is_vloc_columns(normalized):
-        raise ValueError(f"{name}: VLOC format needs ts/status/num_inliers/reset_count/tx/ty/tz/yaw/pitch/roll/latitude/longitude/altitude")
-    numeric = frame.apply(pd.to_numeric, errors="coerce")
-
-    ts_col = _required_col(normalized, "ts", name, "VLOC")
-    stamps = _normalize_timestamps(numeric[ts_col].to_numpy(dtype=float), _timestamp_unit_hint(text, str(ts_col)))
-    tx_col = _required_col(normalized, "tx", name, "VLOC")
-    ty_col = _required_col(normalized, "ty", name, "VLOC")
-    tz_col = _required_col(normalized, "tz", name, "VLOC")
-    positions = numeric[[tx_col, ty_col, tz_col]].to_numpy(dtype=float)
-
-    # VLOC 日志里同时有 tx/ty/tz 和 latitude/longitude/altitude。
-    # 当前 2839_traj 数据的 MATLAB 对比图使用的是 tx、ty、-altitude：
-    #   - tx/ty 与 IMU x/y 同坐标系；
-    #   - altitude 为向上为正，高度方向和 IMU z 相反，因此写入 z 时取负；
-    #   - latitude/longitude/altitude 为 0 的行是初始化或无效定位输出，不应纳入轨迹评估。
-    # 为了不破坏没有 GPS 高度的 VLOC 文件，只有当文件中确实存在足够的有效经纬高行时才启用该规则。
-    lat_col = _required_col(normalized, "latitude", name, "VLOC")
-    lon_col = _required_col(normalized, "longitude", name, "VLOC")
-    alt_col = _required_col(normalized, "altitude", name, "VLOC")
-    lat_values = numeric[lat_col].to_numpy(dtype=float)
-    lon_values = numeric[lon_col].to_numpy(dtype=float)
-    alt_values = numeric[alt_col].to_numpy(dtype=float)
-    gps_height_valid = (
-        np.isfinite(lat_values)
-        & np.isfinite(lon_values)
-        & np.isfinite(alt_values)
-        & (np.abs(lat_values) > 1e-9)
-        & (np.abs(lon_values) > 1e-9)
-        & (np.abs(alt_values) > 1e-9)
-    )
-    use_gps_height = int(np.count_nonzero(gps_height_valid)) >= 2
-    if use_gps_height:
-        positions[:, 2] = -alt_values
-
-    yaw_col = _required_col(normalized, "yaw", name, "VLOC")
-    pitch_col = _required_col(normalized, "pitch", name, "VLOC")
-    roll_col = _required_col(normalized, "roll", name, "VLOC")
-    angles = numeric[[yaw_col, pitch_col, roll_col]].to_numpy(dtype=float)
-    unit = _angle_unit_for_columns([yaw_col, pitch_col, roll_col], frame.attrs.get("angle_unit"), angles)
-    if unit == "deg":
-        angles = np.deg2rad(angles)
-    rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
-
-    valid = np.isfinite(stamps) & np.isfinite(positions).all(axis=1)
-    if use_gps_height:
-        valid &= gps_height_valid
-    valid &= np.isfinite(rotations.reshape(len(rotations), -1)).all(axis=1)
-    stamps = stamps[valid]
-    positions = positions[valid]
-    rotations = rotations[valid]
-
-    extras: dict[str, np.ndarray] = {"raw_numeric_table": numeric.to_numpy(dtype=float)[valid]}
-    for norm_name, col in normalized.items():
-        canonical = VLOC_EXTRA_CANONICAL.get(norm_name)
-        if canonical is not None:
-            extras[canonical] = numeric[col].to_numpy(dtype=float)[valid]
-
-    return Trajectory(name, stamps, positions, rotations, extras=extras, source_format="vloc")
-
-
-def _detect_sf_kind_from_columns(normalized: dict[str, Any]) -> str | None:
-    """根据归一化列名判断 SF 表头属于 GT 还是 VO。"""
-    keys = set(normalized)
-    has_gt_pose = {"ts1", "ts2", "x", "y", "z", "yaw", "pitch", "roll"}.issubset(keys)
-    has_gt_marker = bool({"flightmode", "resetcount1", "lati", "longi"} & keys)
-    if has_gt_pose and has_gt_marker:
-        return "gt"
-    has_vo_pose = {"ts", "tx", "ty", "tz", "yaw", "pitch", "roll"}.issubset(keys)
-    has_vo_marker = bool({"iskeyframe", "framecost", "depthmean", "depthmin", "depthmax"} & keys)
-    if has_vo_pose and has_vo_marker:
-        return "vo"
-    return None
-
-
-def _is_vloc_columns(normalized: dict[str, Any]) -> bool:
-    """判断表头是否满足 VLOC VO 输出格式。"""
-    keys = set(normalized)
-    return {
-        "ts",
-        "status",
-        "numinliers",
-        "resetcount",
-        "tx",
-        "ty",
-        "tz",
-        "yaw",
-        "pitch",
-        "roll",
-        "latitude",
-        "longitude",
-        "altitude",
-    }.issubset(keys)
-
-
-def _sf_gt_stamps(numeric: pd.DataFrame, normalized: dict[str, Any]) -> np.ndarray:
-    """读取 SF GT 时间戳。
-
-    ts2 在用户数据中通常是与 VO 对齐的秒级时间轴，因此优先使用；
-    如果 ts2 像纳秒/微秒余量，则使用 ts1 + ts2 组合，兼容 sec/nsec 拆分式日志。
-    """
-    ts1_col = _required_col(normalized, "ts1", "SF GT", "SF GT")
-    ts2_col = _required_col(normalized, "ts2", "SF GT", "SF GT")
-    ts1 = numeric[ts1_col].to_numpy(dtype=float)
-    ts2 = numeric[ts2_col].to_numpy(dtype=float)
-
-    finite_ts2 = ts2[np.isfinite(ts2)]
-    if len(finite_ts2):
-        ts2_duration = float(np.nanmax(finite_ts2) - np.nanmin(finite_ts2))
-        ts2_has_fraction = bool(np.any(np.abs(finite_ts2 - np.round(finite_ts2)) > 1e-9))
-        ts2_median_abs = float(np.nanmedian(np.abs(finite_ts2)))
-        if ts2_duration > 0 and (ts2_has_fraction or ts2_median_abs < 1e6):
-            return _normalize_timestamps(ts2, "s")
-
-    ts1_seconds = _normalize_timestamps(ts1)
-    ts2_seconds = _normalize_timestamps(ts2)
-    return ts1_seconds + ts2_seconds
-
-
-def _required_col(normalized: dict[str, Any], name: str, trajectory_name: str, fmt_name: str) -> Any:
-    """按归一化列名取必需列，缺失时给出清晰错误。"""
-    col = _pick(normalized, [name])
-    if col is None:
-        raise ValueError(f"{trajectory_name}: {fmt_name} format needs column {name}")
-    return col
-
-
-def _parse_csv(text: str, name: str) -> Trajectory:
-    """解析 CSV/TSV/空格表/注释表头。
-
-    这里做三件事：
-    1. 自动识别 time/x/y/z 列，兼容 EuRoC 的 p_RS_R_x/y/z。
-    2. 自动识别四元数 qx/qy/qz/qw 或 yaw/pitch/roll。
-    3. 抽取 runtime extras，供 summarize_runtime() 统计。
-    """
-    frame = _read_dataframe(text)
-    if frame.empty:
-        raise ValueError(f"{name}: empty CSV")
-    angle_unit_hint = frame.attrs.get("angle_unit")
-    timestamp_unit_hint = frame.attrs.get("timestamp_unit")
-    normalized = {_normalize_col(col): col for col in frame.columns}
-    numeric = frame.apply(pd.to_numeric, errors="coerce")
-
-    time_col = _pick(normalized, TIME_COLUMN_CANDIDATES)
-    x_col = _pick(normalized, X_COLUMN_CANDIDATES)
-    y_col = _pick(normalized, Y_COLUMN_CANDIDATES)
-    z_col = _pick(normalized, Z_COLUMN_CANDIDATES)
-
-    if x_col is None or y_col is None or z_col is None:
-        # 没有可靠列名时，退回到数字表解析，尽量支持老式无表头日志。
-        # 这个 fallback 仍然只读取轨迹需要的数据列，不会要求用户改原始文件。
-        numeric_values = numeric.dropna(axis=1, how="all").to_numpy(dtype=float)
-        numeric_values = numeric_values[~np.isnan(numeric_values).all(axis=1)]
-        if numeric_values.shape[1] == 12:
-            return _parse_numeric_table([" ".join(map(str, row)) for row in numeric_values], name, "kitti")
-        if numeric_values.shape[1] >= 8:
-            return _parse_numeric_table([" ".join(map(str, row[:8])) for row in numeric_values], name, "tum")
-        if numeric_values.shape[1] >= 3:
-            return _parse_numeric_table([" ".join(map(str, row[:4])) for row in numeric_values], name, "xyz")
-        raise ValueError(f"{name}: could not detect x/y/z columns")
-
-    positions = numeric[[x_col, y_col, z_col]].to_numpy(dtype=float)
-    if time_col is not None:
-        # 所有时间戳在进入 Trajectory 前统一转成秒；
-        # EuRoC 的 timestamp [ns] 和无表头 ns 时间戳都在这里处理。
-        stamps = _normalize_timestamps(
-            numeric[time_col].to_numpy(dtype=float),
-            timestamp_unit_hint or _timestamp_unit_hint("", str(time_col)),
-        )
-    else:
-        stamps = np.arange(len(frame), dtype=float)
-
-    qx_col = _pick(normalized, QX_COLUMN_CANDIDATES)
-    qy_col = _pick(normalized, QY_COLUMN_CANDIDATES)
-    qz_col = _pick(normalized, QZ_COLUMN_CANDIDATES)
-    qw_col = _pick(normalized, QW_COLUMN_CANDIDATES)
-    rotations = None
-    if all(col is not None for col in [qx_col, qy_col, qz_col, qw_col]):
-        # 四元数优先级最高，因为它比欧拉角少一个顺序歧义。
-        rotations = quaternion_to_matrix(
-            numeric[qx_col].to_numpy(dtype=float),
-            numeric[qy_col].to_numpy(dtype=float),
-            numeric[qz_col].to_numpy(dtype=float),
-            numeric[qw_col].to_numpy(dtype=float),
-        )
-    else:
-        matrix_cols = [_pick(normalized, [f"r{i}{j}", f"rot{i}{j}", f"rotation{i}{j}"]) for i in range(3) for j in range(3)]
-        if all(col is not None for col in matrix_cols):
-            # 如果日志直接给旋转矩阵，就按行展开的 r00...r22 读取。
-            rotations = numeric[matrix_cols].to_numpy(dtype=float).reshape((-1, 3, 3))
-        else:
-            yaw_col = _pick_angle_col(normalized, "yaw", ["heading", "psi"])
-            pitch_col = _pick_angle_col(normalized, "pitch", ["theta"])
-            roll_col = _pick_angle_col(normalized, "roll", ["row", "phi"])
-            if yaw_col is not None and pitch_col is not None and roll_col is not None:
-                angles = numeric[[yaw_col, pitch_col, roll_col]].to_numpy(dtype=float)
-                # 自动识别角度/弧度，兼容用户 IMU/VO 表头单位不同的情况。
-                unit = _angle_unit_for_columns([yaw_col, pitch_col, roll_col], angle_unit_hint, angles)
-                if unit == "deg":
-                    angles = np.deg2rad(angles)
-                rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
-
-    valid = np.isfinite(stamps) & np.isfinite(positions).all(axis=1)
-    if rotations is not None:
-        valid &= np.isfinite(rotations.reshape(len(rotations), -1)).all(axis=1)
-    # 只保留轨迹计算所需字段都有效的行；原文件不改动，坏行只是不进入统计。
-    stamps = stamps[valid]
-    positions = positions[valid]
-    if rotations is not None:
-        rotations = rotations[valid]
-
-    extras: dict[str, np.ndarray] = {}
-    extras["raw_numeric_table"] = numeric.to_numpy(dtype=float)[valid]
-    for col in frame.columns:
-        key = _normalize_col(col)
-        # extras 只收集 runtime/资源字段，不参与轨迹几何计算。
-        if key in {
-            "processtimems",
-            "processingtimems",
-            "frametimems",
-            "latencyms",
-            "cpupercent",
-            "memorypercent",
-            "memorymb",
-            "fps",
-        }:
-            canonical = {
-                "processtimems": "process_time_ms",
-                "processingtimems": "processing_time_ms",
-                "frametimems": "frame_time_ms",
-                "latencyms": "latency_ms",
-                "cpupercent": "cpu_percent",
-                "memorypercent": "memory_percent",
-                "memorymb": "memory_mb",
-                "fps": "fps",
-            }[key]
-            extras[canonical] = numeric[col].to_numpy(dtype=float)[valid]
-
-    return Trajectory(name, stamps, positions, rotations, extras=extras, source_format="csv")
-
-
-def _read_dataframe(text: str) -> pd.DataFrame:
-    """把文本读取为 DataFrame。
-
-    优先处理 # 开头的注释表头，例如 "# ts x y z yaw pitch roll ..."；
-    否则交给 pandas 尝试自动分隔符、空格分隔和逗号分隔。
-    """
-    header = _comment_header(text)
-    if header:
-        frame = _read_commented_header_table(text, header)
-        frame.attrs["angle_unit"] = _angle_unit_hint(text)
-        frame.attrs["timestamp_unit"] = _timestamp_unit_hint(text)
-        return frame
-
-    for kwargs in (
-        {"sep": None, "engine": "python"},
-        {"sep": r"\s+", "engine": "python"},
-        {"sep": ",", "engine": "python"},
-    ):
-        try:
-            # pandas 自动分隔符优先，其次强制空白分隔，再强制逗号分隔。
-            # 这样可以兼容 CSV、TSV、空格日志以及混合空白日志。
-            frame = pd.read_csv(io.StringIO(text), comment="#", **kwargs)
-            if len(frame.columns) > 1 or not frame.empty:
-                frame.attrs["timestamp_unit"] = _timestamp_unit_hint(text)
-                return frame
-        except Exception:
-            continue
-    raise ValueError("Could not parse CSV-like trajectory")
-
-
-def _detect_commented_format(text: str) -> str:
-    """识别带 # 注释表头的文本应走 SF、VLOC 还是通用 CSV。
-
-    SF 是项目内固定表头；一旦检测到 flight_mode/reset_count1 或 num_inliers/depth_* 等标记，
-    就走 _parse_sf()，让 ts1/ts2 和角度单位按 SF 规则处理。
-    """
-    header = _comment_header(text)
-    if not header:
-        return "csv"
-    normalized = {_normalize_col(token): token for token in header}
-    if _is_vloc_columns(normalized):
-        return "vloc"
-    return "sf" if _detect_sf_kind_from_columns(normalized) is not None else "csv"
-
-
-def _detect_plain_header_format(lines: list[str]) -> str | None:
-    """识别普通第一行表头的项目格式。
-
-    例如 VLOC 文件的第一行不是注释，而是：
-    ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
-    """
-    if not lines:
-        return None
-    first = lines[0]
-    if not re.search(r"[A-Za-z_]", first):
-        return None
-    tokens = _comment_header_tokens(first)
-    normalized = {_normalize_col(token): token for token in tokens}
-    if _is_vloc_columns(normalized):
-        return "vloc"
-    return None
-
-
-def _comment_header(text: str) -> list[str] | None:
-    """从注释行中寻找表头。
-
-    例如：
-    # timestamp x y z yaw pitch roll
-    # ts [ns], p_x, p_y, p_z
-
-    只有当注释行里能识别到 x/y/z 时才认为它是轨迹表头。
-    """
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("#"):
-            continue
-        content = stripped.lstrip("#").strip()
-        tokens = _comment_header_tokens(content)
-        normalized = {_normalize_col(token): token for token in tokens}
-        if (
-            len(tokens) >= 3
-            and _pick(normalized, X_COLUMN_CANDIDATES) is not None
-            and _pick(normalized, Y_COLUMN_CANDIDATES) is not None
-            and _pick(normalized, Z_COLUMN_CANDIDATES) is not None
-        ):
-            return tokens
-    return None
-
-
-def _comment_header_tokens(content: str) -> list[str]:
-    """把注释表头内容拆成列名 token。
-
-    会去掉 [unit] 和 (unit)，比如 yaw[deg] -> yaw。
-    这样列名识别和单位识别可以分开处理。
-    """
-    if "," in content:
-        pieces = content.split(",")
-    else:
-        pieces = re.split(r"[\s,;]+", content)
-
-    tokens: list[str] = []
-    for piece in pieces:
-        token = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", piece).strip()
-        if not token:
-            continue
-        if not _is_column_token(token) and " " in token:
-            token = token.split()[0]
-        if _is_column_token(token):
-            tokens.append(token)
-    return tokens
-
-
-def _read_commented_header_table(text: str, header: list[str]) -> pd.DataFrame:
-    """按注释表头读取后续数字行。
-
-    只读取 header 长度以内的数字列；多余字段不影响轨迹解析。
-    非数字行、空行、Inf/NaN 行会被跳过。
-    """
-    rows: list[list[float]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        data_part = stripped.split("#", 1)[0].strip()
-        if not data_part:
-            continue
-        tokens = [token for token in re.split(r"[\s,;]+", data_part) if token]
-        if len(tokens) < len(header):
-            continue
-        try:
-            row = [float(token) for token in tokens[: len(header)]]
-        except ValueError:
-            continue
-        if any(math.isnan(value) or math.isinf(value) for value in row):
-            continue
-        rows.append(row)
-    return pd.DataFrame(rows, columns=header)
-
-
-def _is_column_token(token: str) -> bool:
-    """判断 token 是否像一个列名，而不是普通说明文字。"""
-    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token))
-
-
-def _timestamp_unit_hint(text: str, column: str | None = None) -> str | None:
-    """从表头/列名中提取时间单位提示：ns/us/ms/s。
-
-    代码意义：
-    - 很多数据会写 timestamp[ns]、time_ms 或中文“毫秒”。
-    - 如果能从文本中读到单位，就优先使用单位提示，而不是靠数量级猜。
-    """
-    snippets: list[str] = []
-    if column:
-        snippets.append(str(column))
-    for line in text.splitlines()[:50]:
-        lower = line.lower()
-        if any(marker in lower for marker in ["timestamp", "time", "stamp", "ts", "时间"]):
-            snippets.append(line)
-
-    scan = "\n".join(snippets).lower()
-    if not scan:
-        return None
-    if re.search(r"\[\s*ns\s*\]|(?:timestamp|time|stamp|ts)[_\-\s]*ns\b|nanosecond|nanoseconds|纳秒", scan):
-        return "ns"
-    if re.search(r"\[\s*us\s*\]|\[\s*µs\s*\]|(?:timestamp|time|stamp|ts)[_\-\s]*(?:us|µs)\b|microsecond|microseconds|微秒", scan):
-        return "us"
-    if re.search(r"\[\s*ms\s*\]|(?:timestamp|time|stamp|ts)[_\-\s]*ms\b|millisecond|milliseconds|毫秒", scan):
-        return "ms"
-    if re.search(r"\[\s*s\s*\]|(?:timestamp|time|stamp|ts)[_\-\s]*(?:s|sec|secs|second|seconds)\b", scan):
-        return "s"
-    return None
-
+    if data.shape[1] < 8:
+        raise ValueError(f"{name}: TUM format needs at least 8 columns")
+    stamps = _normalize_timestamps(data[:, 0])
+    positions = data[:, 1:4]
+    rotations = quaternion_to_matrix(data[:, 4], data[:, 5], data[:, 6], data[:, 7])
+    return Trajectory(name, stamps, positions, rotations, extras={"raw_numeric_table": data}, source_format="tum")
 
 def _normalize_timestamps(stamps: np.ndarray, unit_hint: str | None = None) -> np.ndarray:
     """时间戳统一换算到秒。
@@ -4328,83 +4024,3 @@ def _infer_timestamp_unit(stamps: np.ndarray) -> str:
     if median_abs >= 1e11:
         return "ms"
     return "s"
-
-
-def _angle_unit_hint(text: str) -> str | None:
-    """从注释行推断 yaw/pitch/roll 是角度制还是弧度制。
-
-    用户之前的数据里 GT 和 VO 的角度单位可能不同：
-    - yaw/pitch/roll[deg] -> 角度制。
-    - yaw/pitch/roll[rad] -> 弧度制。
-    这个函数只提供提示；最终仍由 _angle_unit_for_columns() 综合列名和数值范围判断。
-    """
-    for line in text.splitlines():
-        lower = line.lower()
-        if any(word in lower for word in ["角度", "degree", "degrees", " deg"]):
-            if any(axis in lower for axis in ["yaw", "pitch", "roll", "row", "heading"]):
-                return "deg"
-        if any(word in lower for word in ["弧度", "radian", "radians", " rad"]):
-            if any(axis in lower for axis in ["yaw", "pitch", "roll", "row", "heading"]):
-                return "rad"
-    return None
-
-
-def _pick_angle_col(normalized: dict[str, Any], base: str, aliases: list[str]) -> Any | None:
-    """查找 yaw/pitch/roll 列，兼容带单位后缀的列名。"""
-    candidates: list[str] = []
-    for name in [base, *aliases]:
-        candidates.extend(
-            [
-                name,
-                f"{name}_rad",
-                f"{name}_radian",
-                f"{name}_radians",
-                f"{name}_deg",
-                f"{name}_degree",
-                f"{name}_degrees",
-            ]
-        )
-    return _pick(normalized, candidates)
-
-
-def _angle_unit_for_columns(cols: list[Any], hint: str | None, values: np.ndarray) -> str:
-    """确定欧拉角单位。
-
-    优先级：列名 > 注释提示 > 数值范围启发式。
-
-    数值范围启发：
-    - 如果最大绝对值明显超过 2*pi，基本可以判定为角度制。
-    - 否则默认弧度制，避免把小角度度数误判成弧度造成过大旋转。
-    """
-    col_text = " ".join(str(col).lower() for col in cols)
-    if any(marker in col_text for marker in ["deg", "degree", "degrees"]):
-        return "deg"
-    if any(marker in col_text for marker in ["rad", "radian", "radians"]):
-        return "rad"
-    if hint in {"deg", "rad"}:
-        return hint
-    finite = values[np.isfinite(values)]
-    if len(finite) and np.nanmax(np.abs(finite)) > 2.0 * np.pi + 1e-6:
-        return "deg"
-    return "rad"
-
-
-def _normalize_col(col: Any) -> str:
-    """列名归一化。
-
-    去掉单位、括号、大小写和非字母数字字符：
-    - "p_RS_R_x [m]" -> "prsrx"
-    - "timestamp(ns)" -> "timestamp"
-    这样候选列名匹配更稳。
-    """
-    text = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", str(col).strip().lower())
-    return re.sub(r"[^a-z0-9]", "", text)
-
-
-def _pick(normalized: dict[str, Any], names: list[str]) -> Any | None:
-    """从 normalized 列名字典中按候选名寻找真实列名。"""
-    normalized_names = [_normalize_col(name) for name in names]
-    for name in normalized_names:
-        if name in normalized:
-            return normalized[name]
-    return None

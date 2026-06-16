@@ -14,8 +14,14 @@ from vo_eval.evaluator import (
     evaluate_trajectories,
     euler_yaw_pitch_roll_to_matrix,
     get_evaluation_format_spec,
+    load_vloc_evaluation_bundle,
+    load_vo_evaluation_bundle,
     load_trajectory_from_text,
     normalize_evaluation_format,
+    parse_home_point_fixed,
+    parse_imu_fixed,
+    parse_vloc_fixed,
+    parse_vo_fixed,
     report_to_excel,
     report_to_json,
     yaw_from_rot,
@@ -131,6 +137,113 @@ def test_public_evaluation_format_normalizes_common_separators():
     assert normalize_evaluation_format("Tum") == "tum"
 
 
+def sample_calib_text() -> str:
+    return """%YAML:1.0
+---
+T_imu_body: [ 1, 0, 0, 0.1, 0, 1, 0, 0.2, 0, 0, 1, 0.3, 0, 0, 0, 1 ]
+cam0:
+  T_cam_imu: [ 0, -1, 0, 1, 1, 0, 0, 2, 0, 0, 1, 3, 0, 0, 0, 1 ]
+cam1:
+  T_cn_cnm1: [ 1, 0, 0, 4, 0, 1, 0, 5, 0, 0, 1, 6, 0, 0, 0, 1 ]
+"""
+
+
+def sample_imu_text() -> str:
+    return """ts ts_fcc status flight_mode x y z yaw pitch roll vx vy vz position_reset_count altitude_reset_count heading_reset_count latitude longitude altitude altitude_msl height
+10.0 100.0 4194305 3 1 2 3 1.57079632679 0.1 -0.2 0.4 0.5 0.6 0 1 2 31.1 121.2 50 51 5
+10.1 100.1 268435457 3 2 3 4 1.67079632679 0.2 -0.3 0.5 0.6 0.7 0 1 2 31.2 121.3 51 52 6
+"""
+
+
+def sample_vloc_text() -> str:
+    return """ts status num_inliers reset_count x y z yaw pitch roll latitude longitude height
+10.0 2 42 0 11 12 13 90 2 -1 31.1 121.2 5
+10.1 3 43 1 12 13 14 91 3 -2 31.2 121.3 6
+"""
+
+
+def sample_vo_text() -> str:
+    return """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
+10.0 50 21 22 23 90 2 -1 1 12.5 0
+10.1 51 22 23 24 91 3 -2 0 13.5 1
+"""
+
+
+def write_sf_dirs(tmp_path):
+    data_dir = tmp_path / "data_dir"
+    log_dir = tmp_path / "log_dir"
+    data_dir.mkdir()
+    log_dir.mkdir()
+    (data_dir / "imu.txt").write_text(sample_imu_text(), encoding="utf-8")
+    (log_dir / "vloc.txt").write_text(sample_vloc_text(), encoding="utf-8")
+    (log_dir / "vo.txt").write_text(sample_vo_text(), encoding="utf-8")
+    (log_dir / "home_point.txt").write_text("121.2 31.1 51.0\n", encoding="utf-8")
+    (log_dir / "calib_raw.yaml").write_text(sample_calib_text(), encoding="utf-8")
+    return data_dir, log_dir
+
+
+def test_fixed_sf_parsers_use_documented_column_order_without_header_adaptation():
+    imu = parse_imu_fixed(sample_imu_text(), name="imu.txt")
+    assert imu.source_format == "sf_imu"
+    assert np.allclose(imu.stamps, [10.0, 10.1])
+    assert np.allclose(imu.positions[0], [1, 2, 3])
+    assert abs(yaw_from_rot(imu.rotations)[0] - np.pi / 2) < 1e-9
+    assert np.allclose(imu.extras["vx"], [0.4, 0.5])
+    assert np.allclose(imu.extras["navi_mode"], [1, 1])
+
+    vloc = parse_vloc_fixed(sample_vloc_text(), name="vloc.txt")
+    assert vloc.source_format == "sf_vloc"
+    assert np.allclose(vloc.positions[0], [11, 12, 13])
+    assert abs(yaw_from_rot(vloc.rotations)[0] - np.pi / 2) < 1e-9
+    assert np.allclose(vloc.extras["vloc_mode"], [2, 3])
+
+    vo = parse_vo_fixed(sample_vo_text(), name="vo.txt")
+    assert vo.source_format == "sf_vo"
+    assert np.allclose(vo.positions[0], [21, 22, 23])
+    assert np.allclose(vo.extras["time_cost"], [12.5, 13.5])
+
+    home = parse_home_point_fixed("121.2 31.1 51.0\n", name="home_point.txt")
+    assert home.longitude == 121.2
+    assert home.latitude == 31.1
+    assert home.altitude_msl == 51.0
+
+
+def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    bundle = load_vloc_evaluation_bundle(data_dir, log_dir)
+
+    assert bundle.nav.source_format == "sf_imu"
+    assert bundle.vloc.source_format == "sf_vloc"
+    assert np.allclose(bundle.vloc.positions[0], [11, 12, 13])
+    assert bundle.home_point.longitude == 121.2
+    assert np.allclose(bundle.calibration.t_imu_body[:3, 3], [0.1, 0.2, 0.3])
+    assert bundle.files["estimate"].name == "vloc.txt"
+
+
+def test_vo_evaluation_bundle_loads_vo_directory_contract_without_using_vloc(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    bundle = load_vo_evaluation_bundle(data_dir, log_dir)
+
+    assert bundle.nav.source_format == "sf_imu"
+    assert bundle.vo.source_format == "sf_vo"
+    assert np.allclose(bundle.vo.positions[0], [21, 22, 23])
+    assert bundle.files["estimate"].name == "vo.txt"
+
+
+def test_bundle_loader_reports_missing_required_file(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    (log_dir / "vloc.txt").unlink()
+
+    with pytest.raises(FileNotFoundError, match="log_dir/vloc.txt"):
+        load_vloc_evaluation_bundle(data_dir, log_dir)
+
+
+def test_fixed_parser_rejects_wrong_column_count():
+    bad_vloc = "10.0 2 42 0 11 12 13 90 2 -1 31.1 121.2\n"
+    with pytest.raises(ValueError, match="13 columns"):
+        parse_vloc_fixed(bad_vloc, name="vloc.txt")
+
+
 def test_tum_zero_error_after_se3_alignment():
     gt = load_trajectory_from_text(make_tum(), fmt="tum", name="gt")
     est = load_trajectory_from_text(make_tum(), fmt="tum", name="est")
@@ -153,107 +266,11 @@ def test_sim3_recovers_scale_for_monocular_like_output():
     assert report["ate_position_m"]["rmse"] < 1e-6
 
 
-def test_csv_xyz_parser():
-    text = "timestamp,x,y,z,process_time_ms\n0,0,0,1,10\n1,1,0,1,11\n2,2,0,1,9\n"
-    traj = load_trajectory_from_text(text, fmt="csv", name="csv")
-    assert traj.positions.shape == (3, 3)
-    assert "process_time_ms" in traj.extras
-
-
-def test_commented_header_ypr_units_are_detected():
-    rad_text = """# ts x y z yaw pitch roll unused
-# yaw pitch roll rad
-0 0 0 0 1.57079632679 0 0 99
-"""
-    deg_text = """# ts x y z yaw pitch roll unused
-# yaw pitch roll degree
-0 0 0 0 90 0 0 99
-"""
-    rad_traj = load_trajectory_from_text(rad_text, fmt="auto", name="rad")
-    deg_traj = load_trajectory_from_text(deg_text, fmt="auto", name="deg")
-    assert abs(yaw_from_rot(rad_traj.rotations)[0] - np.pi / 2) < 1e-9
-    assert abs(yaw_from_rot(deg_traj.rotations)[0] - np.pi / 2) < 1e-9
-
-
-def test_sf_gt_format_uses_ts2_position_ypr_and_extra_fields():
-    text = """#ts1 ts2 status flight_mode x y z yaw pitch roll vx vy vz reset_count1 reset_count2 reset_count3 lati longi alti alti_msl height
-1000000000 1882.60 1 3 1 2 3 90 2 -1 0.1 0.2 0.3 0 1 2 31.1 121.2 50 51 5
-1005000000 1882.65 1 3 2 3 4 91 3 -2 0.2 0.3 0.4 0 1 2 31.1 121.2 51 52 6
-"""
-    traj = load_trajectory_from_text(text, fmt="sf", name="sf_gt")
-
-    assert traj.source_format == "sf_gt"
-    assert np.allclose(traj.stamps, [1882.60, 1882.65])
-    assert np.allclose(traj.positions[0], [1, 2, 3])
-    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
-    for key in ["status", "flight_mode", "vx", "vy", "vz", "reset_count1", "lati", "longi", "height"]:
-        assert key in traj.extras
-
-
-def test_sf_gt_format_auto_detects_radian_ypr_without_degree_hint():
-    text = """#ts1 ts2 status flight_mode x y z yaw pitch roll vx vy vz reset_count1 reset_count2 reset_count3 lati longi alti alti_msl height
-1000000000 1882.60 1 3 1 2 3 1.57079632679 0 0 0.1 0.2 0.3 0 1 2 31.1 121.2 50 51 5
-1005000000 1882.65 1 3 2 3 4 1.57079632679 0 0 0.2 0.3 0.4 0 1 2 31.1 121.2 51 52 6
-"""
-    traj = load_trajectory_from_text(text, fmt="sf", name="sf_gt_rad")
-
-    assert traj.source_format == "sf_gt"
-    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
-
-
-def test_sf_vo_format_uses_ts_txtyz_ypr_and_reset_fields_in_auto_mode():
-    text = """# ts num_inliers tx ty tz yaw pitch roll(degree) is_keyframe frame_cost reset_count depth_mean depth_min depth_max
-1882.60 42 1 2 3 90 2 -1 1 12.5 0 4.0 1.0 8.0
-1882.65 43 2 3 4 91 3 -2 0 13.5 1 4.2 1.1 8.1
-"""
-    traj = load_trajectory_from_text(text, fmt="auto", name="sf_vo")
-
-    assert traj.source_format == "sf_vo"
-    assert np.allclose(traj.stamps, [1882.60, 1882.65])
-    assert np.allclose(traj.positions[1], [2, 3, 4])
-    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
-    for key in ["num_inliers", "is_keyframe", "frame_cost", "reset_count", "depth_mean", "depth_min", "depth_max"]:
-        assert key in traj.extras
-
-
-def test_vloc_vo_format_uses_plain_header_tx_ty_negative_altitude_and_gps_fields_in_auto_mode():
-    text = """ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
-1882.55 0 10 0 9 9 0 89 1 -1 0 0 0
-1882.60 1 42 0 1 2 220 90 2 -1 31.1 121.2 50.5
-1882.65 1 43 1 2 3 221 91 3 -2 31.2 121.3 50.8
-"""
-    traj = load_trajectory_from_text(text, fmt="auto", name="vloc_vo")
-
-    assert traj.source_format == "vloc"
-    assert np.allclose(traj.stamps, [1882.60, 1882.65])
-    assert np.allclose(traj.positions[1], [2, 3, -50.8])
-    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
-    for key in ["status", "num_inliers", "reset_count", "latitude", "longitude", "altitude"]:
-        assert key in traj.extras
-
-
-def test_vloc_vo_format_falls_back_to_tz_when_gps_altitude_is_not_available():
-    text = """ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
-1882.60 1 42 0 1 2 3 90 2 -1 0 0 0
-1882.65 1 43 1 2 3 4 91 3 -2 0 0 0
-"""
-    traj = load_trajectory_from_text(text, fmt="vloc", name="vloc_vo_no_gps")
-
-    assert traj.source_format == "vloc"
-    assert np.allclose(traj.stamps, [1882.60, 1882.65])
-    assert np.allclose(traj.positions[1], [2, 3, 4])
-
-
-def test_euroc_commented_header_uses_seconds_and_qw_order():
-    text = """#timestamp [ns],p_RS_R_x [m],p_RS_R_y [m],p_RS_R_z [m],q_RS_w [],q_RS_x [],q_RS_y [],q_RS_z []
-1403636580863555584.0000000000,1,2,3,1,0,0,0
-1403636580913555456.0000000000,2,2,3,1,0,0,0
-"""
-    traj = load_trajectory_from_text(text, fmt="auto", name="euroc")
-    assert traj.source_format == "csv"
-    assert abs(traj.duration_s - 0.05) < 1e-6
-    assert np.allclose(traj.positions[0], [1, 2, 3])
-    assert abs(yaw_from_rot(traj.rotations)[0]) < 1e-9
+def test_load_trajectory_from_text_rejects_legacy_single_file_formats():
+    text = "0 0 0 0 0 0 0 1\n1 1 0 0 0 0 0 1\n"
+    for fmt in ["auto", "sf", "vloc", "csv", "kitti", "xyz"]:
+        with pytest.raises(ValueError, match="Unsupported trajectory format"):
+            load_trajectory_from_text(text, fmt=fmt, name=f"legacy_{fmt}")
 
 
 def test_numeric_tum_nanosecond_timestamps_are_normalized():
@@ -552,16 +569,28 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
         f"{i * 0.1:.1f} {i:.3f} {np.sin(i):.6f} 1.000 0 0 0 1"
         for i in range(6)
     )
-    vo_text = """timestamp,x,y,z,aux,reset_id,tail_a,tail_b,tail_c
-0.0,0.0,0.000000,1.0,9,0,0,0,0
-0.1,1.0,0.841471,1.0,9,0,0,0,0
-0.2,2.0,0.909297,1.0,9,1,0,0,0
-0.3,3.0,0.141120,1.0,9,1,0,0,0
-0.4,4.0,-0.756802,1.0,9,2,0,0,0
-0.5,5.0,-0.958924,1.0,9,2,0,0,0
-"""
     gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
-    est = load_trajectory_from_text(vo_text, fmt="csv", name="vo")
+    est_stamps = np.arange(6, dtype=float) * 0.1
+    est_positions = np.column_stack([np.arange(6, dtype=float), np.sin(np.arange(6, dtype=float)), np.ones(6, dtype=float)])
+    raw_numeric = np.asarray(
+        [
+            [0.0, 0.0, 0.000000, 1.0, 9, 0, 0, 0, 0],
+            [0.1, 1.0, 0.841471, 1.0, 9, 0, 0, 0, 0],
+            [0.2, 2.0, 0.909297, 1.0, 9, 1, 0, 0, 0],
+            [0.3, 3.0, 0.141120, 1.0, 9, 1, 0, 0, 0],
+            [0.4, 4.0, -0.756802, 1.0, 9, 2, 0, 0, 0],
+            [0.5, 5.0, -0.958924, 1.0, 9, 2, 0, 0, 0],
+        ],
+        dtype=float,
+    )
+    est = Trajectory(
+        "vo",
+        est_stamps,
+        est_positions,
+        rotations=None,
+        extras={"raw_numeric_table": raw_numeric},
+        source_format="sf_vo",
+    )
     report = evaluate_trajectories(
         gt,
         est,

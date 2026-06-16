@@ -1,5 +1,6 @@
 import base64
 import io
+import importlib.util
 import json
 import subprocess
 import textwrap
@@ -8,13 +9,174 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 
-def test_static_format_options_include_vloc_only_for_vo_output():
+def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_formats():
     html = Path("static_web/index.html").read_text()
-    gt_select = html.split('<select id="gtFormat">', 1)[1].split("</select>", 1)[0]
-    est_select = html.split('<select id="estFormat">', 1)[1].split("</select>", 1)[0]
+    assert 'id="entryMode"' in html
+    assert 'id="dataDirFiles"' in html
+    assert 'id="logDirFiles"' in html
+    assert 'id="dataDirButton"' in html
+    assert 'id="logDirButton"' in html
+    assert 'id="dataDirStatus"' in html
+    assert 'id="logDirStatus"' in html
+    assert "webkitdirectory" in html
+    assert 'id="gtFile"' not in html
+    assert 'id="estFile"' not in html
+    assert 'id="gtFormat"' not in html
+    assert 'id="estFormat"' not in html
 
-    assert 'value="vloc"' not in gt_select
-    assert '<option value="vloc">VLOC</option>' in est_select
+
+def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
+    source = Path("app.py").read_text()
+    assert 'st.radio("评估入口", list(EVALUATION_ENTRY_OPTIONS), index=0)' in source
+    assert "length_tolerance = st.number_input(" in source
+    assert "value=0.05" in source
+    assert 'segment_policy_label = st.selectbox("VO重置/大跳变处理", list(SEGMENT_POLICY_OPTIONS), index=1)' in source
+    assert 'divergence_abs = st.number_input("发散绝对阈值 m", value=30.0' in source
+    assert 'divergence_rel = st.number_input("发散相对阈值 % 路程", value=3.0' in source
+    assert "视觉布局与 static_web 保持同一套信息组织" not in source
+
+
+def test_static_directory_picker_shows_selected_directory_name_in_custom_status():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const makeElement = (value = "") => ({
+          value,
+          files: [],
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          style: {},
+          classList: { add() {}, remove() {} },
+          addEventListener() {},
+          click() { this.clicked = true; },
+        });
+        const elements = {
+          runtimeStatus: makeElement(),
+          message: makeElement(),
+          runButton: makeElement(),
+          entryMode: makeElement("vloc"),
+          entryModeHint: makeElement(),
+          dataDirFiles: makeElement(),
+          logDirFiles: makeElement(),
+          dataDirButton: makeElement(),
+          logDirButton: makeElement(),
+          dataDirStatus: makeElement(),
+          logDirStatus: makeElement(),
+          downloadJson: makeElement(),
+          downloadPoseCsv: makeElement(),
+          downloadSegmentCsv: makeElement(),
+          downloadWorstCsv: makeElement(),
+          downloadConfigJson: makeElement(),
+          downloadTrajectoryExcel: makeElement(),
+          downloadHtml: makeElement(),
+          interpolationPreset: makeElement("0.15"),
+          maxInterpolationGap: makeElement("0.15"),
+        };
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || makeElement(); },
+          createElement() { return { ...makeElement(), remove() {} }; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot() {}, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+
+        elements.dataDirFiles.files = [
+          { name: "imu.txt", webkitRelativePath: "data_dir/imu.txt" },
+          { name: "extra.txt", webkitRelativePath: "data_dir/extra.txt" },
+        ];
+        elements.logDirFiles.files = [
+          { name: "vloc.txt", webkitRelativePath: "log_dir/vloc.txt" },
+        ];
+
+        context.updateDirectoryStatus("data");
+        context.updateDirectoryStatus("log");
+
+        process.stdout.write(JSON.stringify({
+          dataStatus: elements.dataDirStatus.textContent,
+          logStatus: elements.logDirStatus.textContent,
+        }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert "data_dir" in payload["dataStatus"]
+    assert "2" in payload["dataStatus"]
+    assert "log_dir" in payload["logStatus"]
+    assert "1" in payload["logStatus"]
+
+
+def test_static_browser_runner_uses_fixed_bundle_parsers_instead_of_legacy_single_file_loader(tmp_path):
+    runner_path = Path("static_web/py/browser_runner.py")
+    spec = importlib.util.spec_from_file_location("browser_runner_test", runner_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    imu_text = """ts ts_fcc status flight_mode x y z yaw pitch roll vx vy vz position_reset_count altitude_reset_count heading_reset_count latitude longitude altitude altitude_msl height
+10.0 100.0 4194305 3 1 2 3 1.57079632679 0.1 -0.2 0.4 0.5 0.6 0 1 2 31.1 121.2 50 51 5
+10.1 100.1 268435457 3 2 3 4 1.67079632679 0.2 -0.3 0.5 0.6 0.7 0 1 2 31.2 121.3 51 52 6
+"""
+    vloc_text = """ts status num_inliers reset_count x y z yaw pitch roll latitude longitude height
+10.0 2 42 0 1.1 2.1 3.1 90 2 -1 31.1 121.2 5
+10.1 3 43 1 2.1 3.1 4.1 91 3 -2 31.2 121.3 6
+"""
+    vo_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
+10.0 50 1.2 2.2 3.2 90 2 -1 1 12.5 0
+10.1 51 2.2 3.2 4.2 91 3 -2 0 13.5 1
+"""
+    home_text = "121.2 31.1 51.0\n"
+    calib_text = """%YAML:1.0
+---
+T_imu_body: [ 1, 0, 0, 0.1, 0, 1, 0, 0.2, 0, 0, 1, 0.3, 0, 0, 0, 1 ]
+cam0:
+  T_cam_imu: [ 0, -1, 0, 1, 1, 0, 0, 2, 0, 0, 1, 3, 0, 0, 0, 1 ]
+"""
+    config_json = json.dumps({"segment_lengths_m": [50, 100], "max_interpolation_gap_s": 0.3})
+
+    vloc_report = json.loads(
+        module.evaluate_vloc_bundle_json(
+            imu_text,
+            vloc_text,
+            home_text,
+            calib_text,
+            config_json,
+            "imu.txt",
+            "vloc.txt",
+            "home_point.txt",
+            "calib_raw.yaml",
+        )
+    )
+    assert vloc_report["summary"]["matched_poses"] == 2
+
+    vo_report = json.loads(
+        module.evaluate_vo_bundle_json(
+            imu_text,
+            vo_text,
+            home_text,
+            calib_text,
+            config_json,
+            "imu.txt",
+            "vo.txt",
+            "home_point.txt",
+            "calib_raw.yaml",
+        )
+    )
+    assert vo_report["summary"]["matched_poses"] == 2
 
 
 def test_static_python_sources_are_fetched_without_browser_cache():

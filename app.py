@@ -2,7 +2,7 @@
 
 这个文件只负责交互和展示：
 1. 侧边栏收集评估配置。
-2. 上传 GT/VO 文件并交给 vo_eval.evaluator 解析和计算。
+2. 按固定目录契约读取 data_dir / log_dir。
 3. 把 report 中的指标映射到页面指标卡、Plotly 图表和下载文件。
 
 核心计算不在这里，核心指标都由 vo_eval/evaluator.py 产生。
@@ -23,18 +23,9 @@ import streamlit as st
 import vo_eval.evaluator as vo_evaluator
 
 
-GT_FORMAT_OPTIONS = {
-    "自动识别": "auto",
-    "SF: gt(ts1 ts2 x y z ypr) / vo(ts tx ty tz ypr)": "sf",
-    "TUM: timestamp tx ty tz qx qy qz qw": "tum",
-    "KITTI: 3x4 pose matrix": "kitti",
-    "CSV/TSV 表格": "csv",
-    "XYZ: [t] x y z": "xyz",
-}
-
-EST_FORMAT_OPTIONS = {
-    **GT_FORMAT_OPTIONS,
-    "VLOC: ts status inliers reset tx ty tz ypr lat lon alt": "vloc",
+EVALUATION_ENTRY_OPTIONS = {
+    "VLOC 评估": "vloc",
+    "VO 评估": "vo",
 }
 
 ALIGNMENT_OPTIONS = {
@@ -81,7 +72,7 @@ INTERPOLATION_GAP_PRESETS = {
 
 
 def main() -> None:
-    """页面入口：上传文件 -> 构造配置 -> 调用 evaluator -> 展示 report。"""
+    """页面入口：选择 VLOC/VO 流程 -> 输入 data_dir/log_dir -> 调用 evaluator -> 展示 report。"""
     st.set_page_config(page_title="VO 评估系统", layout="wide")
     st.title("VO 评估系统")
 
@@ -91,8 +82,10 @@ def main() -> None:
         # rpe_delta_value/unit -> RPE；segment_* -> 长航程子轨迹误差；
         # divergence_* -> 发散检测阈值。
         st.header("输入设置")
-        gt_format_label = st.selectbox("Ground truth 格式", list(GT_FORMAT_OPTIONS), index=0)
-        est_format_label = st.selectbox("VO 输出格式", list(EST_FORMAT_OPTIONS), index=0)
+        entry_label = st.radio("评估入口", list(EVALUATION_ENTRY_OPTIONS), index=0)
+        data_dir = st.text_input("data_dir", placeholder="/path/to/data_dir")
+        log_dir = st.text_input("log_dir", placeholder="/path/to/log_dir")
+        st.caption("VLOC 固定读取 data_dir/imu.txt 与 log_dir/vloc.txt；VO 固定读取 data_dir/imu.txt 与 log_dir/vo.txt。")
         alignment_label = st.selectbox("轨迹对齐", list(ALIGNMENT_OPTIONS), index=1)
         orientation_label = st.selectbox("VO 姿态修正", list(ORIENTATION_CORRECTION_OPTIONS), index=0)
         association_label = st.selectbox("时间同步方式", list(ASSOCIATION_OPTIONS), index=0)
@@ -120,22 +113,17 @@ def main() -> None:
         segment_text = st.text_input("长航程子轨迹长度 m", value="50,100,200,500,1000,2000,5000")
         max_segments = st.number_input("每个长度最多抽样段数", value=10000, min_value=100, step=1000)
         segment_step = st.number_input("子轨迹起点步长 frames（KITTI 默认 10）", value=10, min_value=1, step=1)
-        length_tolerance = st.number_input("子轨迹长度容差比例（rpg 默认 0.2）", value=0.2, min_value=0.0, max_value=1.0, step=0.05)
-        segment_policy_label = st.selectbox("VO重置/大跳变处理", list(SEGMENT_POLICY_OPTIONS), index=0)
+        length_tolerance = st.number_input("子轨迹长度容差比例", value=0.05, min_value=0.0, max_value=1.0, step=0.01)
+        segment_policy_label = st.selectbox("VO重置/大跳变处理", list(SEGMENT_POLICY_OPTIONS), index=1)
         discontinuity_step = st.number_input("断点步长阈值 m", value=100.0, min_value=0.0, step=10.0)
         discontinuity_gap = st.number_input("断点时间间隔阈值 s", value=5.0, min_value=0.0, step=1.0)
-        divergence_abs = st.number_input("发散绝对阈值 m", value=10.0, min_value=0.0, step=1.0)
-        divergence_rel = st.number_input("发散相对阈值 % 路程", value=2.0, min_value=0.0, step=0.5)
+        divergence_abs = st.number_input("发散绝对阈值 m", value=30.0, min_value=0.0, step=1.0)
+        divergence_rel = st.number_input("发散相对阈值 % 路程", value=3.0, min_value=0.0, step=0.5)
 
-    left, right = st.columns(2)
-    with left:
-        gt_file = st.file_uploader("拖入 ground truth 轨迹文件", type=["txt", "csv", "tsv", "log"], key="gt")
-    with right:
-        est_file = st.file_uploader("拖入 VO 跑完输出的轨迹文件", type=["txt", "csv", "tsv", "log"], key="est")
+    st.subheader(entry_label)
 
-    st.caption("支持 TUM、KITTI odometry 3x4 矩阵、CSV/TSV/空格表；可从注释表头读取 x/y/z/yaw/pitch/roll，并自动识别弧度/角度。")
-
-    if not gt_file or not est_file:
+    if not data_dir or not log_dir:
+        st.info("先填写 `data_dir` 和 `log_dir`，再运行评估。")
         show_metric_catalog()
         return
 
@@ -172,8 +160,15 @@ def main() -> None:
             divergence_abs_m=float(divergence_abs),
             divergence_rel_percent=float(divergence_rel),
         )
-        gt = load_uploaded(gt_file, GT_FORMAT_OPTIONS[gt_format_label], evaluator)
-        est = load_uploaded(est_file, EST_FORMAT_OPTIONS[est_format_label], evaluator)
+        entry_mode = EVALUATION_ENTRY_OPTIONS[entry_label]
+        if entry_mode == "vloc":
+            bundle = evaluator.load_vloc_evaluation_bundle(data_dir, log_dir)
+            gt = bundle.nav
+            est = bundle.vloc
+        else:
+            bundle = evaluator.load_vo_evaluation_bundle(data_dir, log_dir)
+            gt = bundle.nav
+            est = bundle.vo
         report = evaluator.evaluate_trajectories(gt, est, cfg)
     except Exception as exc:
         st.error(f"评估失败：{exc}")
@@ -186,11 +181,6 @@ def main() -> None:
 
 def latest_evaluator():
     return importlib.reload(vo_evaluator)
-
-
-def load_uploaded(uploaded: Any, fmt: str, evaluator: Any):
-    text = uploaded.getvalue().decode("utf-8", errors="replace")
-    return evaluator.load_trajectory_from_text(text, fmt=fmt, name=uploaded.name)
 
 
 def parse_float_list(text: str) -> list[float]:
