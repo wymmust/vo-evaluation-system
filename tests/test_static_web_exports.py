@@ -760,6 +760,263 @@ def test_static_composite_angle_error_time_series_unwraps_180_degree_boundary():
     assert json.loads(result.stdout) == [179, 181, 178]
 
 
+def test_static_composite_charts_disable_native_spikes_for_custom_overlay():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const element = {
+          addEventListener() {},
+          classList: { add() {}, remove() {} },
+          style: {},
+          files: [],
+          value: "",
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+        };
+        const document = {
+          body: { appendChild() {} },
+          getElementById() { return element; },
+          createElement() { return { ...element, click() {}, remove() {}, appendChild() {} }; },
+        };
+        const plots = [];
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); return Promise.resolve(); }, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+        context.renderPairCompositeChart("positionCompareComposite", [
+          { timestamp: 1, nav_n_m: 10, vloc_n_m: 9, nav_e_m: 20, vloc_e_m: 19 },
+          { timestamp: 2, nav_n_m: 11, vloc_n_m: 10, nav_e_m: 21, vloc_e_m: 20 },
+        ], {
+          title: "NED",
+          leftName: "nav",
+          rightName: "vloc",
+          rows: [
+            { label: "N", left: "nav_n_m", right: "vloc_n_m", unit: "m" },
+            { label: "E", left: "nav_e_m", right: "vloc_e_m", unit: "m" },
+          ],
+        });
+        const plot = plots[0];
+        process.stdout.write(JSON.stringify({
+          hovermode: plot.layout.hovermode,
+          hoversubplots: plot.layout.hoversubplots,
+          xaxisShowspikes: plot.layout.xaxis.showspikes,
+          xaxis2Showspikes: plot.layout.xaxis2.showspikes,
+          firstTraceHoverinfo: plot.data[0].hoverinfo,
+          secondTraceHoverinfo: plot.data[1].hoverinfo,
+        }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "hovermode": "x unified",
+        "hoversubplots": "axis",
+        "xaxisShowspikes": False,
+        "xaxis2Showspikes": False,
+        "firstTraceHoverinfo": "none",
+        "secondTraceHoverinfo": "none",
+    }
+
+
+def test_static_composite_payload_helpers_compute_hover_and_range_payloads():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const element = {
+          addEventListener() {},
+          classList: { add() {}, remove() {} },
+          style: {},
+          files: [],
+          value: "",
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          parentNode: { insertBefore() {} },
+        };
+        const document = {
+          body: { appendChild() {} },
+          getElementById() { return element; },
+          createElement() { return { ...element, click() {}, remove() {}, appendChild() {}, parentNode: element.parentNode }; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot() { return Promise.resolve(); }, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+        const rows = [
+          { timestamp: 10, nav_n_m: 1, vloc_n_m: 2, position_error_n_m: 0.1 },
+          { timestamp: 20, nav_n_m: 3, vloc_n_m: 4, position_error_n_m: 0.3 },
+          { timestamp: 30, nav_n_m: 5, vloc_n_m: 6, position_error_n_m: 0.5 },
+        ];
+        const pairSpec = {
+          rows: [{ label: "N", left: "nav_n_m", right: "vloc_n_m", unit: "m" }],
+          leftName: "nav",
+          rightName: "vloc",
+        };
+        const errorSpec = {
+          rows: [{ label: "N error", field: "position_error_n_m", unit: "m" }],
+        };
+        process.stdout.write(JSON.stringify({
+          hover: context.compositeHoverPayload(rows, pairSpec, 19),
+          range: context.compositeRangePayload(rows, errorSpec, [9, 21]),
+        }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload["hover"]["timestamp"] == 20
+    assert payload["hover"]["values"] == [
+        {"label": "N nav", "value": 3, "unit": "m"},
+        {"label": "N vloc", "value": 4, "unit": "m"},
+    ]
+    assert payload["range"]["start"] == 9
+    assert payload["range"]["end"] == 21
+    assert payload["range"]["sampleCount"] == 2
+    assert payload["range"]["stats"][0]["label"] == "N error"
+    assert payload["range"]["stats"][0]["mean"] == 0.2
+
+
+def test_static_composite_hover_overlay_spans_chart_and_follows_cursor():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const makeElement = (id = "") => ({
+          id,
+          children: [],
+          parentNode: null,
+          style: {},
+          files: [],
+          value: "",
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          className: "",
+          clientWidth: 900,
+          clientHeight: 720,
+          classList: {
+            values: [],
+            add(value) { this.values.push(value); },
+            remove() {},
+          },
+          appendChild(child) {
+            child.parentNode = this;
+            this.children.push(child);
+            if (child.id) {
+              elements[child.id] = child;
+            }
+            return child;
+          },
+          addEventListener(type, handler) {
+            this[`event_${type}`] = handler;
+          },
+          remove() {},
+          getBoundingClientRect() {
+            return { left: 10, top: 20, width: this.clientWidth, height: this.clientHeight };
+          },
+        });
+        const elements = {};
+        const document = {
+          body: makeElement("body"),
+          getElementById(id) {
+            return elements[id] || null;
+          },
+          createElement(tag) {
+            return makeElement(tag);
+          },
+        };
+        const plot = makeElement("positionCompareComposite");
+        plot.onHandlers = {};
+        plot.on = (name, handler) => { plot.onHandlers[name] = handler; };
+        elements.positionCompareComposite = plot;
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot() { return Promise.resolve(); }, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+        context.renderPairCompositeChart("positionCompareComposite", [
+          { timestamp: 10, nav_n_m: 1, vloc_n_m: 2, nav_e_m: 3, vloc_e_m: 4, nav_d_m: -5, vloc_d_m: -6 },
+          { timestamp: 20, nav_n_m: 11, vloc_n_m: 12, nav_e_m: 13, vloc_e_m: 14, nav_d_m: -15, vloc_d_m: -16 },
+        ], {
+          title: "NED",
+          leftName: "nav",
+          rightName: "vloc",
+          rows: [
+            { label: "N", left: "nav_n_m", right: "vloc_n_m", unit: "m" },
+            { label: "E", left: "nav_e_m", right: "vloc_e_m", unit: "m" },
+            { label: "D", left: "nav_d_m", right: "vloc_d_m", unit: "m" },
+          ],
+        });
+        plot.onHandlers.plotly_hover({
+          points: [{ x: 19, xaxis: { _offset: 80, l2p(x) { return x * 2; } } }],
+          event: { clientX: 240, clientY: 280 },
+        });
+        const crosshair = elements.positionCompareCompositeCrosshair;
+        const tooltip = elements.positionCompareCompositeTooltip;
+        process.stdout.write(JSON.stringify({
+          crosshairClass: crosshair.className,
+          crosshairDisplay: crosshair.style.display,
+          crosshairLeft: crosshair.style.left,
+          crosshairTop: crosshair.style.top,
+          crosshairBottom: crosshair.style.bottom,
+          tooltipClass: tooltip.className,
+          tooltipDisplay: tooltip.style.display,
+          tooltipLeft: tooltip.style.left,
+          tooltipTop: tooltip.style.top,
+          tooltipHtml: tooltip.innerHTML,
+        }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload["crosshairClass"] == "composite-crosshair"
+    assert payload["crosshairDisplay"] == "block"
+    assert payload["crosshairLeft"] == "118px"
+    assert payload["crosshairTop"] == "0px"
+    assert payload["crosshairBottom"] == "0px"
+    assert payload["tooltipClass"] == "composite-floating-tooltip"
+    assert payload["tooltipDisplay"] == "block"
+    assert payload["tooltipLeft"] != ""
+    assert payload["tooltipTop"] != ""
+    assert "当前时间戳 20.000 s" in payload["tooltipHtml"]
+    for label in ["N nav", "N vloc", "E nav", "E vloc", "D nav", "D vloc"]:
+        assert label in payload["tooltipHtml"]
+
+
 def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
     script = textwrap.dedent(
         r"""

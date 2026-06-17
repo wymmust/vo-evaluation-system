@@ -125,7 +125,7 @@ docker run --rm -p 8501:8501 vo-evaluation-system
 | ATE 垂直 / 高度误差 | `report["ate_vertical_m"]`、`vertical_error_signed_m`、`vertical_error_abs_m` | `evaluate_trajectories()` 中的 `vertical_error_signed_m = errors[:, 2]`，以及 `describe()` | `#05 垂直 RMSE`、`高度与垂直误差` |
 | ATE 姿态误差 | `report["ate_orientation_deg"]` | `rotation_errors()`、`apply_rotation_alignment()`、`describe()` | `HTML 调参报告新增参数与代码/公式对应 / Attitude / yaw RMSE` |
 | ATE yaw 航向误差 | `report["ate_yaw_deg"]`、`yaw_error_signed_deg`、`yaw_error_abs_deg` | `yaw_from_rot()`、`wrap_pi()`、`describe()` | `HTML 调参报告新增参数与代码/公式对应 / Attitude / yaw RMSE` |
-| RPE 固定帧间隔误差 | `report["rpe_frame_delta"]` | `rpe_error_arrays()`、`relative_error()`、`describe()` | `#02 RPE RMSE`、`RPE 相对位姿误差` |
+| RPE 帧数/距离间隔误差 | `report["rpe_frame_delta"]` | `rpe_frame_dataframe()`、`relative_error()`、`describe()` | `#02 RPE RMSE`、`RPE 相对位姿误差` |
 | RPE 固定时间间隔误差 | `report["rpe_time_delta"]` | `rpe_error_arrays_by_time()`、`nearest_time_index()`、`summarize_time_rpe()` | `HTML 调参报告新增参数与代码/公式对应 / 固定时间 RPE` |
 | 按距离子轨迹平移 / 旋转 / 尺度误差 | `report["segment_errors"]` | `segment_errors()`、`find_segment_end()`、`relative_error()`、`summarize_segment_records()` | `按距离子轨迹误差`、`HTML 调参报告新增参数与代码/公式对应 / 长航程子轨迹表新增列` |
 | 每个子轨迹明细 | `report["segment_records"]` | `segment_errors()` 生成 records，`summarize_segment_records()` 聚合 | `HTML 调参报告新增参数与代码/公式对应 / Top-K 最差片段` |
@@ -180,9 +180,9 @@ $$
 
 ### #02 RPE RMSE
 
-- 前端取值：`value: rpe.rmse`，其中 `rpe = report.rpe_frame_delta?.translation_m || {}`；卡片备注 `Δ=... frames` 来自 `report.rpe_frame_delta.delta_frames`。
+- 前端取值：`value: rpe.rmse`，其中 `rpe = report.rpe_frame_delta?.translation_m || {}`；卡片备注来自 `report.rpe_frame_delta`，可能是 `Δ=... frames` 或 `Δ=... m ±5%`。
 - 后端字段：`report["rpe_frame_delta"]["translation_m"]["rmse"]`。
-- 后端代码：`rpe_error_arrays(..., delta=max(1, int(cfg.rpe_delta_frames)))`，每个 `i` 取 `j=i+delta`，再调用 `relative_error()`。
+- 后端代码：`rpe_frame_dataframe()`。帧数模式每个 `i` 取 `j=i+delta`；距离模式按 GT 累计路程在目标距离容差内找候选终点，并选择平移 RPE 最小的候选；最终都调用 `relative_error()`。
 - 公式：
 
 $$

@@ -81,6 +81,51 @@ def test_streamlit_composite_angle_error_time_series_unwraps_180_degree_boundary
     assert list(fig.data[0].y) == [179, 181, 178]
 
 
+def test_streamlit_composite_charts_share_hover_spikes_across_subplots():
+    from app import make_composite_pair_time_series, make_composite_error_time_series, make_composite_single_time_series
+
+    frame = pd.DataFrame(
+        {
+            "timestamp": [0, 1, 2],
+            "nav_n_m": [0, 1, 2],
+            "vloc_n_m": [0.1, 1.1, 2.1],
+            "nav_e_m": [3, 4, 5],
+            "vloc_e_m": [3.1, 4.1, 5.1],
+            "position_error_n_m": [0.1, 0.2, 0.3],
+            "position_error_e_m": [0.4, 0.5, 0.6],
+            "vx": [1, 2, 3],
+            "vy": [4, 5, 6],
+        }
+    )
+    figures = [
+        make_composite_pair_time_series(
+            frame,
+            "NED",
+            [("N", "nav_n_m", "vloc_n_m", "m", False), ("E", "nav_e_m", "vloc_e_m", "m", False)],
+            left_name="nav",
+            right_name="vloc",
+        ),
+        make_composite_error_time_series(
+            frame,
+            "NED error",
+            [("N error", "position_error_n_m", "m", False), ("E error", "position_error_e_m", "m", False)],
+        ),
+        make_composite_single_time_series(
+            frame,
+            "Velocity",
+            [("vx", "vx", "m/s", False), ("vy", "vy", "m/s", False)],
+        ),
+    ]
+
+    for fig in figures:
+        assert fig.layout.hovermode == "x unified"
+        assert fig.layout.hoversubplots == "axis"
+        assert fig.layout.xaxis.showspikes is True
+        assert fig.layout.xaxis2.showspikes is True
+        assert fig.layout.xaxis.spikemode == "across"
+        assert fig.layout.xaxis2.spikemode == "across"
+
+
 def test_streamlit_sim3_scale_time_series_uses_exported_scale_by_timestamp():
     from app import make_sim3_scale_time_series
 

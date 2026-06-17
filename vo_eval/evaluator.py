@@ -1695,7 +1695,7 @@ def interpolate_gt_to_est_timestamps(
     - 先把 VO 时间戳加上 time_offset_s，解决 GT/VO 两套时钟固定偏移。
     - 只保留落在 GT 时间范围内的 VO 点，避免拿没有 GT 的 VO 段做统计。
     - max_interpolation_gap_s 用来阻止跨很长 GT 缺口插值，避免虚假的平滑 GT。
-    - 位置用线性插值；姿态如果存在，后续 interpolate_rotations() 使用 SLERP。
+    - 位置用线性插值；姿态如果存在，后续 interpolate_rotations_from_brackets() 使用 SLERP。
 
     指标对应：
     - report["association"]["matches"]: 最终参与评估的 VO 时间戳数量。
@@ -1889,11 +1889,6 @@ def subset_trajectory(traj: Trajectory, indices: np.ndarray, stamps_override: np
     return Trajectory(traj.name, stamps, traj.positions[indices], rotations, extras=extras, source_format=traj.source_format)
 
 
-def interpolate_positions(src_stamps: np.ndarray, src_positions: np.ndarray, target_stamps: np.ndarray) -> np.ndarray:
-    """GT 位置插值：x/y/z 三个轴分别按时间线性插值。"""
-    return np.column_stack([np.interp(target_stamps, src_stamps, src_positions[:, axis]) for axis in range(3)])
-
-
 def interpolate_positions_from_brackets(
     src_positions: np.ndarray,
     left_indices: np.ndarray,
@@ -1907,11 +1902,6 @@ def interpolate_positions_from_brackets(
     p1 = src_positions[right_indices]
     alpha = np.asarray(alphas, dtype=float).reshape(-1, 1)
     return (1.0 - alpha) * p0 + alpha * p1
-
-
-def interpolation_bracket_gaps(src_stamps: np.ndarray, target_stamps: np.ndarray) -> np.ndarray:
-    """计算每个目标时间戳两侧 GT 样本的时间间隔，用于过滤大缺口插值。"""
-    return interpolation_brackets(src_stamps, target_stamps)["gap_s"]
 
 
 def interpolation_brackets(
@@ -1985,28 +1975,6 @@ def interpolation_brackets(
         "nearest_side_offset_s": nearest_side_offset,
         "valid_timestamp": np.isfinite(gaps),
     }
-
-
-def interpolate_rotations(src_stamps: np.ndarray, src_rotations: np.ndarray | None, target_stamps: np.ndarray) -> np.ndarray | None:
-    """GT 姿态插值：旋转矩阵先转四元数，再对相邻姿态做 SLERP。"""
-    if src_rotations is None:
-        return None
-    quats = matrix_to_quaternion(src_rotations)
-    src = np.asarray(src_stamps, dtype=float)
-    target = np.asarray(target_stamps, dtype=float)
-    insert = np.searchsorted(src, target, side="left")
-    out = np.empty((len(target), 4), dtype=float)
-    for i, pos in enumerate(insert):
-        if pos <= 0:
-            out[i] = quats[0]
-        elif pos >= len(src):
-            out[i] = quats[-1]
-        elif np.isclose(src[pos], target[i]):
-            out[i] = quats[pos]
-        else:
-            alpha = float((target[i] - src[pos - 1]) / (src[pos] - src[pos - 1]))
-            out[i] = slerp_quaternion(quats[pos - 1], quats[pos], alpha)
-    return quaternion_to_matrix(out[:, 0], out[:, 1], out[:, 2], out[:, 3])
 
 
 def interpolate_rotations_from_brackets(
@@ -2615,65 +2583,6 @@ def axis_flip_matrix(axis: str) -> np.ndarray:
     if axis == "z":
         return np.diag([-1.0, -1.0, 1.0])
     raise ValueError(f"Unknown axis: {axis}")
-
-
-def rpe_error_arrays(
-    gt_pos: np.ndarray,
-    est_pos: np.ndarray,
-    gt_rot: np.ndarray | None,
-    est_rot: np.ndarray | None,
-    delta: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """固定帧间隔 RPE。
-
-    对每个 i 取 j=i+delta，比较 GT 相对运动和 VO 相对运动。
-    返回值对应 report["rpe_frame_delta"]["translation_m"] 和 rotation_deg。
-
-    与 ATE 的区别：
-    - ATE 看对齐后每一帧的绝对位置差。
-    - RPE 看 i->j 这段相对运动是否一致，更敏感于帧间估计稳定性。
-    - delta_frames 越大，越接近中短程累计漂移；越小，越接近单帧运动误差。
-
-    来源对应：
-    - 直接对应 Sturm12 的 Relative Pose Error。
-    - Zhang18 也把它作为相对轨迹误差解释；Schubert18/TUM VI 在 VIO 评估中使用固定时间间隔 RPE 语境。
-    """
-    n = len(gt_pos)
-    if n <= delta:
-        return np.asarray([], dtype=float), np.asarray([], dtype=float)
-    trans_errors: list[float] = []
-    rot_errors: list[float] = []
-    for i in range(n - delta):
-        j = i + delta
-        # relative_error() 同时支持有姿态和无姿态两种口径：
-        # 有姿态时在局部坐标系比较相对运动；无姿态时退化成世界系位移差。
-        terr, rerr = relative_error(gt_pos, est_pos, gt_rot, est_rot, i, j)
-        trans_errors.append(terr)
-        if rerr is not None:
-            rot_errors.append(rerr)
-    return np.asarray(trans_errors, dtype=float), np.asarray(rot_errors, dtype=float)
-
-
-def rpe_by_frame_delta(
-    gt_pos: np.ndarray,
-    est_pos: np.ndarray,
-    gt_rot: np.ndarray | None,
-    est_rot: np.ndarray | None,
-    delta: int,
-) -> dict[str, Any]:
-    """把 RPE 数组包装成 report["rpe_frame_delta"] 使用的统计结构。
-
-    来源对应：
-    - translation_m / rotation_deg 直接来自 Sturm12 的 RPE 平移和旋转误差。
-    - count/rmse/mean 等统计是报告层汇总，不改变 RPE 公式。
-    """
-    trans_errors, rot_errors = rpe_error_arrays(gt_pos, est_pos, gt_rot, est_rot, delta)
-    return {
-        "delta_frames": int(delta),
-        "count": int(len(trans_errors)),
-        "translation_m": describe(trans_errors),
-        "rotation_deg": describe(np.degrees(rot_errors)) if len(rot_errors) else None,
-    }
 
 
 def rpe_error_arrays_by_time(
@@ -3640,7 +3549,7 @@ def euler_yaw_pitch_roll_to_matrix(yaw: np.ndarray, pitch: np.ndarray, roll: np.
 def matrix_to_quaternion(rot: np.ndarray) -> np.ndarray:
     """旋转矩阵转四元数。
 
-    主要用于姿态插值：interpolate_rotations() 先把矩阵转四元数，再做 SLERP。
+    主要用于姿态插值：先把矩阵转四元数，再在插值流程里做 SLERP。
     """
     out = []
     for r in rot:

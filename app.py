@@ -970,7 +970,7 @@ def make_composite_pair_time_series(
             )
         fig.update_yaxes(title_text=unit, row=row_idx, col=1)
     fig.update_xaxes(title_text="timestamp s", row=len(series_specs), col=1)
-    fig.update_layout(title=title, height=320 * len(series_specs), hovermode="x unified")
+    apply_composite_time_interaction(fig, title=title, height=320 * len(series_specs))
     return fig
 
 
@@ -1067,7 +1067,7 @@ def make_composite_error_time_series(
             )
         fig.update_yaxes(title_text=unit, row=row_idx, col=1)
     fig.update_xaxes(title_text="timestamp s", row=len(series_specs), col=1)
-    fig.update_layout(title=title, height=320 * len(series_specs), hovermode="x unified")
+    apply_composite_time_interaction(fig, title=title, height=320 * len(series_specs))
     return fig
 
 
@@ -1090,8 +1090,27 @@ def make_composite_single_time_series(
             )
         fig.update_yaxes(title_text=unit, row=row_idx, col=1)
     fig.update_xaxes(title_text="timestamp s", row=len(series_specs), col=1)
-    fig.update_layout(title=title, height=270 * len(series_specs), hovermode="x unified")
+    apply_composite_time_interaction(fig, title=title, height=270 * len(series_specs))
     return fig
+
+
+def apply_composite_time_interaction(fig: go.Figure, title: str, height: int) -> None:
+    """给多行时间序列统一配置跨子图 hover 虚线和共享时间轴交互。"""
+    fig.update_xaxes(
+        showspikes=True,
+        spikemode="across",
+        spikedash="dot",
+        spikesnap="cursor",
+        spikethickness=1,
+    )
+    fig.update_layout(
+        title=title,
+        height=height,
+        hovermode="x unified",
+        hoversubplots="axis",
+        hoverdistance=20,
+        spikedistance=-1,
+    )
 
 
 def segmented_values(df: pd.DataFrame, cols: list[str], segment_col: str | None = None) -> list[list[float | None]]:
