@@ -25,6 +25,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background:
@@ -425,12 +429,12 @@ button:disabled {
 
 .chart-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
 }
 
 .chart {
-  min-height: 390px;
+  min-height: 460px;
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;

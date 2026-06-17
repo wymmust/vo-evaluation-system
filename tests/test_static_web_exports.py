@@ -9,6 +9,16 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 
+def test_static_browser_evaluator_exports_new_vloc_summary_metrics():
+    source = Path("static_web/py/evaluator.py").read_text()
+    assert "mean_error_pos_xy" in source
+    assert "mean_error_pos_z" in source
+    assert "mean_error_euler" in source
+    assert "max_error_pos_xy" in source
+    assert "max_error_pos_z" in source
+    assert "max_error_euler" in source
+
+
 def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_formats():
     html = Path("static_web/index.html").read_text()
     assert 'id="entryMode"' in html
@@ -23,6 +33,16 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
     assert 'id="estFile"' not in html
     assert 'id="gtFormat"' not in html
     assert 'id="estFormat"' not in html
+    assert 'id="positionCompareComposite"' in html
+    assert 'id="attitudeCompareComposite"' in html
+    assert 'id="positionErrorComposite"' in html
+    assert 'id="attitudeErrorComposite"' in html
+    assert 'id="evaluationParametersSection" data-entry-hide="vloc"' in html
+    assert 'id="seriesXTime"' not in html
+
+    css = Path("static_web/style.css").read_text()
+    assert "[hidden]" in css
+    assert "display: none !important" in css
 
 
 def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
@@ -36,6 +56,7 @@ def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
     assert "length_tolerance = st.number_input(" in source
     assert "value=0.05" in source
     assert 'segment_policy_label = st.selectbox("VO重置/大跳变处理", list(SEGMENT_POLICY_OPTIONS), index=1)' in source
+    assert 'segment_policy_label = "按VO时间戳统一评估（推荐）"' in source
     assert 'divergence_abs = st.number_input("发散绝对阈值 m", value=30.0' in source
     assert 'divergence_rel = st.number_input("发散相对阈值 % 路程", value=3.0' in source
     assert "视觉布局与 static_web 保持同一套信息组织" not in source
@@ -233,6 +254,7 @@ def test_static_vloc_mode_hides_transform_controls_and_uses_fixed_sync_defaults(
     assert payload["config"]["max_interpolation_gap_s"] == 1.0
     assert payload["config"]["allow_extrapolation"] is False
     assert payload["config"]["time_offset_s"] == 0.0
+    assert payload["config"]["continuous_segment_policy"] == "vo_timestamps"
     assert payload["hiddenStates"] == [True, False]
 
 
@@ -451,18 +473,10 @@ def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets(
 def test_static_visualization_renders_time_series_and_rpe_charts():
     html = Path("static_web/index.html").read_text()
     expected_ids = [
-        "seriesXTime",
-        "seriesYTime",
-        "seriesZTime",
-        "seriesYawTime",
-        "seriesPitchTime",
-        "seriesRollTime",
-        "errorXTime",
-        "errorYTime",
-        "errorZTime",
-        "errorYawTime",
-        "errorPitchTime",
-        "errorRollTime",
+        "positionCompareComposite",
+        "attitudeCompareComposite",
+        "positionErrorComposite",
+        "attitudeErrorComposite",
         "sim3ScaleTime",
         "rpeTranslationTime",
         "rpeRotationTime",
@@ -507,6 +521,7 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
         const perPose = [0, 1, 2].map((index) => ({
           timestamp: index,
           segment_id: 0,
+          visual_segment_id: index < 2 ? 0 : 1,
           gt_x_m: index,
           gt_y_m: index + 1,
           gt_z_m: index + 2,
@@ -551,12 +566,32 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
             ],
           },
         });
-        process.stdout.write(JSON.stringify(plots.map((plot) => plot.id)));
+        const byId = Object.fromEntries(plots.map((plot) => [plot.id, plot]));
+        process.stdout.write(JSON.stringify({
+          ids: plots.map((plot) => plot.id),
+          trajectory3dNames: byId.trajectory3d.data.map((trace) => trace.name),
+          gtStartText: byId.trajectory3d.data[2].text,
+          gtEndText: byId.trajectory3d.data[3].text,
+          gtStartMarker: byId.trajectory3d.data[2].marker,
+          positionCompareNames: byId.positionCompareComposite.data.map((trace) => trace.name),
+          thirdRowColors: [
+            byId.positionCompareComposite.data[4].line.color,
+            byId.positionCompareComposite.data[5].line.color,
+          ],
+        }));
         """
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
-    rendered_ids = set(json.loads(result.stdout))
+    payload = json.loads(result.stdout)
+    rendered_ids = set(payload["ids"])
     assert set(expected_ids).issubset(rendered_ids)
+    assert {"GT start", "GT end", "VO start", "VO end"}.issubset(set(payload["trajectory3dNames"]))
+    assert payload["gtStartText"] == ["GT S1", "GT S2"]
+    assert payload["gtEndText"] == ["GT E1", "GT E2"]
+    assert payload["gtStartMarker"]["size"] == 9
+    assert payload["gtStartMarker"]["color"] == "#2563eb"
+    assert {"X Ground truth", "X VO aligned", "Y Ground truth", "Y VO aligned", "Z Ground truth", "Z VO aligned"} == set(payload["positionCompareNames"])
+    assert payload["thirdRowColors"] == ["#dc2626", "#0891b2"]
 
 
 def test_static_sim3_scale_chart_uses_local_scale_by_timestamp():
@@ -603,7 +638,7 @@ def test_static_sim3_scale_chart_uses_local_scale_by_timestamp():
         """
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
-    assert json.loads(result.stdout) == {"x": [10, 11, None, 20], "y": [2, 2, None, 3]}
+    assert json.loads(result.stdout) == {"x": [10, 11, 20], "y": [2, 2, 3]}
 
 
 def test_static_angle_time_series_unwraps_180_degree_boundary():
@@ -742,7 +777,6 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
           trajectory3d: makeElement(),
           trajectoryXY: makeElement(),
           errorDistance: makeElement(),
-          altitudeDistance: makeElement(),
           segmentError: makeElement(),
           speedError: makeElement(),
           sim3ScaleTime: makeElement(),
@@ -878,12 +912,10 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
           metrics: makeElement(),
         };
         [
-          "trajectory3d", "trajectoryXY", "errorDistance", "altitudeDistance",
+          "trajectory3d", "trajectoryXY", "errorDistance",
           "segmentError", "speedError", "sim3ScaleTime",
-          "seriesXTime", "seriesYTime", "seriesZTime",
-          "seriesYawTime", "seriesPitchTime", "seriesRollTime",
-          "errorXTime", "errorYTime", "errorZTime",
-          "errorYawTime", "errorPitchTime", "errorRollTime",
+          "positionCompareComposite", "attitudeCompareComposite",
+          "positionErrorComposite", "attitudeErrorComposite",
           "rpeTranslationTime", "rpeRotationTime",
           "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus", "heightComparison",
         ].forEach((id) => { elements[id] = makeElement(); });
@@ -925,8 +957,8 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
               { timestamp: 2, vloc_mode: 3, num_inliers: 41, reset_count: 1 },
             ],
             comparison: [
-              { timestamp: 1, segment_id: 0, nav_n_m: 10, nav_e_m: 20, nav_d_m: -3, vloc_n_m: 9, vloc_e_m: 21, vloc_d_m: -4, nav_height_m: 7, vloc_height_m: 6, position_error_n_m: 1, position_error_e_m: -1, position_error_d_m: 1, horizontal_position_error_m: 1.414, attitude_error_yaw_deg: 0.5, attitude_error_pitch_deg: -0.2, attitude_error_roll_deg: 0.1, nav_yaw_deg: 4, vloc_yaw_deg: 3.5, nav_pitch_deg: 1, vloc_pitch_deg: 1.2, nav_roll_deg: 2, vloc_roll_deg: 1.9 },
-              { timestamp: 2, segment_id: 0, nav_n_m: 11, nav_e_m: 22, nav_d_m: -5, vloc_n_m: 10, vloc_e_m: 23, vloc_d_m: -6, nav_height_m: 8, vloc_height_m: 7, position_error_n_m: 1, position_error_e_m: -1, position_error_d_m: 1, horizontal_position_error_m: 1.414, attitude_error_yaw_deg: 0.6, attitude_error_pitch_deg: -0.3, attitude_error_roll_deg: 0.2, nav_yaw_deg: 5, vloc_yaw_deg: 4.4, nav_pitch_deg: 2, vloc_pitch_deg: 2.3, nav_roll_deg: 3, vloc_roll_deg: 2.8 },
+              { timestamp: 1, segment_id: 0, visual_segment_id: 0, nav_n_m: 10, nav_e_m: 20, nav_d_m: -3, vloc_n_m: 9, vloc_e_m: 21, vloc_d_m: -4, nav_height_m: 7, vloc_height_m: 6, position_error_n_m: 1, position_error_e_m: -1, position_error_d_m: 1, horizontal_position_error_m: 1.414, attitude_error_yaw_deg: 0.5, attitude_error_pitch_deg: -0.2, attitude_error_roll_deg: 0.1, nav_yaw_deg: 4, vloc_yaw_deg: 3.5, nav_pitch_deg: 1, vloc_pitch_deg: 1.2, nav_roll_deg: 2, vloc_roll_deg: 1.9 },
+              { timestamp: 2, segment_id: 1, visual_segment_id: 1, nav_n_m: 11, nav_e_m: 22, nav_d_m: -5, vloc_n_m: 10, vloc_e_m: 23, vloc_d_m: -6, nav_height_m: 8, vloc_height_m: 7, position_error_n_m: 1, position_error_e_m: -1, position_error_d_m: 1, horizontal_position_error_m: 1.414, attitude_error_yaw_deg: 0.6, attitude_error_pitch_deg: -0.3, attitude_error_roll_deg: 0.2, nav_yaw_deg: 5, vloc_yaw_deg: 4.4, nav_pitch_deg: 2, vloc_pitch_deg: 2.3, nav_roll_deg: 3, vloc_roll_deg: 2.8 },
             ],
           },
         });
@@ -934,9 +966,19 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
         const byId = Object.fromEntries(plots.map((plot) => [plot.id, plot]));
         process.stdout.write(JSON.stringify({
           plottedIds: plots.map((plot) => plot.id),
-          xChartGt: byId.seriesXTime.data[0].y,
-          xChartEst: byId.seriesXTime.data[1].y,
-          xError: byId.errorXTime.data[0].y,
+          xChartGt: byId.positionCompareComposite.data[0].y,
+          xChartEst: byId.positionCompareComposite.data[1].y,
+          xError: byId.positionErrorComposite.data[0].y,
+          trajectory3dNames: byId.trajectory3d.data.map((trace) => trace.name),
+          vlocStartText: byId.trajectory3d.data.find((trace) => trace.name === "vloc start").text,
+          vlocEndText: byId.trajectory3d.data.find((trace) => trace.name === "vloc end").text,
+          vlocStartMarker: byId.trajectory3d.data.find((trace) => trace.name === "vloc start").marker,
+          vlocStartTextFont: byId.trajectory3d.data.find((trace) => trace.name === "vloc start").textfont,
+          positionCompareNames: byId.positionCompareComposite.data.map((trace) => trace.name),
+          positionCompareThirdRowColors: [
+            byId.positionCompareComposite.data[4].line.color,
+            byId.positionCompareComposite.data[5].line.color,
+          ],
           heightNames: byId.heightComparison.data.map((trace) => trace.name),
           navVelocityNames: byId.navVelocity.data.map((trace) => trace.name),
           vlocStatusNames: byId.vlocStatus.data.map((trace) => trace.name),
@@ -955,6 +997,17 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
     assert payload["xChartGt"] == [10, 11]
     assert payload["xChartEst"] == [9, 10]
     assert payload["xError"] == [1, 1]
+    assert "nav start" not in payload["trajectory3dNames"]
+    assert "nav end" not in payload["trajectory3dNames"]
+    assert {"vloc start", "vloc end"}.issubset(set(payload["trajectory3dNames"]))
+    assert payload["vlocStartText"] == ["vloc S1", "vloc S2"]
+    assert payload["vlocEndText"] == ["vloc E1", "vloc E2"]
+    assert payload["vlocStartMarker"]["color"] == "#9333ea"
+    assert payload["vlocStartMarker"]["size"] == 5
+    assert payload["vlocStartMarker"]["line"]["width"] == 1
+    assert payload["vlocStartTextFont"]["size"] == 10
+    assert {"N nav", "N vloc", "E nav", "E vloc", "D nav", "D vloc"} == set(payload["positionCompareNames"])
+    assert payload["positionCompareThirdRowColors"] == ["#dc2626", "#0891b2"]
     assert payload["heightNames"] == ["nav height", "vloc height"]
     assert "velocity_norm" in payload["navVelocityNames"]
     assert {"vloc_mode", "reset_count", "num_inliers"}.issubset(set(payload["vlocStatusNames"]))
@@ -1052,7 +1105,11 @@ def test_static_vloc_metrics_hide_vo_specific_summary_cards():
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     html = result.stdout
     assert "ATE RMSE" in html
-    assert "时间同步" in html
+    assert "mean_error_pos_xy" in html
+    assert "mean_error_euler" in html
+    assert "时间同步" not in html
     assert "Raw 尺度比" not in html
     assert "对齐尺度" not in html
     assert "姿态修正" not in html
+    assert "终点漂移" not in html
+    assert "发散状态" not in html

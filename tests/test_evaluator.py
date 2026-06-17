@@ -54,7 +54,7 @@ def test_streamlit_angle_time_series_unwraps_180_degree_boundary():
         unwrap_angles=True,
     )
 
-    assert list(fig.data[1].y) == [179, 181, 178, None]
+    assert list(fig.data[1].y) == [179, 181, 178]
 
 
 def test_streamlit_angle_error_time_series_unwraps_180_degree_boundary():
@@ -75,7 +75,7 @@ def test_streamlit_angle_error_time_series_unwraps_180_degree_boundary():
         unwrap_angles=True,
     )
 
-    assert list(fig.data[0].y) == [179, 181, 178, None]
+    assert list(fig.data[0].y) == [179, 181, 178]
 
 
 def test_streamlit_sim3_scale_time_series_uses_exported_scale_by_timestamp():
@@ -90,8 +90,75 @@ def test_streamlit_sim3_scale_time_series_uses_exported_scale_by_timestamp():
     )
     fig = make_sim3_scale_time_series(frame)
 
-    assert list(fig.data[0].x) == [10, 11, None, 20, None]
-    assert list(fig.data[0].y) == [2.0, 2.0, None, 3.0, None]
+    assert list(fig.data[0].x) == [10, 11, 20]
+    assert list(fig.data[0].y) == [2.0, 2.0, 3.0]
+
+
+def test_streamlit_trajectory_3d_marks_each_segment_start_and_end():
+    from app import make_trajectory_3d
+
+    frame = pd.DataFrame(
+        {
+            "segment_id": [0, 0, 1, 1],
+            "visual_segment_id": [0, 0, 1, 1],
+            "gt_x_m": [0.0, 1.0, 10.0, 11.0],
+            "gt_y_m": [0.0, 2.0, 10.0, 12.0],
+            "gt_z_m": [0.0, 3.0, 10.0, 13.0],
+            "est_x_aligned_m": [0.1, 1.1, 10.1, 11.1],
+            "est_y_aligned_m": [0.2, 2.2, 10.2, 12.2],
+            "est_z_aligned_m": [0.3, 3.3, 10.3, 13.3],
+        }
+    )
+    fig = make_trajectory_3d(frame)
+    traces = {trace.name: trace for trace in fig.data}
+
+    assert {"GT start", "GT end", "VO start", "VO end"}.issubset(traces)
+    assert list(traces["GT start"].x) == [0.0, 10.0]
+    assert list(traces["GT end"].x) == [1.0, 11.0]
+    assert list(traces["GT start"].text) == ["GT S1", "GT S2"]
+    assert list(traces["GT end"].text) == ["GT E1", "GT E2"]
+    assert traces["GT start"].marker.size == 9
+    assert traces["GT start"].marker.color == "#2563eb"
+    assert traces["GT end"].marker.color == "#f97316"
+
+
+def test_streamlit_vloc_trajectory_3d_marks_only_vloc_endpoints_with_small_markers():
+    from app import make_vloc_trajectory_3d
+
+    frame = pd.DataFrame(
+        {
+            "visual_segment_id": [0, 0, 1, 1],
+            "nav_n_m": [0.0, 1.0, 10.0, 11.0],
+            "nav_e_m": [0.0, 2.0, 10.0, 12.0],
+            "nav_d_m": [0.0, 3.0, 10.0, 13.0],
+            "vloc_n_m": [0.1, 1.1, 10.1, 11.1],
+            "vloc_e_m": [0.2, 2.2, 10.2, 12.2],
+            "vloc_d_m": [0.3, 3.3, 10.3, 13.3],
+        }
+    )
+    fig = make_vloc_trajectory_3d(frame)
+    traces = {trace.name: trace for trace in fig.data}
+
+    assert "nav start" not in traces
+    assert "nav end" not in traces
+    assert {"vloc start", "vloc end"}.issubset(traces)
+    assert list(traces["vloc start"].x) == [0.1, 10.1]
+    assert list(traces["vloc end"].x) == [1.1, 11.1]
+    assert list(traces["vloc start"].text) == ["vloc S1", "vloc S2"]
+    assert list(traces["vloc end"].text) == ["vloc E1", "vloc E2"]
+    assert traces["vloc start"].marker.size == 5
+    assert traces["vloc start"].marker.line.width == 1
+    assert traces["vloc start"].textfont.size == 10
+
+
+def test_vloc_detail_visual_segments_follow_discontinuity_diagnostics():
+    bundle = sample_vloc_bundle_with_large_nav_gap()
+    report = evaluate_vloc_bundle(bundle, EvaluationConfig(discontinuity_step_m=10.0))
+    comparison = report["vloc_details"]["comparison"]
+
+    assert report["discontinuities"]["all_matches"]["break_count"] == 1
+    assert comparison["visual_segment_id"].tolist() == [0, 0, 1]
+    assert comparison["segment_id"].tolist() == [0, 0, 1]
 
 
 def make_tum(rows=120):
@@ -256,6 +323,21 @@ def sample_vloc_bundle_with_large_nav_gap() -> SfVlocBundle:
         log_dir=Path("/tmp/log_dir"),
         files={},
     )
+
+
+def test_vloc_detail_summary_contains_requested_scalar_error_metrics():
+    bundle = sample_vloc_bundle_with_large_nav_gap()
+    report = evaluate_vloc_bundle(bundle)
+    summary = report["vloc_details"]["summary"]
+
+    assert "mean_error_pos_xy" in summary
+    assert "mean_error_pos_z" in summary
+    assert "mean_error_euler" in summary
+    assert "max_error_pos_xy" in summary
+    assert "max_error_pos_z" in summary
+    assert "max_error_euler" in summary
+    assert math.isfinite(summary["mean_error_pos_xy"])
+    assert math.isfinite(summary["max_error_pos_xy"])
 
 
 def write_sf_dirs(tmp_path):
