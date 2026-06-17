@@ -45,6 +45,24 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
     assert "display: none !important" in css
 
 
+def test_static_dead_report_and_time_series_helpers_are_removed():
+    source = Path("static_web/app.js").read_text()
+    removed_names = [
+        "associationLabel",
+        "renderGtVoTimeChart",
+        "renderErrorTimeChart",
+        "reportSubtitle",
+        "reportOverallStatus",
+        "buildReportMetricCards",
+        "reportMetricCardHtml",
+        "buildReportFindings",
+        "reportFindingHtml",
+        "buildSegmentSummaryRows",
+    ]
+    for name in removed_names:
+        assert f"function {name}" not in source
+
+
 def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
     source = Path("app.py").read_text()
     assert 'st.radio("评估入口", list(EVALUATION_ENTRY_OPTIONS), index=0)' in source
@@ -209,7 +227,6 @@ def test_static_vloc_mode_hides_transform_controls_and_uses_fixed_sync_defaults(
           divergenceRel: makeElement("2"),
           segmentPolicy: makeElement("segments"),
           modeAndAlignmentSection: makeElement(),
-          vlocFixedTimingFields: makeElement(),
         };
         const hiddenNodes = [
           { dataset: { entryHide: "vloc" }, hidden: false },
@@ -641,7 +658,7 @@ def test_static_sim3_scale_chart_uses_local_scale_by_timestamp():
     assert json.loads(result.stdout) == {"x": [10, 11, 20], "y": [2, 2, 3]}
 
 
-def test_static_angle_time_series_unwraps_180_degree_boundary():
+def test_static_composite_angle_time_series_unwraps_180_degree_boundary():
     script = textwrap.dedent(
         r"""
         const fs = require("fs");
@@ -676,11 +693,16 @@ def test_static_angle_time_series_unwraps_180_degree_boundary():
         context.globalThis = context;
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
-        context.renderGtVoTimeChart("seriesRollTime", [
+        context.renderPairCompositeChart("attitudeCompareComposite", [
           { timestamp: 0, segment_id: 0, gt_roll_deg: 0, est_roll_aligned_deg: 179 },
           { timestamp: 1, segment_id: 0, gt_roll_deg: 1, est_roll_aligned_deg: -179 },
           { timestamp: 2, segment_id: 0, gt_roll_deg: 2, est_roll_aligned_deg: 178 },
-        ], { title: "Roll", gt: "gt_roll_deg", est: "est_roll_aligned_deg", unit: "deg", unwrap: true });
+        ], {
+          title: "Roll",
+          leftName: "Ground truth",
+          rightName: "VO aligned",
+          rows: [{ label: "Roll", left: "gt_roll_deg", right: "est_roll_aligned_deg", unit: "deg", unwrap: true }],
+        });
         process.stdout.write(JSON.stringify(plots[0].data[1].y));
         """
     )
@@ -688,7 +710,7 @@ def test_static_angle_time_series_unwraps_180_degree_boundary():
     assert json.loads(result.stdout) == [179, 181, 178]
 
 
-def test_static_angle_error_time_series_unwraps_180_degree_boundary():
+def test_static_composite_angle_error_time_series_unwraps_180_degree_boundary():
     script = textwrap.dedent(
         r"""
         const fs = require("fs");
@@ -723,11 +745,14 @@ def test_static_angle_error_time_series_unwraps_180_degree_boundary():
         context.globalThis = context;
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
-        context.renderErrorTimeChart("errorRollTime", [
+        context.renderSingleCompositeChart("attitudeErrorComposite", [
           { timestamp: 0, segment_id: 0, roll_error_signed_deg: 179 },
           { timestamp: 1, segment_id: 0, roll_error_signed_deg: -179 },
           { timestamp: 2, segment_id: 0, roll_error_signed_deg: 178 },
-        ], { title: "Roll error", field: "roll_error_signed_deg", unit: "deg", unwrap: true });
+        ], {
+          title: "Roll error",
+          rows: [{ label: "Roll error", field: "roll_error_signed_deg", unit: "deg", unwrap: true }],
+        });
         process.stdout.write(JSON.stringify(plots[0].data[0].y));
         """
     )
@@ -780,18 +805,6 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
           segmentError: makeElement(),
           speedError: makeElement(),
           sim3ScaleTime: makeElement(),
-          seriesXTime: makeElement(),
-          seriesYTime: makeElement(),
-          seriesZTime: makeElement(),
-          seriesYawTime: makeElement(),
-          seriesPitchTime: makeElement(),
-          seriesRollTime: makeElement(),
-          errorXTime: makeElement(),
-          errorYTime: makeElement(),
-          errorZTime: makeElement(),
-          errorYawTime: makeElement(),
-          errorPitchTime: makeElement(),
-          errorRollTime: makeElement(),
           rpeTranslationTime: makeElement(),
           rpeRotationTime: makeElement(),
           summaryKicker: makeElement(),

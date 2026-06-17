@@ -34,8 +34,14 @@ from vo_eval.evaluator import (
 )
 
 
-def test_streamlit_angle_time_series_unwraps_180_degree_boundary():
-    from app import make_gt_vo_time_series
+def test_streamlit_dead_time_series_helpers_are_removed():
+    source = Path("app.py").read_text()
+    for name in ["make_gt_vo_time_series", "make_error_time_series", "render_figure_grid"]:
+        assert f"def {name}" not in source
+
+
+def test_streamlit_composite_angle_time_series_unwraps_180_degree_boundary():
+    from app import make_composite_pair_time_series
 
     frame = pd.DataFrame(
         {
@@ -45,20 +51,19 @@ def test_streamlit_angle_time_series_unwraps_180_degree_boundary():
             "est_roll_aligned_deg": [179, -179, 178],
         }
     )
-    fig = make_gt_vo_time_series(
+    fig = make_composite_pair_time_series(
         frame,
         "Roll",
-        "gt_roll_deg",
-        "est_roll_aligned_deg",
-        "deg",
-        unwrap_angles=True,
+        [("Roll", "gt_roll_deg", "est_roll_aligned_deg", "deg", True)],
+        left_name="Ground truth",
+        right_name="VO aligned",
     )
 
     assert list(fig.data[1].y) == [179, 181, 178]
 
 
-def test_streamlit_angle_error_time_series_unwraps_180_degree_boundary():
-    from app import make_error_time_series
+def test_streamlit_composite_angle_error_time_series_unwraps_180_degree_boundary():
+    from app import make_composite_error_time_series
 
     frame = pd.DataFrame(
         {
@@ -67,12 +72,10 @@ def test_streamlit_angle_error_time_series_unwraps_180_degree_boundary():
             "roll_error_signed_deg": [179, -179, 178],
         }
     )
-    fig = make_error_time_series(
+    fig = make_composite_error_time_series(
         frame,
         "Roll error",
-        "roll_error_signed_deg",
-        "deg",
-        unwrap_angles=True,
+        [("Roll error", "roll_error_signed_deg", "deg", True)],
     )
 
     assert list(fig.data[0].y) == [179, 181, 178]

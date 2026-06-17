@@ -581,20 +581,6 @@ function metricStatusClass(status) {
   return "";
 }
 
-function associationLabel(association) {
-  const mode = association.mode || association.method;
-  if (mode === "interpolate_gt") {
-    return "GT插值到VO";
-  }
-  if (mode === "nearest") {
-    return "最近邻";
-  }
-  if (mode === "index") {
-    return "按索引";
-  }
-  return mode || "N/A";
-}
-
 function orientationCorrectionLabel(info) {
   const selected = info.selected || "none";
   const requested = info.requested || selected;
@@ -1006,25 +992,6 @@ function renderMultiFieldTimeChart(id, rows, title, specs, options = {}) {
     xaxis: { title: options.xTitle || "timestamp s" },
     yaxis: { title: options.yTitle || "" },
   }));
-}
-
-function renderGtVoTimeChart(id, rows, spec) {
-  const [tGt, gtValues] = segmentedValues(rows, ["timestamp", spec.gt]);
-  const [tEst, estValues] = segmentedValues(rows, ["timestamp", spec.est]);
-  const displayGt = spec.unwrap ? unwrapDegrees(gtValues) : gtValues;
-  const displayEst = spec.unwrap ? unwrapDegrees(estValues) : estValues;
-  Plotly.newPlot(id, [
-    { x: tGt, y: displayGt, mode: "lines", type: "scatter", name: "Ground truth" },
-    { x: tEst, y: displayEst, mode: "lines", type: "scatter", name: "VO aligned" },
-  ], layout(spec.title, { xaxis: { title: "timestamp s" }, yaxis: { title: spec.unit } }));
-}
-
-function renderErrorTimeChart(id, rows, spec) {
-  const [timestamps, values] = segmentedValues(rows, ["timestamp", spec.field]);
-  const displayValues = spec.unwrap ? unwrapDegrees(values) : values;
-  Plotly.newPlot(id, [
-    { x: timestamps, y: displayValues, mode: "lines", type: "scatter", name: spec.field },
-  ], layout(spec.title, { xaxis: { title: "timestamp s" }, yaxis: { title: `error ${spec.unit}` } }));
 }
 
 function renderRpeTimeChart(id, rows, spec) {
@@ -2070,142 +2037,6 @@ if (document.getElementById("${id}")) {
 
 function safeJson(value) {
   return JSON.stringify(value).replaceAll("</", "<\\/");
-}
-
-function reportSubtitle(report) {
-  const inputs = report.inputs || {};
-  const gt = inputs.ground_truth?.name || "Ground truth";
-  const est = inputs.estimate?.name || "VO";
-  const summary = report.summary || {};
-  return `${gt} vs ${est}，匹配 ${summary.matched_poses ?? "N/A"} 帧，评估路程 ${formatValue(summary.gt_path_length_m, "m")}`;
-}
-
-function reportOverallStatus(findings) {
-  if (findings.some((item) => item.severity === "high")) {
-    return { label: "存在高风险项", className: "high" };
-  }
-  if (findings.some((item) => item.severity === "warning")) {
-    return { label: "有需要关注的指标", className: "warning" };
-  }
-  return { label: "整体可用", className: "good" };
-}
-
-function buildReportMetricCards(report) {
-  const summary = report.summary || {};
-  const ate = report.ate_position_m || {};
-  const rpe = report.rpe_frame_delta?.translation_m || {};
-  const orient = report.ate_orientation_deg || {};
-  const yaw = report.ate_yaw_deg || {};
-  const alignment = report.alignment || {};
-  const breaks = report.discontinuities?.all_matches?.break_count;
-  return [
-    { label: "ATE RMSE", value: formatValue(ate.rmse, "m"), note: `p95 ${formatValue(ate.p95, "m")}` },
-    { label: "RPE 平移 RMSE", value: formatValue(rpe.rmse, "m"), note: `p95 ${formatValue(rpe.p95, "m")}` },
-    { label: "终点漂移", value: formatValue(summary.endpoint_error_m, "m"), note: `${formatNumber(summary.endpoint_error_percent_of_path)} % 路程` },
-    { label: "姿态 RMSE", value: formatValue(orient.rmse, "deg"), note: `yaw ${formatValue(yaw.rmse, "deg")}` },
-    { label: "对齐尺度", value: formatNumber(alignment.scale), note: scaleRangeText(alignment) },
-    { label: "断点数量", value: breaks ?? "N/A", note: `策略 ${report.discontinuities?.selected_segment?.policy || "N/A"}` },
-    { label: "VO 匹配率", value: formatValue(100 * summary.est_pose_coverage_ratio, "%"), note: `${summary.matched_poses ?? "N/A"} / ${summary.est_poses ?? "N/A"} 帧` },
-    { label: "GT 覆盖率", value: formatValue(100 * (summary.gt_time_coverage_ratio ?? summary.gt_pose_coverage_ratio), "%"), note: "仅表示评估覆盖的 GT 段" },
-  ];
-}
-
-function reportMetricCardHtml(item) {
-  return `<div class="card"><div class="metric-label">${escapeHtml(item.label)}</div><div class="metric-value">${escapeHtml(item.value)}</div><div class="metric-note">${escapeHtml(item.note || "")}</div></div>`;
-}
-
-function buildReportFindings(report) {
-  const findings = [];
-  const summary = report.summary || {};
-  const ate = report.ate_position_m || {};
-  const rpe = report.rpe_frame_delta?.translation_m || {};
-  const orient = report.ate_orientation_deg || {};
-  const yaw = report.ate_yaw_deg || {};
-  const alignment = report.alignment || {};
-  const association = report.association || {};
-  const disc = report.discontinuities?.all_matches || {};
-  const selected = report.discontinuities?.selected_segment || {};
-  const orientationInfo = report.orientation_correction || {};
-
-  const add = (severity, title, evidence, advice) => findings.push({ severity, title, evidence, advice });
-  const path = summary.gt_path_length_m;
-  const ateRel = path > 0 ? (100 * ate.rmse / path) : null;
-  if (Number.isFinite(ateRel) && ateRel > 2) {
-    add("high", "整体位置误差偏大", `ATE RMSE ${formatValue(ate.rmse, "m")}，约 ${formatNumber(ateRel)} % 路程。`, "优先检查时间同步、坐标轴方向、尺度来源和 Sim3/SE3 选择；再看轨迹图中是否存在局部大偏移。");
-  } else if (Number.isFinite(ateRel) && ateRel > 1) {
-    add("warning", "整体位置误差需要关注", `ATE RMSE ${formatValue(ate.rmse, "m")}，约 ${formatNumber(ateRel)} % 路程。`, "长航程无人机建议继续看 p95/max 误差和终点漂移，避免均值掩盖局部异常。");
-  }
-
-  if ((disc.break_count || 0) > 0) {
-    const largestGap = Math.max(...(disc.breaks || []).map((item) => item.time_gap_s || 0), 0);
-    add("high", "检测到 VO 重置或大跳变", `断点 ${disc.break_count} 个，最大时间间隔 ${formatValue(largestGap, "s")}；当前评估策略 ${selected.policy || "N/A"}。`, "如果目标是连续长航程定位，需要减少跟踪丢失，加入重定位/地图复用；评估时继续按连续段看，不要把跨断点结果当成单条连续轨迹。");
-  }
-
-  const scaleRange = scaleRangePercent(alignment);
-  if (Number.isFinite(scaleRange) && scaleRange > 15) {
-    add("high", "分段尺度变化明显", `Sim3 scale 范围 ${formatNumber(alignment.scale_min)} 到 ${formatNumber(alignment.scale_max)}，相对均值变化约 ${formatNumber(scaleRange)} %。`, "无尺度 VO 不能只靠一个全局尺度解释全程；真实无人机导航需要双目/深度/高度计/GPS/IMU 融合提供尺度。");
-  } else if (Number.isFinite(scaleRange) && scaleRange > 8) {
-    add("warning", "尺度稳定性需要关注", `Sim3 scale 相对均值变化约 ${formatNumber(scaleRange)} %。`, "检查不同连续段的尺度是否由 reset、特征退化或高度变化引起。");
-  }
-
-  const rawRatio = summary.raw_path_scale_ratio_est_over_gt;
-  if (Number.isFinite(rawRatio) && (rawRatio < 0.8 || rawRatio > 1.25)) {
-    add("info", "VO 输出是无尺度或尺度不一致数据", `Raw VO/GT 路程比 ${formatNumber(rawRatio)}。`, "使用 Sim3 评估轨迹形状是合理的；如果要真实飞控定位，需要外部尺度源，不能直接使用原始 VO 单位。");
-  }
-
-  if (orientationInfo.auto && orientationInfo.selected && orientationInfo.selected !== "none") {
-    add("info", "自动姿态修正已生效", `自动选择 ${orientationInfo.selected}，姿态 RMSE ${formatValue(orient.rmse, "deg")}，yaw RMSE ${formatValue(yaw.rmse, "deg")}。`, "这说明 VO 和 GT 姿态坐标系/外参不完全一致；建议在 VO 输出端明确 camera-to-body 或 ENU/NED 约定。");
-  }
-  if (Number.isFinite(orient.rmse) && orient.rmse > 10) {
-    add("high", "姿态误差偏大", `姿态 RMSE ${formatValue(orient.rmse, "deg")}。`, "检查 yaw/pitch/roll 顺序、角度/弧度、旋转取逆、相机系到机体系外参和 ENU/NED 转换。");
-  } else if (Number.isFinite(orient.rmse) && orient.rmse > 5) {
-    add("warning", "姿态误差略高", `姿态 RMSE ${formatValue(orient.rmse, "deg")}，yaw RMSE ${formatValue(yaw.rmse, "deg")}。`, "如果姿态要用于控制或相机指向，继续校准外参和欧拉角约定。");
-  }
-
-  const seg50 = findSegment(report, 50);
-  const segLong = findSegment(report, 1000) || findSegment(report, 500);
-  const seg50Mean = seg50?.translation_error_percent?.mean;
-  const segLongMean = segLong?.translation_error_percent?.mean;
-  if (Number.isFinite(seg50Mean) && seg50Mean > 10) {
-    add("high", "短距离局部漂移偏大", `50m 子轨迹平均误差 ${formatValue(seg50Mean, "%")}。`, "优先调特征跟踪、RANSAC、关键帧策略和图像质量；短段差通常说明帧间估计不稳定。");
-  } else if (Number.isFinite(seg50Mean) && seg50Mean > 5) {
-    add("warning", "短距离局部漂移需要关注", `50m 子轨迹平均误差 ${formatValue(seg50Mean, "%")}。`, "检查高速、弱纹理、运动模糊区间的误差分箱。");
-  }
-  if (Number.isFinite(segLongMean) && segLongMean > 5) {
-    add("high", "长距离累计漂移偏大", `${segLong.length_m}m 子轨迹平均误差 ${formatValue(segLongMean, "%")}。`, "优化后端约束、闭环/重定位和尺度融合；长段差说明累计漂移无法满足长航程要求。");
-  } else if (Number.isFinite(segLongMean) && segLongMean > 2) {
-    add("warning", "长距离累计漂移需要关注", `${segLong.length_m}m 子轨迹平均误差 ${formatValue(segLongMean, "%")}。`, "对物流无人机建议同时看 2000m/5000m 段和终点漂移，确认长航程稳定性。");
-  }
-
-  if (report.divergence?.diverged) {
-    add("warning", "发散阈值被触发", `首次触发 distance=${formatValue(report.divergence.first_divergence_distance_m, "m")}，error=${formatValue(report.divergence.first_divergence_error_m, "m")}。`, "如果首帧附近触发，可能是阈值过严或对齐后起点仍有偏差；建议结合 ATE 曲线判断是否真实发散。");
-  }
-
-  if ((association.dropped_est_outside_gt_range || 0) > 0 || (association.dropped_est_large_gt_gap || 0) > 0) {
-    add("warning", "部分 VO 帧未纳入评估", `超出 GT 或插值间隔过大丢弃 ${association.dropped_est_outside_gt_range || 0} + ${association.dropped_est_large_gt_gap || 0} 帧。`, "检查 GT/VO 时间戳单位、固定偏移和最大插值间隔设置。");
-  }
-  if (summary.est_pose_coverage_ratio < 0.95) {
-    add("warning", "VO 匹配率偏低", `VO 匹配率 ${formatValue(100 * summary.est_pose_coverage_ratio, "%")}。`, "优先检查时间同步方式、时间偏移和 GT 时间覆盖范围。");
-  }
-
-  if (!findings.some((item) => item.severity === "high" || item.severity === "warning")) {
-    add("good", "主要误差指标未触发严重告警", "ATE、RPE、子轨迹误差和姿态误差在当前阈值下基本可读。", "继续结合轨迹图、速度分箱和任务容差做最终判断。");
-  }
-  return findings;
-}
-
-function reportFindingHtml(item) {
-  return `<div class="finding ${escapeHtml(item.severity)}"><div class="severity">${escapeHtml(item.severity)}</div><h3>${escapeHtml(item.title)}</h3><p class="evidence">${escapeHtml(item.evidence)}</p><p class="advice">${escapeHtml(item.advice)}</p></div>`;
-}
-
-function buildSegmentSummaryRows(report) {
-  return (report.segment_errors || []).map((row) => ({
-    length: formatNumber(row.length_m),
-    count: row.count ?? "",
-    mean: formatNumber(row.translation_error_percent?.mean),
-    p95: formatNumber(row.translation_error_percent?.p95),
-    scaleP95: formatNumber(row.scale_drift_percent?.p95),
-  }));
 }
 
 function buildConfigRows(report) {

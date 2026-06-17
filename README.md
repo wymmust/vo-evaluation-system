@@ -409,7 +409,7 @@ $$
 
 ### #13 时间同步
 
-- 前端取值：`associationLabel(report.association)`；备注 `最大间隔 ${association.max_interpolation_gap_s}`。
+- 前端取值：`report["association"]` 中的 `method/mode`、`matches` 和 `max_interpolation_gap_s` 等字段。
 - 后端字段：`report["association"]`。
 - 后端代码：`prepare_evaluation_trajectories()` 调 `build_associated_trajectories()`；默认 `interpolate_gt` 会把 GT 插值到 VO 时间戳；`nearest` 使用 TUM greedy timestamp association；`index` 按行号截断配对。
 - 公式：

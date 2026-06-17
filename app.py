@@ -1168,28 +1168,6 @@ def make_sim3_scale_time_series(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def make_gt_vo_time_series(
-    df: pd.DataFrame,
-    title: str,
-    gt_col: str,
-    est_col: str,
-    unit: str,
-    unwrap_angles: bool = False,
-) -> go.Figure:
-    """GT 和 VO 对齐后某个 x/y/z/yaw/pitch/roll 分量随时间变化。"""
-    fig = go.Figure()
-    if {"timestamp", gt_col, est_col}.issubset(df.columns):
-        t_gt, gt_values = segmented_values(df, ["timestamp", gt_col])
-        t_est, est_values = segmented_values(df, ["timestamp", est_col])
-        if unwrap_angles:
-            gt_values = unwrap_degrees(gt_values)
-            est_values = unwrap_degrees(est_values)
-        fig.add_trace(go.Scatter(x=t_gt, y=gt_values, mode="lines", name="Ground truth"))
-        fig.add_trace(go.Scatter(x=t_est, y=est_values, mode="lines", name="VO aligned"))
-    fig.update_layout(title=title, xaxis_title="timestamp s", yaxis_title=unit, height=360)
-    return fig
-
-
 def unwrap_degrees(values: list[float | None]) -> list[float | None]:
     """把角度显示值从 [-180, 180] 展开成连续曲线，避免图上出现边界竖线。"""
     out: list[float | None] = []
@@ -1218,24 +1196,6 @@ def unwrap_degrees(values: list[float | None]) -> list[float | None]:
     return out
 
 
-def make_error_time_series(
-    df: pd.DataFrame,
-    title: str,
-    error_col: str,
-    unit: str,
-    unwrap_angles: bool = False,
-) -> go.Figure:
-    """某个 x/y/z/yaw/pitch/roll 误差随时间变化。"""
-    fig = go.Figure()
-    if {"timestamp", error_col}.issubset(df.columns):
-        timestamps, values = segmented_values(df, ["timestamp", error_col])
-        if unwrap_angles:
-            values = unwrap_degrees(values)
-        fig.add_trace(go.Scatter(x=timestamps, y=values, mode="lines", name=error_col))
-    fig.update_layout(title=title, xaxis_title="timestamp s", yaxis_title=f"error {unit}", height=360)
-    return fig
-
-
 def make_rpe_time_series(df: pd.DataFrame, title: str, error_col: str, unit: str) -> go.Figure:
     """当前 RPE 帧数/距离配置下，每个起点时间戳对应的 RPE 误差。"""
     fig = go.Figure()
@@ -1247,12 +1207,6 @@ def make_rpe_time_series(df: pd.DataFrame, title: str, error_col: str, unit: str
             fig.add_trace(go.Scatter(x=timestamps, y=values, mode="lines+markers", name=error_col))
     fig.update_layout(title=title, xaxis_title="timestamp s", yaxis_title=unit, height=360)
     return fig
-
-
-def render_figure_grid(figures: list[go.Figure]) -> None:
-    """单列展示一组 Plotly 图。"""
-    for fig in figures:
-        st.plotly_chart(fig, use_container_width=True)
 
 
 def metric(col: Any, label: str, value: Any, unit: str) -> None:
