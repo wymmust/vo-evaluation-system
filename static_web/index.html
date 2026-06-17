@@ -49,7 +49,7 @@
           <p class="section-hint">浏览器不会暴露本地绝对路径，这里只显示目录名和文件数量。</p>
         </section>
 
-        <section>
+        <section id="modeAndAlignmentSection" data-entry-hide="vloc">
           <h2>模式与对齐</h2>
           <label>
             轨迹对齐
@@ -88,11 +88,12 @@
 
         <section>
           <h2>评估参数</h2>
-          <label>
+          <p class="section-hint" data-entry-show="vloc" hidden>VLOC 固定使用 GT 插值到 VLOC 时间戳，最大 GT 插值间隔 1.0 s；超过 1.0 s 的 VLOC 帧直接丢弃，不允许外推，时间偏移固定为 0。</p>
+          <label data-entry-hide="vloc">
             时间关联最大误差 s（不按时间填 -1）
             <input id="maxTimeDiff" type="number" value="0.02" step="0.01" />
           </label>
-          <label>
+          <label data-entry-hide="vloc">
             Reference 频率 / 插值间隔预设
             <select id="interpolationPreset">
               <option value="0.15" selected>20 Hz reference（0.15 s 推荐）</option>
@@ -103,25 +104,25 @@
               <option value="custom">自定义</option>
             </select>
           </label>
-          <label>
+          <label data-entry-hide="vloc">
             GT 插值最大间隔 s（不限制填 -1）
             <input id="maxInterpolationGap" type="number" value="0.15" step="0.01" />
           </label>
-          <label>
+          <label data-entry-hide="vloc">
             插值外推
             <select id="allowExtrapolation">
               <option value="false" selected>不允许外推（推荐）</option>
               <option value="true">允许外推</option>
             </select>
           </label>
-          <label>
+          <label data-entry-hide="vloc">
             姿态插值
             <select id="interpolateRotation">
               <option value="true" selected>GT 姿态用 SLERP 插值</option>
               <option value="false">只插位置，不插姿态</option>
             </select>
           </label>
-          <label>
+          <label data-entry-hide="vloc">
             VO 时间戳偏移 s
             <input id="timeOffset" type="number" value="0" step="0.01" />
           </label>

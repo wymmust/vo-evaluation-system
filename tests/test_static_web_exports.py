@@ -28,6 +28,11 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
 def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
     source = Path("app.py").read_text()
     assert 'st.radio("评估入口", list(EVALUATION_ENTRY_OPTIONS), index=0)' in source
+    assert 'if entry_mode == "vloc":' in source
+    assert 'alignment="none"' in source
+    assert 'orientation_correction="none"' in source
+    assert 'association_mode="interpolate_gt"' in source
+    assert 'max_interpolation_gap_s=1.0' in source
     assert "length_tolerance = st.number_input(" in source
     assert "value=0.05" in source
     assert 'segment_policy_label = st.selectbox("VO重置/大跳变处理", list(SEGMENT_POLICY_OPTIONS), index=1)' in source
@@ -118,6 +123,117 @@ def test_static_directory_picker_shows_selected_directory_name_in_custom_status(
     assert "2" in payload["dataStatus"]
     assert "log_dir" in payload["logStatus"]
     assert "1" in payload["logStatus"]
+
+
+def test_static_vloc_mode_hides_transform_controls_and_uses_fixed_sync_defaults():
+    html = Path("static_web/index.html").read_text()
+    assert 'id="modeAndAlignmentSection"' in html
+    assert 'data-entry-hide="vloc"' in html
+
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const makeElement = (value = "") => ({
+          value,
+          files: [],
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          style: {},
+          classList: { add() {}, remove() {} },
+          addEventListener() {},
+          click() {},
+        });
+        const elements = {
+          runtimeStatus: makeElement(),
+          message: makeElement(),
+          runButton: makeElement(),
+          entryMode: makeElement("vloc"),
+          entryModeHint: makeElement(),
+          dataDirFiles: makeElement(),
+          logDirFiles: makeElement(),
+          dataDirButton: makeElement(),
+          logDirButton: makeElement(),
+          dataDirStatus: makeElement(),
+          logDirStatus: makeElement(),
+          downloadJson: makeElement(),
+          downloadPoseCsv: makeElement(),
+          downloadSegmentCsv: makeElement(),
+          downloadWorstCsv: makeElement(),
+          downloadConfigJson: makeElement(),
+          downloadTrajectoryExcel: makeElement(),
+          downloadHtml: makeElement(),
+          interpolationPreset: makeElement("0.15"),
+          maxInterpolationGap: makeElement("0.15"),
+          maxTimeDiff: makeElement("0.02"),
+          allowExtrapolation: makeElement("false"),
+          interpolateRotation: makeElement("true"),
+          timeOffset: makeElement("2.0"),
+          rpeDeltaValue: makeElement("1"),
+          rpeDeltaUnit: makeElement("frames"),
+          scaleDeltaValue: makeElement("100"),
+          scaleDeltaUnit: makeElement("meters"),
+          segmentLengths: makeElement("50,100"),
+          maxSegments: makeElement("10000"),
+          segmentStep: makeElement("10"),
+          lengthTolerance: makeElement("0.05"),
+          alignment: makeElement("sim3"),
+          orientationCorrection: makeElement("auto"),
+          associationMode: makeElement("nearest"),
+          discontinuityStep: makeElement("100"),
+          discontinuityGap: makeElement("5"),
+          divergenceAbs: makeElement("10"),
+          divergenceRel: makeElement("2"),
+          segmentPolicy: makeElement("segments"),
+          modeAndAlignmentSection: makeElement(),
+          vlocFixedTimingFields: makeElement(),
+        };
+        const hiddenNodes = [
+          { dataset: { entryHide: "vloc" }, hidden: false },
+          { dataset: { entryHide: "vo" }, hidden: false },
+        ];
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || makeElement(); },
+          createElement() { return { ...makeElement(), remove() {} }; },
+          querySelectorAll(selector) {
+            if (selector === "[data-entry-hide]") return hiddenNodes;
+            return [];
+          },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot() {}, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+        context.updateEntryModeUi();
+        process.stdout.write(JSON.stringify({
+          config: context.buildConfig(),
+          hiddenStates: hiddenNodes.map((node) => node.hidden),
+          sectionHidden: elements.modeAndAlignmentSection.hidden,
+        }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload["config"]["alignment"] == "none"
+    assert payload["config"]["orientation_correction"] == "none"
+    assert payload["config"]["association_mode"] == "interpolate_gt"
+    assert payload["config"]["max_interpolation_gap_s"] == 1.0
+    assert payload["config"]["allow_extrapolation"] is False
+    assert payload["config"]["time_offset_s"] == 0.0
+    assert payload["hiddenStates"] == [True, False]
 
 
 def test_static_browser_runner_uses_fixed_bundle_parsers_instead_of_legacy_single_file_loader(tmp_path):

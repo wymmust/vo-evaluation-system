@@ -1,17 +1,22 @@
 import json
 import math
 import io
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from vo_eval.evaluator import (
+    Calibration,
     EvaluationConfig,
+    HomePoint,
+    SfVlocBundle,
     SUPPORTED_EVALUATION_FORMATS,
     Trajectory,
     build_associated_trajectories,
     evaluate_trajectories,
+    evaluate_vloc_bundle,
     euler_yaw_pitch_roll_to_matrix,
     get_evaluation_format_spec,
     load_vloc_evaluation_bundle,
@@ -19,6 +24,7 @@ from vo_eval.evaluator import (
     load_trajectory_from_text,
     normalize_evaluation_format,
     parse_home_point_fixed,
+    parse_calib_raw_fixed,
     parse_imu_fixed,
     parse_vloc_fixed,
     parse_vo_fixed,
@@ -148,6 +154,15 @@ cam1:
 """
 
 
+def sample_identity_calib_text() -> str:
+    return """%YAML:1.0
+---
+T_imu_body: [ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 ]
+cam0:
+  T_cam_imu: [ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 ]
+"""
+
+
 def sample_imu_text() -> str:
     return """ts ts_fcc status flight_mode x y z yaw pitch roll vx vy vz position_reset_count altitude_reset_count heading_reset_count latitude longitude altitude altitude_msl height
 10.0 100.0 4194305 3 1 2 3 1.57079632679 0.1 -0.2 0.4 0.5 0.6 0 1 2 31.1 121.2 50 51 5
@@ -167,6 +182,80 @@ def sample_vo_text() -> str:
 10.0 50 21 22 23 90 2 -1 1 12.5 0
 10.1 51 22 23 24 91 3 -2 0 13.5 1
 """
+
+
+def _latitude_from_north_offset(home_lat_deg: float, north_m: float) -> float:
+    return home_lat_deg + north_m / 111320.0
+
+
+def sample_vloc_bundle_with_large_nav_gap() -> SfVlocBundle:
+    home = HomePoint(longitude=121.2, latitude=31.1, altitude_msl=50.0)
+    nav_stamps = np.asarray([0.0, 0.5, 1.0, 3.5, 4.0], dtype=float)
+    north_samples = np.asarray([0.0, 5.0, 10.0, 35.0, 40.0], dtype=float)
+    nav_lat = np.asarray([_latitude_from_north_offset(home.latitude, value) for value in north_samples], dtype=float)
+    nav_positions = np.column_stack([north_samples, np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps))])
+    nav_rot = euler_yaw_pitch_roll_to_matrix(np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps)))
+    nav = Trajectory(
+        "imu.txt",
+        nav_stamps,
+        nav_positions,
+        nav_rot,
+        extras={
+            "latitude": nav_lat,
+            "longitude": np.full(len(nav_stamps), home.longitude, dtype=float),
+            "altitude_msl": np.full(len(nav_stamps), home.altitude_msl, dtype=float),
+            "height": np.zeros(len(nav_stamps), dtype=float),
+            "status": np.zeros(len(nav_stamps), dtype=float),
+            "flight_mode": np.zeros(len(nav_stamps), dtype=float),
+            "vx": np.zeros(len(nav_stamps), dtype=float),
+            "vy": np.zeros(len(nav_stamps), dtype=float),
+            "vz": np.zeros(len(nav_stamps), dtype=float),
+            "position_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "altitude_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "heading_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "navi_mode": np.zeros(len(nav_stamps), dtype=float),
+            "rtk_yaw": np.zeros(len(nav_stamps), dtype=float),
+            "rtk_altitude": np.zeros(len(nav_stamps), dtype=float),
+        },
+        source_format="sf_imu",
+    )
+
+    vloc_stamps = np.asarray([0.25, 0.75, 2.0, 3.75, 3.9], dtype=float)
+    vloc_north = np.asarray([2.5, 7.5, 20.0, 37.5, 39.0], dtype=float)
+    vloc_lat = np.asarray([_latitude_from_north_offset(home.latitude, value) for value in vloc_north], dtype=float)
+    vloc_positions = np.column_stack([vloc_north, np.zeros(len(vloc_stamps)), np.full(len(vloc_stamps), home.altitude_msl, dtype=float)])
+    vloc_rot = euler_yaw_pitch_roll_to_matrix(np.zeros(len(vloc_stamps)), np.zeros(len(vloc_stamps)), np.zeros(len(vloc_stamps)))
+    vloc = Trajectory(
+        "vloc.txt",
+        vloc_stamps,
+        vloc_positions,
+        vloc_rot,
+        extras={
+            "status": np.asarray([2, 2, 2, 1, 2], dtype=float),
+            "num_inliers": np.asarray([30, 31, 32, 33, 34], dtype=float),
+            "reset_count": np.zeros(len(vloc_stamps), dtype=float),
+            "latitude": vloc_lat,
+            "longitude": np.full(len(vloc_stamps), home.longitude, dtype=float),
+            "height": np.asarray([5.0, 5.0, 5.0, 5.0, 5.0], dtype=float),
+            "vloc_mode": np.asarray([2, 2, 2, 1, 2], dtype=float),
+        },
+        source_format="sf_vloc",
+    )
+    parsed_calib = parse_calib_raw_fixed(sample_identity_calib_text())
+    calibration = Calibration(
+        t_imu_body=parsed_calib.t_imu_body,
+        t_cam_imu=parsed_calib.t_cam_imu,
+        t_cn_cnm1=None,
+    )
+    return SfVlocBundle(
+        nav=nav,
+        vloc=vloc,
+        home_point=home,
+        calibration=calibration,
+        data_dir=Path("/tmp/data_dir"),
+        log_dir=Path("/tmp/log_dir"),
+        files={},
+    )
 
 
 def write_sf_dirs(tmp_path):
@@ -236,6 +325,32 @@ def test_bundle_loader_reports_missing_required_file(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="log_dir/vloc.txt"):
         load_vloc_evaluation_bundle(data_dir, log_dir)
+
+
+def test_vloc_bundle_uses_fixed_interpolation_defaults_and_drops_invalid_frames():
+    bundle = sample_vloc_bundle_with_large_nav_gap()
+    cfg = EvaluationConfig(
+        alignment="sim3",
+        orientation_correction="auto",
+        association_mode="nearest",
+        max_interpolation_gap_s=10.0,
+        allow_extrapolation=True,
+        time_offset_s=3.0,
+    )
+
+    report = evaluate_vloc_bundle(bundle, cfg)
+
+    assert report["inputs"]["entry_mode"] == "vloc"
+    assert report["config"]["alignment"] == "none"
+    assert report["config"]["orientation_correction"] == "none"
+    assert report["config"]["association_mode"] == "interpolate_gt"
+    assert report["config"]["max_interpolation_gap_s"] == 1.0
+    assert report["config"]["allow_extrapolation"] is False
+    assert report["config"]["time_offset_s"] == 0.0
+    assert report["summary"]["matched_poses"] == 3
+    assert report["association"]["dropped_est_large_gt_gap"] == 1
+    assert report["association"]["dropped_est_invalid_mode"] == 1
+    assert report["ate_position_m"]["rmse"] < 1e-3
 
 
 def test_fixed_parser_rejects_wrong_column_count():

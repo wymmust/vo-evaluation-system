@@ -70,7 +70,7 @@ import io
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -388,6 +388,12 @@ class SfVoBundle:
     files: dict[str, Path]
 
 
+VLOC_FIXED_MAX_INTERPOLATION_GAP_S = 1.0
+WGS84_A_M = 6378137.0
+WGS84_F = 1.0 / 298.257223563
+WGS84_E2 = WGS84_F * (2.0 - WGS84_F)
+
+
 @dataclass
 class EvaluationConfig:
     """评估配置，基本都由 app.py/静态网页侧边栏控件传入。
@@ -590,6 +596,46 @@ def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVo
     )
 
 
+def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None = None) -> dict[str, Any]:
+    """按需求文档固定流程评估 sf_vloc。
+
+    这条入口不暴露对齐/姿态修正/时间同步模式选择：
+    - 固定使用经纬高 -> NED；
+    - 固定把 vloc 的 imu 位姿转到 body；
+    - 固定按有效 vloc 时间戳插值 nav；
+    - 固定最大 GT 插值间隔 1.0 s，超过直接丢弃该 vloc 帧；
+    - 固定不外推、固定 time_offset=0、固定不做 Sim3/SE3 用户选择。
+    """
+
+    cfg = normalized_vloc_evaluation_config(config)
+    nav_ned_body = sf_nav_to_body_ned_trajectory(bundle.nav, bundle.home_point)
+    vloc_ned_body = sf_vloc_to_body_ned_trajectory(bundle.vloc, bundle.home_point, bundle.calibration)
+
+    vloc_mode = np.asarray(vloc_ned_body.extras.get("vloc_mode", np.zeros(len(vloc_ned_body.positions))), dtype=float)
+    valid_mode = np.isfinite(vloc_mode) & (vloc_mode > 1.0)
+    dropped_invalid_mode = int(np.count_nonzero(~valid_mode))
+    if not np.any(valid_mode):
+        raise ValueError("No VLOC samples remain after filtering vloc_mode > 1")
+
+    valid_indices = np.flatnonzero(valid_mode)
+    vloc_valid = subset_trajectory(vloc_ned_body, valid_indices)
+    report = evaluate_trajectories(nav_ned_body, vloc_valid, cfg)
+    report["inputs"]["entry_mode"] = "vloc"
+    report["inputs"]["workflow"] = "sf_vloc"
+    report["inputs"]["fixed_rules"] = {
+        "alignment": "none",
+        "orientation_correction": "none",
+        "association_mode": "interpolate_gt",
+        "max_interpolation_gap_s": float(VLOC_FIXED_MAX_INTERPOLATION_GAP_S),
+        "allow_extrapolation": False,
+        "time_offset_s": 0.0,
+    }
+    report["association"]["dropped_est_invalid_mode"] = dropped_invalid_mode
+    report["association"]["valid_est_after_mode_filter"] = int(len(vloc_valid.positions))
+    report["summary"]["raw_est_poses"] = int(len(bundle.vloc.positions))
+    return report
+
+
 def parse_imu_fixed(text: str, name: str = "imu.txt") -> Trajectory:
     """按需求文档固定 21 列解析 IMU/nav GT。
 
@@ -647,6 +693,7 @@ def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
         "reset_count": data[:, 3],
         "latitude": data[:, 10],
         "longitude": data[:, 11],
+        "altitude_msl": data[:, 6],
         "height": data[:, 12],
         "vloc_mode": (status & 0x0F).astype(float),
     }
@@ -707,6 +754,144 @@ def parse_calib_raw_fixed(text: str, name: str = "calib_raw.yaml") -> Calibratio
         t_cam_imu=_extract_fixed_yaml_matrix(text, "T_cam_imu", name, required=True),
         t_cn_cnm1=_extract_fixed_yaml_matrix(text, "T_cn_cnm1", name, required=False),
     )
+
+
+def normalized_vloc_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
+    """把用户配置收敛成 sf_vloc 固定评估参数。"""
+    base = config if config is not None else EvaluationConfig()
+    return replace(
+        base,
+        alignment="none",
+        orientation_correction="none",
+        association_mode="interpolate_gt",
+        max_time_diff_s=None,
+        max_interpolation_gap_s=float(VLOC_FIXED_MAX_INTERPOLATION_GAP_S),
+        allow_extrapolation=False,
+        interpolate_rotation=True,
+        interpolation_position_method="linear",
+        interpolation_rotation_method="slerp",
+        time_offset_s=0.0,
+        continuous_segment_policy="vo_timestamps",
+    )
+
+
+def sf_nav_to_body_ned_trajectory(nav: Trajectory, home_point: HomePoint) -> Trajectory:
+    """把 nav GT 转成以 home_point 为原点的 body/NED 轨迹。"""
+    latitude = _required_extra(nav, "latitude")
+    longitude = _required_extra(nav, "longitude")
+    altitude_msl = _required_extra(nav, "altitude_msl")
+    ned = geodetic_to_ned(latitude, longitude, altitude_msl, home_point)
+    extras = dict(nav.extras)
+    extras["body_x_m"] = nav.positions[:, 0]
+    extras["body_y_m"] = nav.positions[:, 1]
+    extras["body_z_m"] = nav.positions[:, 2]
+    extras["ned_n_m"] = ned[:, 0]
+    extras["ned_e_m"] = ned[:, 1]
+    extras["ned_d_m"] = ned[:, 2]
+    return Trajectory(
+        nav.name,
+        nav.stamps,
+        ned,
+        nav.rotations,
+        extras=extras,
+        source_format="sf_imu_body_ned",
+    )
+
+
+def sf_vloc_to_body_ned_trajectory(vloc: Trajectory, home_point: HomePoint, calibration: Calibration) -> Trajectory:
+    """把 vloc 的 imu 位姿转成 body/NED 轨迹。"""
+    latitude = _required_extra(vloc, "latitude")
+    longitude = _required_extra(vloc, "longitude")
+    altitude_msl = np.asarray(vloc.extras.get("altitude_msl", vloc.positions[:, 2]), dtype=float)
+    imu_ned = geodetic_to_ned(latitude, longitude, altitude_msl, home_point)
+
+    rotations = vloc.rotations
+    body_ned = imu_ned
+    body_rot = rotations
+    if rotations is not None:
+        rot_imu_body = np.asarray(calibration.t_imu_body[:3, :3], dtype=float)
+        trans_imu_body = np.asarray(calibration.t_imu_body[:3, 3], dtype=float)
+        rot_body_imu = rot_imu_body.T
+        trans_body_in_imu = -rot_body_imu @ trans_imu_body
+        body_ned = imu_ned + np.einsum("nij,j->ni", rotations, trans_body_in_imu)
+        body_rot = np.einsum("nij,jk->nik", rotations, rot_body_imu)
+
+    extras = dict(vloc.extras)
+    extras["imu_x_m"] = vloc.positions[:, 0]
+    extras["imu_y_m"] = vloc.positions[:, 1]
+    extras["imu_z_m"] = vloc.positions[:, 2]
+    extras["ned_n_m"] = body_ned[:, 0]
+    extras["ned_e_m"] = body_ned[:, 1]
+    extras["ned_d_m"] = body_ned[:, 2]
+    return Trajectory(
+        vloc.name,
+        vloc.stamps,
+        body_ned,
+        body_rot,
+        extras=extras,
+        source_format="sf_vloc_body_ned",
+    )
+
+
+def _required_extra(traj: Trajectory, key: str) -> np.ndarray:
+    values = traj.extras.get(key)
+    if values is None:
+        raise ValueError(f"{traj.name}: missing required trajectory extra '{key}'")
+    arr = np.asarray(values, dtype=float)
+    if len(arr) != len(traj.positions):
+        raise ValueError(f"{traj.name}: extra '{key}' length mismatch")
+    return arr
+
+
+def geodetic_to_ned(
+    latitude_deg: np.ndarray,
+    longitude_deg: np.ndarray,
+    altitude_m: np.ndarray,
+    home_point: HomePoint,
+) -> np.ndarray:
+    """WGS84 经纬高转以 home_point 为原点的 NED。"""
+    lat = np.asarray(latitude_deg, dtype=float).reshape(-1)
+    lon = np.asarray(longitude_deg, dtype=float).reshape(-1)
+    alt = np.asarray(altitude_m, dtype=float).reshape(-1)
+    if not (len(lat) == len(lon) == len(alt)):
+        raise ValueError("latitude/longitude/altitude arrays must have the same length")
+
+    ecef = geodetic_to_ecef(lat, lon, alt)
+    home_ecef = geodetic_to_ecef(
+        np.asarray([home_point.latitude], dtype=float),
+        np.asarray([home_point.longitude], dtype=float),
+        np.asarray([home_point.altitude_msl], dtype=float),
+    )[0]
+    lat0 = math.radians(float(home_point.latitude))
+    lon0 = math.radians(float(home_point.longitude))
+    sin_lat0, cos_lat0 = math.sin(lat0), math.cos(lat0)
+    sin_lon0, cos_lon0 = math.sin(lon0), math.cos(lon0)
+    ecef_to_ned = np.asarray(
+        [
+            [-sin_lat0 * cos_lon0, -sin_lat0 * sin_lon0, cos_lat0],
+            [-sin_lon0, cos_lon0, 0.0],
+            [-cos_lat0 * cos_lon0, -cos_lat0 * sin_lon0, -sin_lat0],
+        ],
+        dtype=float,
+    )
+    delta = ecef - home_ecef
+    return delta @ ecef_to_ned.T
+
+
+def geodetic_to_ecef(latitude_deg: np.ndarray, longitude_deg: np.ndarray, altitude_m: np.ndarray) -> np.ndarray:
+    """WGS84 经纬高转 ECEF。"""
+    lat = np.deg2rad(np.asarray(latitude_deg, dtype=float).reshape(-1))
+    lon = np.deg2rad(np.asarray(longitude_deg, dtype=float).reshape(-1))
+    alt = np.asarray(altitude_m, dtype=float).reshape(-1)
+    sin_lat = np.sin(lat)
+    cos_lat = np.cos(lat)
+    sin_lon = np.sin(lon)
+    cos_lon = np.cos(lon)
+    radius = WGS84_A_M / np.sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat)
+    x = (radius + alt) * cos_lat * cos_lon
+    y = (radius + alt) * cos_lat * sin_lon
+    z = (radius * (1.0 - WGS84_E2) + alt) * sin_lat
+    return np.column_stack([x, y, z])
 
 
 def _require_directory(path: str | Path, label: str) -> Path:

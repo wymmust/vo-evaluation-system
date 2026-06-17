@@ -83,23 +83,35 @@ def main() -> None:
         # divergence_* -> 发散检测阈值。
         st.header("输入设置")
         entry_label = st.radio("评估入口", list(EVALUATION_ENTRY_OPTIONS), index=0)
+        entry_mode = EVALUATION_ENTRY_OPTIONS[entry_label]
         data_dir = st.text_input("data_dir", placeholder="/path/to/data_dir")
         log_dir = st.text_input("log_dir", placeholder="/path/to/log_dir")
         st.caption("VLOC 固定读取 data_dir/imu.txt 与 log_dir/vloc.txt；VO 固定读取 data_dir/imu.txt 与 log_dir/vo.txt。")
-        alignment_label = st.selectbox("轨迹对齐", list(ALIGNMENT_OPTIONS), index=1)
-        orientation_label = st.selectbox("VO 姿态修正", list(ORIENTATION_CORRECTION_OPTIONS), index=0)
-        association_label = st.selectbox("时间同步方式", list(ASSOCIATION_OPTIONS), index=0)
-        max_time_diff = st.number_input("时间关联最大误差 s（不按时间则填 -1）", value=0.02, min_value=-1.0, step=0.01)
-        interpolation_preset_label = st.selectbox("Reference 频率 / 插值间隔预设", list(INTERPOLATION_GAP_PRESETS), index=0)
-        max_interpolation_gap = st.number_input(
-            "GT 插值最大间隔 s（不限制填 -1）",
-            value=float(INTERPOLATION_GAP_PRESETS[interpolation_preset_label]),
-            min_value=-1.0,
-            step=0.01,
-        )
-        allow_extrapolation = st.checkbox("允许外推（不推荐）", value=False)
-        interpolate_rotation = st.checkbox("GT 姿态用 SLERP 插值", value=True)
-        time_offset = st.number_input("VO 时间戳偏移 s（按 TUM：加到 VO 时间戳）", value=0.0, step=0.01)
+        if entry_mode == "vloc":
+            st.caption("VLOC 固定使用 GT 插值到 VLOC 时间戳，最大 GT 插值间隔 1.0 s；超过 1.0 s 的 VLOC 帧直接丢弃。")
+            max_time_diff = -1.0
+            max_interpolation_gap = 1.0
+            allow_extrapolation = False
+            interpolate_rotation = True
+            time_offset = 0.0
+            alignment_label = None
+            orientation_label = None
+            association_label = None
+        else:
+            alignment_label = st.selectbox("轨迹对齐", list(ALIGNMENT_OPTIONS), index=1)
+            orientation_label = st.selectbox("VO 姿态修正", list(ORIENTATION_CORRECTION_OPTIONS), index=0)
+            association_label = st.selectbox("时间同步方式", list(ASSOCIATION_OPTIONS), index=0)
+            max_time_diff = st.number_input("时间关联最大误差 s（不按时间则填 -1）", value=0.02, min_value=-1.0, step=0.01)
+            interpolation_preset_label = st.selectbox("Reference 频率 / 插值间隔预设", list(INTERPOLATION_GAP_PRESETS), index=0)
+            max_interpolation_gap = st.number_input(
+                "GT 插值最大间隔 s（不限制填 -1）",
+                value=float(INTERPOLATION_GAP_PRESETS[interpolation_preset_label]),
+                min_value=-1.0,
+                step=0.01,
+            )
+            allow_extrapolation = st.checkbox("允许外推（不推荐）", value=False)
+            interpolate_rotation = st.checkbox("GT 姿态用 SLERP 插值", value=True)
+            time_offset = st.number_input("VO 时间戳偏移 s（按 TUM：加到 VO 时间戳）", value=0.0, step=0.01)
         rpe_value_col, rpe_unit_col = st.columns([2, 1])
         with rpe_value_col:
             rpe_delta_value = st.number_input("RPE 统计间隔", value=1.0, min_value=0.001, step=1.0)
@@ -132,17 +144,7 @@ def main() -> None:
         # 每次评估前 reload evaluator，确保页面使用最新的解析/指标逻辑。
         evaluator = latest_evaluator()
         segment_lengths = parse_float_list(segment_text)
-        cfg = evaluator.EvaluationConfig(
-            alignment=ALIGNMENT_OPTIONS[alignment_label],
-            orientation_correction=ORIENTATION_CORRECTION_OPTIONS[orientation_label],
-            association_mode=ASSOCIATION_OPTIONS[association_label],
-            max_time_diff_s=None if max_time_diff < 0 else float(max_time_diff),
-            max_interpolation_gap_s=None if max_interpolation_gap < 0 else float(max_interpolation_gap),
-            allow_extrapolation=bool(allow_extrapolation),
-            interpolate_rotation=bool(interpolate_rotation),
-            interpolation_position_method="linear",
-            interpolation_rotation_method="slerp",
-            time_offset_s=float(time_offset),
+        common_cfg = dict(
             rpe_delta_frames=max(1, int(round(float(rpe_delta_value)))) if rpe_delta_unit_label == "f" else 1,
             rpe_delta_value=float(rpe_delta_value),
             rpe_delta_unit="frames" if rpe_delta_unit_label == "f" else "meters",
@@ -160,16 +162,42 @@ def main() -> None:
             divergence_abs_m=float(divergence_abs),
             divergence_rel_percent=float(divergence_rel),
         )
-        entry_mode = EVALUATION_ENTRY_OPTIONS[entry_label]
+        if entry_mode == "vloc":
+            cfg = evaluator.EvaluationConfig(
+                alignment="none",
+                orientation_correction="none",
+                association_mode="interpolate_gt",
+                max_time_diff_s=None,
+                max_interpolation_gap_s=1.0,
+                allow_extrapolation=False,
+                interpolate_rotation=True,
+                interpolation_position_method="linear",
+                interpolation_rotation_method="slerp",
+                time_offset_s=0.0,
+                **common_cfg,
+            )
+        else:
+            cfg = evaluator.EvaluationConfig(
+                alignment=ALIGNMENT_OPTIONS[alignment_label],
+                orientation_correction=ORIENTATION_CORRECTION_OPTIONS[orientation_label],
+                association_mode=ASSOCIATION_OPTIONS[association_label],
+                max_time_diff_s=None if max_time_diff < 0 else float(max_time_diff),
+                max_interpolation_gap_s=None if max_interpolation_gap < 0 else float(max_interpolation_gap),
+                allow_extrapolation=bool(allow_extrapolation),
+                interpolate_rotation=bool(interpolate_rotation),
+                interpolation_position_method="linear",
+                interpolation_rotation_method="slerp",
+                time_offset_s=float(time_offset),
+                **common_cfg,
+            )
         if entry_mode == "vloc":
             bundle = evaluator.load_vloc_evaluation_bundle(data_dir, log_dir)
-            gt = bundle.nav
-            est = bundle.vloc
+            report = evaluator.evaluate_vloc_bundle(bundle, cfg)
         else:
             bundle = evaluator.load_vo_evaluation_bundle(data_dir, log_dir)
             gt = bundle.nav
             est = bundle.vo
-        report = evaluator.evaluate_trajectories(gt, est, cfg)
+            report = evaluator.evaluate_trajectories(gt, est, cfg)
     except Exception as exc:
         st.error(f"评估失败：{exc}")
         return

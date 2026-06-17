@@ -20,6 +20,7 @@ const els = {
   logDirButton: document.getElementById("logDirButton"),
   dataDirStatus: document.getElementById("dataDirStatus"),
   logDirStatus: document.getElementById("logDirStatus"),
+  modeAndAlignmentSection: document.getElementById("modeAndAlignmentSection"),
   downloadJson: document.getElementById("downloadJson"),
   downloadPoseCsv: document.getElementById("downloadPoseCsv"),
   downloadSegmentCsv: document.getElementById("downloadSegmentCsv"),
@@ -72,7 +73,7 @@ function wireEvents() {
   [els.entryMode, els.dataDirFiles, els.logDirFiles].forEach((input) => input.addEventListener("change", updateRunButton));
   els.dataDirFiles.addEventListener("change", () => updateDirectoryStatus("data"));
   els.logDirFiles.addEventListener("change", () => updateDirectoryStatus("log"));
-  els.entryMode.addEventListener("change", updateEntryModeHint);
+  els.entryMode.addEventListener("change", updateEntryModeUi);
   els.dataDirButton.addEventListener("click", () => els.dataDirFiles.click());
   els.logDirButton.addEventListener("click", () => els.logDirFiles.click());
   document.getElementById("interpolationPreset").addEventListener("change", applyInterpolationPreset);
@@ -88,7 +89,7 @@ function wireEvents() {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ));
   els.downloadHtml.addEventListener("click", () => downloadText("vo_evaluation_report.html", buildHtmlReport(), "text/html"));
-  updateEntryModeHint();
+  updateEntryModeUi();
   updateDirectoryStatus("data");
   updateDirectoryStatus("log");
 }
@@ -216,6 +217,8 @@ async function runEvaluation() {
 }
 
 function buildConfig() {
+  const entryMode = valueOf("entryMode");
+  const isVloc = entryMode === "vloc";
   const maxTimeDiff = numberOf("maxTimeDiff");
   const maxInterpolationGap = numberOf("maxInterpolationGap");
   const rpeDeltaValue = numberOf("rpeDeltaValue");
@@ -224,16 +227,16 @@ function buildConfig() {
   const scaleDeltaUnit = valueOf("scaleDeltaUnit");
   return {
     profile: "monocular_long_range_uav",
-    alignment: valueOf("alignment"),
-    orientation_correction: valueOf("orientationCorrection"),
-    association_mode: valueOf("associationMode"),
-    max_time_diff_s: maxTimeDiff < 0 ? null : maxTimeDiff,
-    max_interpolation_gap_s: maxInterpolationGap < 0 ? null : maxInterpolationGap,
-    allow_extrapolation: boolOf("allowExtrapolation"),
-    interpolate_rotation: boolOf("interpolateRotation"),
+    alignment: isVloc ? "none" : valueOf("alignment"),
+    orientation_correction: isVloc ? "none" : valueOf("orientationCorrection"),
+    association_mode: isVloc ? "interpolate_gt" : valueOf("associationMode"),
+    max_time_diff_s: isVloc ? null : (maxTimeDiff < 0 ? null : maxTimeDiff),
+    max_interpolation_gap_s: isVloc ? 1.0 : (maxInterpolationGap < 0 ? null : maxInterpolationGap),
+    allow_extrapolation: isVloc ? false : boolOf("allowExtrapolation"),
+    interpolate_rotation: isVloc ? true : boolOf("interpolateRotation"),
     interpolation_position_method: "linear",
     interpolation_rotation_method: "slerp",
-    time_offset_s: numberOf("timeOffset"),
+    time_offset_s: isVloc ? 0.0 : numberOf("timeOffset"),
     rpe_delta_frames: rpeDeltaUnit === "frames" ? Math.max(1, Math.round(rpeDeltaValue)) : 1,
     rpe_delta_value: rpeDeltaValue,
     rpe_delta_unit: rpeDeltaUnit,
@@ -368,6 +371,21 @@ function updateEntryModeHint() {
   const entryMode = valueOf("entryMode");
   const estimateName = entryMode === "vloc" ? "vloc.txt" : "vo.txt";
   els.entryModeHint.innerHTML = `当前模式会读取 <code>log_dir/${estimateName}</code>、<code>home_point.txt</code> 和 <code>calib_raw.yaml</code>。`;
+}
+
+function updateEntryModeUi() {
+  const entryMode = valueOf("entryMode");
+  document.querySelectorAll("[data-entry-hide]").forEach((node) => {
+    node.hidden = node.dataset.entryHide === entryMode;
+  });
+  document.querySelectorAll("[data-entry-show]").forEach((node) => {
+    node.hidden = node.dataset.entryShow !== entryMode;
+  });
+  if (els.modeAndAlignmentSection) {
+    els.modeAndAlignmentSection.hidden = entryMode === "vloc";
+  }
+  updateEntryModeHint();
+  updateRunButton();
 }
 
 function valueOf(id) {
