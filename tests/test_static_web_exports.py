@@ -531,6 +531,7 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
           vertical_error_m: 0.1,
         }));
         context.renderCharts({
+          inputs: { entry_mode: "vo" },
           per_pose: perPose,
           segment_errors: [],
           speed_bins: [],
@@ -697,3 +698,361 @@ def test_static_angle_error_time_series_unwraps_180_degree_boundary():
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     assert json.loads(result.stdout) == [179, 181, 178]
+
+
+def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const makeElement = (value = "") => ({
+          value,
+          files: [],
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          style: {},
+          classList: { add() {}, remove() {} },
+          addEventListener() {},
+          click() {},
+        });
+        const elements = {
+          runtimeStatus: makeElement(),
+          message: makeElement(),
+          runButton: makeElement(),
+          entryMode: makeElement("vloc"),
+          entryModeHint: makeElement(),
+          dataDirFiles: makeElement(),
+          logDirFiles: makeElement(),
+          dataDirButton: makeElement(),
+          logDirButton: makeElement(),
+          dataDirStatus: makeElement(),
+          logDirStatus: makeElement(),
+          modeAndAlignmentSection: makeElement(),
+          interpolationPreset: makeElement("0.15"),
+          maxInterpolationGap: makeElement("0.15"),
+          downloadJson: makeElement(),
+          downloadPoseCsv: makeElement(),
+          downloadSegmentCsv: makeElement(),
+          downloadWorstCsv: makeElement(),
+          downloadConfigJson: makeElement(),
+          downloadTrajectoryExcel: makeElement(),
+          downloadHtml: makeElement(),
+          trajectory3d: makeElement(),
+          trajectoryXY: makeElement(),
+          errorDistance: makeElement(),
+          altitudeDistance: makeElement(),
+          segmentError: makeElement(),
+          speedError: makeElement(),
+          sim3ScaleTime: makeElement(),
+          seriesXTime: makeElement(),
+          seriesYTime: makeElement(),
+          seriesZTime: makeElement(),
+          seriesYawTime: makeElement(),
+          seriesPitchTime: makeElement(),
+          seriesRollTime: makeElement(),
+          errorXTime: makeElement(),
+          errorYTime: makeElement(),
+          errorZTime: makeElement(),
+          errorYawTime: makeElement(),
+          errorPitchTime: makeElement(),
+          errorRollTime: makeElement(),
+          rpeTranslationTime: makeElement(),
+          rpeRotationTime: makeElement(),
+          summaryKicker: makeElement(),
+          summaryTitle: makeElement(),
+          visualKicker: makeElement(),
+          visualTitle: makeElement(),
+          metrics: makeElement(),
+        };
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || makeElement(); },
+          createElement() { return { ...makeElement(), remove() {} }; },
+          querySelectorAll() { return []; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot() {}, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+
+        context.updateEntryModeUi();
+        const vlocState = {
+          segmentErrorHidden: elements.segmentError.hidden,
+          speedErrorHidden: elements.speedError.hidden,
+          sim3ScaleHidden: elements.sim3ScaleTime.hidden,
+          rpeTranslationHidden: elements.rpeTranslationTime.hidden,
+          trajectory3dHidden: elements.trajectory3d.hidden,
+          summaryTitle: elements.summaryTitle.textContent,
+          visualTitle: elements.visualTitle.textContent,
+        };
+
+        elements.entryMode.value = "vo";
+        context.updateEntryModeUi();
+        const voState = {
+          segmentErrorHidden: elements.segmentError.hidden,
+          speedErrorHidden: elements.speedError.hidden,
+          sim3ScaleHidden: elements.sim3ScaleTime.hidden,
+          rpeTranslationHidden: elements.rpeTranslationTime.hidden,
+          trajectory3dHidden: elements.trajectory3d.hidden,
+          summaryTitle: elements.summaryTitle.textContent,
+          visualTitle: elements.visualTitle.textContent,
+        };
+
+        process.stdout.write(JSON.stringify({ vlocState, voState }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload["vlocState"]["segmentErrorHidden"] is True
+    assert payload["vlocState"]["speedErrorHidden"] is True
+    assert payload["vlocState"]["sim3ScaleHidden"] is True
+    assert payload["vlocState"]["rpeTranslationHidden"] is True
+    assert payload["vlocState"]["trajectory3dHidden"] is False
+    assert "VLOC" in payload["vlocState"]["summaryTitle"]
+    assert "VLOC" in payload["vlocState"]["visualTitle"]
+    assert payload["voState"]["segmentErrorHidden"] is False
+    assert payload["voState"]["speedErrorHidden"] is False
+    assert payload["voState"]["sim3ScaleHidden"] is False
+    assert payload["voState"]["rpeTranslationHidden"] is False
+    assert payload["voState"]["trajectory3dHidden"] is False
+    assert "VO" in payload["voState"]["summaryTitle"]
+    assert "VO" in payload["voState"]["visualTitle"]
+
+
+def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
+    html = Path("static_web/index.html").read_text()
+    for chart_id in ["navStatusModes", "navVelocity", "navResetCounts", "vlocStatus", "heightComparison"]:
+        assert f'id="{chart_id}"' in html
+
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const plots = [];
+        const makeElement = (value = "") => ({
+          value,
+          files: [],
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          style: {},
+          classList: { add() {}, remove() {} },
+          addEventListener() {},
+          click() {},
+        });
+        const elements = {
+          runtimeStatus: makeElement(),
+          message: makeElement(),
+          runButton: makeElement(),
+          entryMode: makeElement("vloc"),
+          entryModeHint: makeElement(),
+          dataDirFiles: makeElement(),
+          logDirFiles: makeElement(),
+          dataDirButton: makeElement(),
+          logDirButton: makeElement(),
+          dataDirStatus: makeElement(),
+          logDirStatus: makeElement(),
+          modeAndAlignmentSection: makeElement(),
+          interpolationPreset: makeElement("0.15"),
+          maxInterpolationGap: makeElement("0.15"),
+          downloadJson: makeElement(),
+          downloadPoseCsv: makeElement(),
+          downloadSegmentCsv: makeElement(),
+          downloadWorstCsv: makeElement(),
+          downloadConfigJson: makeElement(),
+          downloadTrajectoryExcel: makeElement(),
+          downloadHtml: makeElement(),
+          metrics: makeElement(),
+        };
+        [
+          "trajectory3d", "trajectoryXY", "errorDistance", "altitudeDistance",
+          "segmentError", "speedError", "sim3ScaleTime",
+          "seriesXTime", "seriesYTime", "seriesZTime",
+          "seriesYawTime", "seriesPitchTime", "seriesRollTime",
+          "errorXTime", "errorYTime", "errorZTime",
+          "errorYawTime", "errorPitchTime", "errorRollTime",
+          "rpeTranslationTime", "rpeRotationTime",
+          "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus", "heightComparison",
+        ].forEach((id) => { elements[id] = makeElement(); });
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || makeElement(); },
+          createElement() { return { ...makeElement(), remove() {} }; },
+          querySelectorAll() { return []; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); }, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+
+        context.renderCharts({
+          inputs: { entry_mode: "vloc" },
+          per_pose: [
+            { timestamp: 10, segment_id: 0, distance_m: 0, gt_x_m: 999, gt_y_m: 999, gt_z_m: 999, est_x_aligned_m: 888, est_y_aligned_m: 888, est_z_aligned_m: 888, x_error_m: 777 },
+          ],
+          segment_errors: [{ length_m: 100, translation_error_percent: { mean: 99 } }],
+          speed_bins: [{ speed_bin_mps: "0-5", translation_error_percent: { mean: 99 } }],
+          vloc_details: {
+            nav_status: [
+              { timestamp: 1, flight_mode: 3, navi_mode: 5, rtk_yaw: 1, rtk_alti: 0, position_reset_count: 0, altitude_reset_count: 1, heading_reset_count: 2, vx: 0.1, vy: 0.2, vz: 0.3, velocity_norm: 0.374 },
+              { timestamp: 2, flight_mode: 4, navi_mode: 6, rtk_yaw: 1, rtk_alti: 1, position_reset_count: 0, altitude_reset_count: 1, heading_reset_count: 3, vx: 0.4, vy: 0.5, vz: 0.6, velocity_norm: 0.877 },
+            ],
+            vloc_status: [
+              { timestamp: 1, vloc_mode: 2, num_inliers: 40, reset_count: 0 },
+              { timestamp: 2, vloc_mode: 3, num_inliers: 41, reset_count: 1 },
+            ],
+            comparison: [
+              { timestamp: 1, segment_id: 0, nav_n_m: 10, nav_e_m: 20, nav_d_m: -3, vloc_n_m: 9, vloc_e_m: 21, vloc_d_m: -4, nav_height_m: 7, vloc_height_m: 6, position_error_n_m: 1, position_error_e_m: -1, position_error_d_m: 1, horizontal_position_error_m: 1.414, attitude_error_yaw_deg: 0.5, attitude_error_pitch_deg: -0.2, attitude_error_roll_deg: 0.1, nav_yaw_deg: 4, vloc_yaw_deg: 3.5, nav_pitch_deg: 1, vloc_pitch_deg: 1.2, nav_roll_deg: 2, vloc_roll_deg: 1.9 },
+              { timestamp: 2, segment_id: 0, nav_n_m: 11, nav_e_m: 22, nav_d_m: -5, vloc_n_m: 10, vloc_e_m: 23, vloc_d_m: -6, nav_height_m: 8, vloc_height_m: 7, position_error_n_m: 1, position_error_e_m: -1, position_error_d_m: 1, horizontal_position_error_m: 1.414, attitude_error_yaw_deg: 0.6, attitude_error_pitch_deg: -0.3, attitude_error_roll_deg: 0.2, nav_yaw_deg: 5, vloc_yaw_deg: 4.4, nav_pitch_deg: 2, vloc_pitch_deg: 2.3, nav_roll_deg: 3, vloc_roll_deg: 2.8 },
+            ],
+          },
+        });
+
+        const byId = Object.fromEntries(plots.map((plot) => [plot.id, plot]));
+        process.stdout.write(JSON.stringify({
+          plottedIds: plots.map((plot) => plot.id),
+          xChartGt: byId.seriesXTime.data[0].y,
+          xChartEst: byId.seriesXTime.data[1].y,
+          xError: byId.errorXTime.data[0].y,
+          heightNames: byId.heightComparison.data.map((trace) => trace.name),
+          navVelocityNames: byId.navVelocity.data.map((trace) => trace.name),
+          vlocStatusNames: byId.vlocStatus.data.map((trace) => trace.name),
+          segmentHidden: elements.segmentError.hidden,
+          navStatusHidden: elements.navStatusModes.hidden,
+        }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert "navStatusModes" in payload["plottedIds"]
+    assert "navVelocity" in payload["plottedIds"]
+    assert "navResetCounts" in payload["plottedIds"]
+    assert "vlocStatus" in payload["plottedIds"]
+    assert "heightComparison" in payload["plottedIds"]
+    assert payload["xChartGt"] == [10, 11]
+    assert payload["xChartEst"] == [9, 10]
+    assert payload["xError"] == [1, 1]
+    assert payload["heightNames"] == ["nav height", "vloc height"]
+    assert "velocity_norm" in payload["navVelocityNames"]
+    assert {"vloc_mode", "reset_count", "num_inliers"}.issubset(set(payload["vlocStatusNames"]))
+    assert payload["segmentHidden"] is True
+    assert payload["navStatusHidden"] is False
+
+
+def test_static_vloc_metrics_hide_vo_specific_summary_cards():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const makeElement = (value = "") => ({
+          value,
+          files: [],
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          style: {},
+          classList: { add() {}, remove() {} },
+          addEventListener() {},
+          click() {},
+        });
+        const elements = {
+          runtimeStatus: makeElement(),
+          message: makeElement(),
+          runButton: makeElement(),
+          entryMode: makeElement("vloc"),
+          entryModeHint: makeElement(),
+          dataDirFiles: makeElement(),
+          logDirFiles: makeElement(),
+          dataDirButton: makeElement(),
+          logDirButton: makeElement(),
+          dataDirStatus: makeElement(),
+          logDirStatus: makeElement(),
+          modeAndAlignmentSection: makeElement(),
+          interpolationPreset: makeElement("0.15"),
+          maxInterpolationGap: makeElement("0.15"),
+          downloadJson: makeElement(),
+          downloadPoseCsv: makeElement(),
+          downloadSegmentCsv: makeElement(),
+          downloadWorstCsv: makeElement(),
+          downloadConfigJson: makeElement(),
+          downloadTrajectoryExcel: makeElement(),
+          downloadHtml: makeElement(),
+          metrics: makeElement(),
+        };
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || makeElement(); },
+          createElement() { return { ...makeElement(), remove() {} }; },
+          querySelectorAll() { return []; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot() {}, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+        context.renderMetrics({
+          summary: {
+            gt_path_length_m: 1000,
+            duration_s: 100,
+            matched_poses: 200,
+            original_matched_poses: 200,
+            gt_pose_coverage_ratio: 0.95,
+            est_pose_coverage_ratio: 0.95,
+            endpoint_error_m: 1,
+            endpoint_error_percent_of_path: 0.1,
+            est_poses: 210,
+            raw_path_scale_ratio_est_over_gt: 0.32,
+          },
+          ate_position_m: { rmse: 1.5 },
+          ate_vertical_m: { rmse: 0.5 },
+          rpe_frame_delta: { translation_m: { rmse: 0.3 }, delta_unit: "frames", delta_frames: 1 },
+          divergence: { diverged: false },
+          association: { mode: "interpolate_gt", max_interpolation_gap_s: 1.0 },
+          discontinuities: { all_matches: { break_count: 2 }, selected_segment: { policy: "segments" } },
+          alignment: { scale: 1.0 },
+          orientation_correction: { selected: "none" },
+          inputs: { entry_mode: "vloc" },
+        });
+        process.stdout.write(elements.metrics.innerHTML);
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    html = result.stdout
+    assert "ATE RMSE" in html
+    assert "时间同步" in html
+    assert "Raw 尺度比" not in html
+    assert "对齐尺度" not in html
+    assert "姿态修正" not in html

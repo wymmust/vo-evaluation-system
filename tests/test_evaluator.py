@@ -353,6 +353,30 @@ def test_vloc_bundle_uses_fixed_interpolation_defaults_and_drops_invalid_frames(
     assert report["ate_position_m"]["rmse"] < 1e-3
 
 
+def test_vloc_report_contains_nav_vloc_specific_detail_tables():
+    bundle = sample_vloc_bundle_with_large_nav_gap()
+    shifted_vloc_north = np.asarray([1.5, 6.5, 19.0, 36.5, 38.0], dtype=float)
+    bundle.vloc.extras["latitude"] = np.asarray(
+        [_latitude_from_north_offset(bundle.home_point.latitude, value) for value in shifted_vloc_north],
+        dtype=float,
+    )
+
+    report = evaluate_vloc_bundle(bundle, EvaluationConfig())
+    details = report["vloc_details"]
+    comparison = details["comparison"]
+    nav_status = details["nav_status"]
+    vloc_status = details["vloc_status"]
+
+    assert details["summary"]["trajectory_length_m"] > 0
+    assert details["summary"]["horizontal_error_mean_m"] == pytest.approx(1.0, abs=0.02)
+    assert details["summary"]["vertical_error_max_m"] == pytest.approx(0.0, abs=1e-4)
+    assert {"flight_mode", "navi_mode", "rtk_yaw", "rtk_alti", "velocity_norm"}.issubset(nav_status.columns)
+    assert {"vloc_mode", "num_inliers", "reset_count"}.issubset(vloc_status.columns)
+    assert {"position_error_n_m", "position_error_e_m", "position_error_d_m"}.issubset(comparison.columns)
+    assert np.allclose(comparison["position_error_n_m"].to_numpy(), 1.0, atol=0.02)
+    assert np.allclose(comparison["position_error_e_m"].to_numpy(), 0.0, atol=1e-6)
+
+
 def test_fixed_parser_rejects_wrong_column_count():
     bad_vloc = "10.0 2 42 0 11 12 13 90 2 -1 31.1 121.2\n"
     with pytest.raises(ValueError, match="13 columns"):

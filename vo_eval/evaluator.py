@@ -620,6 +620,7 @@ def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None =
     valid_indices = np.flatnonzero(valid_mode)
     vloc_valid = subset_trajectory(vloc_ned_body, valid_indices)
     report = evaluate_trajectories(nav_ned_body, vloc_valid, cfg)
+    report["vloc_details"] = build_vloc_detail_report(nav_ned_body, vloc_valid, cfg)
     report["inputs"]["entry_mode"] = "vloc"
     report["inputs"]["workflow"] = "sf_vloc"
     report["inputs"]["fixed_rules"] = {
@@ -634,6 +635,166 @@ def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None =
     report["association"]["valid_est_after_mode_filter"] = int(len(vloc_valid.positions))
     report["summary"]["raw_est_poses"] = int(len(bundle.vloc.positions))
     return report
+
+
+def build_vloc_detail_report(nav: Trajectory, vloc: Trajectory, cfg: EvaluationConfig) -> dict[str, Any]:
+    """构造 VLOC 页面专用明细。
+
+    这部分严格对应需求文档中的 VLOC 轨迹对比和可视化：
+    - comparison: nav_data.ned - vloc_data.ned 的逐帧位置误差，以及 R_ref^-1 R_est 姿态误差；
+    - nav_status: 插值到 VLOC 时间戳后的导航状态、速度和 reset 信息；
+    - vloc_status: 与有效 VLOC 样本对应的 vloc_mode、num_inliers、reset_count；
+    - summary: VLOC 轨迹长度、水平/垂直平均和最大误差。
+    """
+    nav_eval, vloc_eval, _assoc = build_associated_trajectories(nav, vloc, cfg)
+    timestamps = vloc_eval.stamps
+    target_stamps = np.asarray(vloc_eval.extras.get("target_stamp", timestamps + float(cfg.time_offset_s)), dtype=float)
+    if len(timestamps) == 0:
+        empty = pd.DataFrame()
+        return {"summary": {}, "comparison": empty, "nav_status": empty, "vloc_status": empty}
+
+    nav_status = vloc_nav_status_frame(nav, target_stamps, timestamps)
+    vloc_status = vloc_est_status_frame(vloc_eval)
+    comparison = vloc_comparison_frame(nav_eval, vloc_eval, nav_status, vloc_status)
+
+    horizontal = comparison["horizontal_position_error_m"].to_numpy(dtype=float)
+    vertical_abs = comparison["vertical_position_error_abs_m"].to_numpy(dtype=float)
+    summary = {
+        "trajectory_length_m": float(path_distance(nav_eval.positions)[-1]) if len(nav_eval.positions) else 0.0,
+        "horizontal_error_mean_m": float(np.nanmean(horizontal)) if len(horizontal) else math.nan,
+        "horizontal_error_max_m": float(np.nanmax(horizontal)) if len(horizontal) else math.nan,
+        "vertical_error_mean_m": float(np.nanmean(vertical_abs)) if len(vertical_abs) else math.nan,
+        "vertical_error_max_m": float(np.nanmax(vertical_abs)) if len(vertical_abs) else math.nan,
+    }
+    return {
+        "summary": summary,
+        "comparison": comparison,
+        "nav_status": nav_status,
+        "vloc_status": vloc_status,
+    }
+
+
+def vloc_nav_status_frame(nav: Trajectory, target_stamps: np.ndarray, timestamps: np.ndarray) -> pd.DataFrame:
+    """把 nav 状态按需求文档插到有效 VLOC 时间戳。
+
+    离散状态字段按最近邻；速度、高度等连续字段按线性插值。
+    """
+    frame = pd.DataFrame({"timestamp": timestamps})
+    nearest_fields = {
+        "flight_mode": "flight_mode",
+        "navi_mode": "navi_mode",
+        "rtk_yaw": "rtk_yaw",
+        "rtk_alti": "rtk_altitude",
+        "position_reset_count": "position_reset_count",
+        "altitude_reset_count": "altitude_reset_count",
+        "heading_reset_count": "heading_reset_count",
+    }
+    for output_name, extra_name in nearest_fields.items():
+        frame[output_name] = extra_values_nearest(nav, extra_name, target_stamps)
+
+    for field in ("vx", "vy", "vz", "height"):
+        frame[field] = extra_values_linear(nav, field, target_stamps)
+    frame["velocity_norm"] = np.linalg.norm(frame[["vx", "vy", "vz"]].to_numpy(dtype=float), axis=1)
+    return frame
+
+
+def vloc_est_status_frame(vloc: Trajectory) -> pd.DataFrame:
+    """提取有效 VLOC 样本自身的状态字段。"""
+    frame = pd.DataFrame({"timestamp": vloc.stamps})
+    for field in ("vloc_mode", "num_inliers", "reset_count", "height"):
+        frame[field] = trajectory_extra_or_nan(vloc, field)
+    return frame
+
+
+def vloc_comparison_frame(
+    nav_eval: Trajectory,
+    vloc_eval: Trajectory,
+    nav_status: pd.DataFrame,
+    vloc_status: pd.DataFrame,
+) -> pd.DataFrame:
+    """VLOC 逐帧对比表，位置误差按需求文档使用 nav - vloc。"""
+    nav_pos = np.asarray(nav_eval.positions, dtype=float)
+    vloc_pos = np.asarray(vloc_eval.positions, dtype=float)
+    pos_error = nav_pos - vloc_pos
+    frame = pd.DataFrame(
+        {
+            "timestamp": vloc_eval.stamps,
+            "segment_id": np.zeros(len(vloc_eval.stamps), dtype=int),
+            "distance_m": path_distance(nav_pos),
+            "nav_n_m": nav_pos[:, 0],
+            "nav_e_m": nav_pos[:, 1],
+            "nav_d_m": nav_pos[:, 2],
+            "vloc_n_m": vloc_pos[:, 0],
+            "vloc_e_m": vloc_pos[:, 1],
+            "vloc_d_m": vloc_pos[:, 2],
+            "position_error_n_m": pos_error[:, 0],
+            "position_error_e_m": pos_error[:, 1],
+            "position_error_d_m": pos_error[:, 2],
+            "position_error_3d_m": np.linalg.norm(pos_error, axis=1),
+            "horizontal_position_error_m": np.linalg.norm(pos_error[:, :2], axis=1),
+            "vertical_position_error_signed_m": pos_error[:, 2],
+            "vertical_position_error_abs_m": np.abs(pos_error[:, 2]),
+        }
+    )
+    frame["nav_height_m"] = nav_status["height"].to_numpy(dtype=float) if "height" in nav_status else np.nan
+    frame["vloc_height_m"] = vloc_status["height"].to_numpy(dtype=float) if "height" in vloc_status else np.nan
+    if nav_eval.rotations is not None and vloc_eval.rotations is not None:
+        nav_ypr = np.degrees(euler_yaw_pitch_roll_from_matrix(nav_eval.rotations))
+        vloc_ypr = np.degrees(euler_yaw_pitch_roll_from_matrix(vloc_eval.rotations))
+        err_rot = np.einsum("nji,njk->nik", nav_eval.rotations, vloc_eval.rotations)
+        err_ypr = np.degrees(wrap_pi(euler_yaw_pitch_roll_from_matrix(err_rot)))
+        frame["nav_yaw_deg"] = nav_ypr[:, 0]
+        frame["nav_pitch_deg"] = nav_ypr[:, 1]
+        frame["nav_roll_deg"] = nav_ypr[:, 2]
+        frame["vloc_yaw_deg"] = vloc_ypr[:, 0]
+        frame["vloc_pitch_deg"] = vloc_ypr[:, 1]
+        frame["vloc_roll_deg"] = vloc_ypr[:, 2]
+        frame["attitude_error_yaw_deg"] = err_ypr[:, 0]
+        frame["attitude_error_pitch_deg"] = err_ypr[:, 1]
+        frame["attitude_error_roll_deg"] = err_ypr[:, 2]
+    return frame
+
+
+def trajectory_extra_or_nan(traj: Trajectory, key: str) -> np.ndarray:
+    """读取等长 extras；不存在时返回 NaN，方便前端图表跳过。"""
+    values = traj.extras.get(key)
+    if values is None or len(values) != len(traj.positions):
+        return np.full(len(traj.positions), math.nan, dtype=float)
+    return np.asarray(values, dtype=float)
+
+
+def extra_values_linear(traj: Trajectory, key: str, target_stamps: np.ndarray) -> np.ndarray:
+    """连续字段线性插值到 target_stamps。"""
+    unique = _unique_timestamp_trajectory(traj)
+    values = trajectory_extra_or_nan(unique, key)
+    if len(values) == 0:
+        return np.asarray([], dtype=float)
+    if np.all(~np.isfinite(values)):
+        return np.full(len(target_stamps), math.nan, dtype=float)
+    return np.interp(target_stamps, unique.stamps, values)
+
+
+def extra_values_nearest(traj: Trajectory, key: str, target_stamps: np.ndarray) -> np.ndarray:
+    """离散状态字段最近邻插值到 target_stamps。"""
+    unique = _unique_timestamp_trajectory(traj)
+    values = trajectory_extra_or_nan(unique, key)
+    if len(values) == 0:
+        return np.asarray([], dtype=float)
+    indices = nearest_indices_for_stamps(unique.stamps, target_stamps)
+    return values[indices]
+
+
+def nearest_indices_for_stamps(stamps: np.ndarray, target_stamps: np.ndarray) -> np.ndarray:
+    """向量化最近时间戳索引，用于状态字段最近邻插值。"""
+    src = np.asarray(stamps, dtype=float)
+    target = np.asarray(target_stamps, dtype=float)
+    if len(src) == 0:
+        raise ValueError("Cannot find nearest index in an empty timestamp array")
+    insert = np.searchsorted(src, target, side="left")
+    left = np.clip(insert - 1, 0, len(src) - 1)
+    right = np.clip(insert, 0, len(src) - 1)
+    choose_right = np.abs(src[right] - target) < np.abs(target - src[left])
+    return np.where(choose_right, right, left)
 
 
 def parse_imu_fixed(text: str, name: str = "imu.txt") -> Trajectory:
