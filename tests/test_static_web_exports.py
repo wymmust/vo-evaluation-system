@@ -33,6 +33,10 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
     assert 'id="estFile"' not in html
     assert 'id="gtFormat"' not in html
     assert 'id="estFormat"' not in html
+    assert 'id="modeAndAlignmentSection"' not in html
+    assert 'id="alignment"' not in html
+    assert 'id="orientationCorrection"' not in html
+    assert 'id="associationMode"' not in html
     assert 'id="positionCompareComposite"' in html
     assert 'id="attitudeCompareComposite"' in html
     assert 'id="positionErrorComposite"' in html
@@ -237,7 +241,7 @@ def test_static_directory_picker_shows_selected_directory_name_in_custom_status(
 
 def test_static_vloc_mode_hides_transform_controls_and_uses_fixed_sync_defaults():
     html = Path("static_web/index.html").read_text()
-    assert 'id="modeAndAlignmentSection"' in html
+    assert 'id="modeAndAlignmentSection"' not in html
     assert 'data-entry-hide="vloc"' in html
 
     script = textwrap.dedent(
@@ -279,10 +283,6 @@ def test_static_vloc_mode_hides_transform_controls_and_uses_fixed_sync_defaults(
           rpeDeltaUnit: makeElement("frames"),
           scaleDeltaValue: makeElement("100"),
           scaleDeltaUnit: makeElement("meters"),
-          alignment: makeElement("sim3"),
-          orientationCorrection: makeElement("auto"),
-          associationMode: makeElement("nearest"),
-          modeAndAlignmentSection: makeElement(),
         };
         const hiddenNodes = [
           { dataset: { entryHide: "vloc" }, hidden: false },
@@ -315,7 +315,6 @@ def test_static_vloc_mode_hides_transform_controls_and_uses_fixed_sync_defaults(
         process.stdout.write(JSON.stringify({
           config: context.buildConfig(),
           hiddenStates: hiddenNodes.map((node) => node.hidden),
-          sectionHidden: elements.modeAndAlignmentSection.hidden,
         }));
         """
     )
@@ -371,10 +370,6 @@ def test_static_vo_mode_hides_fixed_workflow_controls_and_uses_fixed_defaults():
           rpeDeltaUnit: makeElement("meters"),
           scaleDeltaValue: makeElement("50"),
           scaleDeltaUnit: makeElement("meters"),
-          alignment: makeElement("none"),
-          orientationCorrection: makeElement("auto"),
-          associationMode: makeElement("nearest"),
-          modeAndAlignmentSection: makeElement(),
         };
         const hiddenNodes = [
           { dataset: { entryHide: "vloc,vo" }, hidden: false },
@@ -413,7 +408,6 @@ def test_static_vo_mode_hides_fixed_workflow_controls_and_uses_fixed_defaults():
           config: context.buildConfig(),
           hiddenStates: hiddenNodes.map((node) => node.hidden),
           shownStates: shownNodes.map((node) => node.hidden),
-          sectionHidden: elements.modeAndAlignmentSection.hidden,
         }));
         """
     )
@@ -442,7 +436,6 @@ def test_static_vo_mode_hides_fixed_workflow_controls_and_uses_fixed_defaults():
     assert payload["config"]["divergence_rel_percent"] == 3
     assert payload["hiddenStates"] == [True, False]
     assert payload["shownStates"] == [False, False]
-    assert payload["sectionHidden"] is True
 
 
 def test_static_browser_runner_uses_fixed_bundle_parsers_instead_of_legacy_single_file_loader(tmp_path):
@@ -512,10 +505,29 @@ cam0:
 
 
 def test_static_python_sources_are_fetched_without_browser_cache():
-    app_js = Path("static_web/app.js").read_text()
+    worker_js = Path("static_web/worker.js").read_text()
 
-    assert 'cache: "no-store"' in app_js
-    assert "cacheBust" in app_js
+    assert 'cache: "no-store"' in worker_js
+    assert "cacheBust" in worker_js
+
+
+def test_static_runtime_uses_worker_and_layered_report_slices():
+    app_js = Path("static_web/app.js").read_text()
+    worker_js = Path("static_web/worker.js").read_text()
+    runner = Path("static_web/py/browser_runner.py").read_text()
+    html = Path("static_web/index.html").read_text()
+
+    assert 'new Worker("./worker.js")' in app_js
+    assert 'workerRequest("evaluate"' in app_js
+    assert 'workerRequest("slice"' in app_js
+    assert "loadPyodide" not in app_js
+    assert "pyodide.js" not in html
+    assert "evaluate_vloc_bundle_json_light" in worker_js
+    assert "evaluate_vo_bundle_json_light" in worker_js
+    assert "get_report_slice_json" in worker_js
+    assert "def _light_report" in runner
+    assert '"per_pose", "segment_records", "trajectory_exports"' in runner
+    assert "download_slices_available" in runner
 
 
 def test_static_scale_interval_controls_are_wired_into_config():
@@ -643,8 +655,9 @@ def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets(
     payload = json.loads(result.stdout)
 
     assert "trajectory_exports" not in payload["sanitized"]
+    assert "per_pose" not in payload["sanitized"]
+    assert "segment_records" not in payload["sanitized"]
     assert payload["sanitized"]["summary"]["matched_poses"] == 2
-    assert payload["sanitized"]["per_pose"][0]["timestamp"] == 1
 
     workbook_bytes = base64.b64decode(payload["workbookBase64"])
     workbook = load_workbook(io.BytesIO(workbook_bytes), read_only=True)
@@ -1203,7 +1216,6 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
           logDirButton: makeElement(),
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
-          modeAndAlignmentSection: makeElement(),
           downloadJson: makeElement(),
           downloadPoseCsv: makeElement(),
           downloadSegmentCsv: makeElement(),
@@ -1311,7 +1323,6 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
           logDirButton: makeElement(),
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
-          modeAndAlignmentSection: makeElement(),
           vlocChartDirectorySection: makeElement(),
           vlocChartList: makeElement(),
           vlocChartSelectAll: makeElement(),
@@ -1407,7 +1418,7 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
     assert payload["visibleAfterSelectAll"] is True
     assert payload["voStillVisible"] is True
     assert payload["voDemandExcludedHidden"] is True
-    assert "trajectory3d" not in payload["purged"]
+    assert "trajectory3d" in payload["purged"]
 
 
 def test_static_vloc_point_selection_excludes_3d_and_records_points():
@@ -1458,7 +1469,6 @@ def test_static_vloc_point_selection_excludes_3d_and_records_points():
           logDirButton: makeElement(),
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
-          modeAndAlignmentSection: makeElement(),
           vlocChartDirectorySection: makeElement(),
           vlocChartList: makeElement(),
           vlocChartSelectAll: makeElement(),
@@ -1712,7 +1722,6 @@ def test_static_vo_point_selection_excludes_3d_and_records_points():
           logDirButton: makeElement(),
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
-          modeAndAlignmentSection: makeElement(),
           voChartDirectorySection: makeElement(),
           voChartList: makeElement(),
           voChartSelectAll: makeElement(),
@@ -1846,7 +1855,6 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
           logDirButton: makeElement(),
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
-          modeAndAlignmentSection: makeElement(),
           downloadJson: makeElement(),
           downloadPoseCsv: makeElement(),
           downloadSegmentCsv: makeElement(),
@@ -1986,7 +1994,6 @@ def test_static_vloc_metrics_hide_vo_specific_summary_cards():
           logDirButton: makeElement(),
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
-          modeAndAlignmentSection: makeElement(),
           downloadJson: makeElement(),
           downloadPoseCsv: makeElement(),
           downloadSegmentCsv: makeElement(),

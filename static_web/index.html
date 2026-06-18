@@ -6,7 +6,6 @@
     <title>VO 评估系统</title>
     <link rel="stylesheet" href="./style.css" />
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
   </head>
   <body>
     <header class="topbar">
@@ -52,43 +51,6 @@
         </section>
 
         <button id="runButton" disabled>运行评估</button>
-
-        <section id="modeAndAlignmentSection" data-entry-hide="vloc,vo">
-          <h2>模式与对齐</h2>
-          <label>
-            轨迹对齐
-            <select id="alignment">
-              <option value="sim3">Sim3 相似变换</option>
-              <option value="se3">SE3 刚体对齐</option>
-              <option value="first_pose">首帧对齐</option>
-              <option value="none">不对齐</option>
-            </select>
-          </label>
-          <label>
-            VO 姿态修正
-            <select id="orientationCorrection">
-              <option value="auto">自动选择最优姿态修正</option>
-              <option value="none">不修正</option>
-              <option value="ignore">忽略姿态，只评估位置</option>
-              <option value="inverse">取逆 R^T</option>
-              <option value="rz180_right">右乘 Rz(180)</option>
-              <option value="rz180_left">左乘 Rz(180)</option>
-              <option value="rx180_right">右乘 Rx(180)</option>
-              <option value="ry180_right">右乘 Ry(180)</option>
-              <option value="enu_ned_left">ENU/NED 左乘</option>
-              <option value="enu_ned_right">ENU/NED 右乘</option>
-              <option value="enu_ned_both">ENU/NED 两侧变换</option>
-            </select>
-          </label>
-          <label>
-            时间同步方式
-            <select id="associationMode">
-              <option value="interpolate_gt">GT 插值到 VO 时间戳</option>
-              <option value="nearest">TUM 最近邻时间戳匹配</option>
-              <option value="index">按索引匹配</option>
-            </select>
-          </label>
-        </section>
 
         <section id="evaluationParametersSection" data-entry-hide="vloc">
           <h2>评估参数</h2>

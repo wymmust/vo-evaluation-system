@@ -29,46 +29,10 @@ EVALUATION_ENTRY_OPTIONS = {
     "VO 评估": "vo",
 }
 
-ALIGNMENT_OPTIONS = {
-    "SE3 刚体对齐（双目/VIO/尺度已知推荐）": "se3",
-    "Sim3 相似变换（单目 VO/尺度未知）": "sim3",
-    "首帧对齐（看漂移随距离增长）": "first_pose",
-    "不对齐": "none",
-}
-
-ORIENTATION_CORRECTION_OPTIONS = {
-    "自动选择最优姿态修正（推荐）": "auto",
-    "不修正": "none",
-    "忽略姿态，只评估位置": "ignore",
-    "取逆 R^T": "inverse",
-    "右乘 Rz(180) camera/body 外参": "rz180_right",
-    "左乘 Rz(180)": "rz180_left",
-    "右乘 Rx(180)": "rx180_right",
-    "右乘 Ry(180)": "ry180_right",
-    "ENU/NED 左乘": "enu_ned_left",
-    "ENU/NED 右乘": "enu_ned_right",
-    "ENU/NED 两侧变换": "enu_ned_both",
-}
-
 SEGMENT_POLICY_OPTIONS = {
     "按VO时间戳统一评估（推荐）": "vo_timestamps",
     "按VO连续段逐段评估": "segments",
     "只评估最长连续段": "longest",
-}
-
-ASSOCIATION_OPTIONS = {
-    "GT插值到VO时间戳（推荐）": "interpolate_gt",
-    "TUM最近邻时间戳匹配": "nearest",
-    "按索引匹配（不按时间）": "index",
-}
-
-INTERPOLATION_GAP_PRESETS = {
-    "20 Hz reference（0.15 s 推荐）": 0.15,
-    "100 Hz reference（0.05 s）": 0.05,
-    "50 Hz reference（0.08 s）": 0.08,
-    "10 Hz reference（0.30 s）": 0.30,
-    "不限制 GT gap": -1.0,
-    "自定义": 0.15,
 }
 
 VLOC_CHART_OPTIONS = [
@@ -122,14 +86,6 @@ def main() -> None:
         st.caption("VLOC 固定读取 data_dir/imu.txt 与 log_dir/vloc.txt；VO 固定读取 data_dir/imu.txt 与 log_dir/vo.txt。")
         if entry_mode == "vloc":
             st.caption("VLOC 固定使用 GT 插值到 VLOC 时间戳，最大 GT 插值间隔 1.0 s；超过 1.0 s 的 VLOC 帧直接丢弃。")
-            max_time_diff = -1.0
-            max_interpolation_gap = 1.0
-            allow_extrapolation = False
-            interpolate_rotation = True
-            time_offset = 0.0
-            alignment_label = None
-            orientation_label = None
-            association_label = None
             rpe_delta_value = 1.0
             rpe_delta_unit_label = "f"
             scale_delta_value = 1.0
@@ -145,14 +101,6 @@ def main() -> None:
             divergence_rel = 3.0
         if entry_mode == "vo":
             st.caption("VO 固定使用 GT 插值到 VO 时间戳，最大 GT 插值间隔 1.0 s；按 reset_count 有效连续段分别做 Sim3，不允许外推，时间偏移固定为 0。")
-            max_time_diff = -1.0
-            max_interpolation_gap = 1.0
-            allow_extrapolation = False
-            interpolate_rotation = True
-            time_offset = 0.0
-            alignment_label = None
-            orientation_label = None
-            association_label = None
             rpe_value_col, rpe_unit_col = st.columns([2, 1])
             with rpe_value_col:
                 rpe_delta_value = st.number_input("RPE 统计间隔", value=1.0, min_value=0.001, step=1.0)
@@ -916,17 +864,6 @@ def make_trajectory_3d(df: pd.DataFrame) -> go.Figure:
         text_size=10,
     )
     fig.update_layout(title="3D 轨迹", scene=dict(xaxis_title="x m", yaxis_title="y m", zaxis_title="z m"), height=460)
-    return fig
-
-
-def make_trajectory_xy(df: pd.DataFrame) -> go.Figure:
-    """俯视 XY 轨迹图：对应水平路径形状和水平误差观察。"""
-    fig = go.Figure()
-    gt_x, gt_y = segmented_values(df, ["gt_x_m", "gt_y_m"])
-    est_x, est_y = segmented_values(df, ["est_x_aligned_m", "est_y_aligned_m"])
-    fig.add_trace(go.Scatter(x=gt_x, y=gt_y, mode="lines", name="Ground truth"))
-    fig.add_trace(go.Scatter(x=est_x, y=est_y, mode="lines", name="VO aligned"))
-    fig.update_layout(title="俯视 XY 轨迹", xaxis_title="x m", yaxis_title="y m", yaxis_scaleanchor="x", height=460)
     return fig
 
 

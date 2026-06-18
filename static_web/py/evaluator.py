@@ -804,8 +804,8 @@ def vloc_nav_status_frame(nav: Trajectory, target_stamps: np.ndarray, timestamps
     for output_name, extra_name in nearest_fields.items():
         frame[output_name] = extra_values_nearest(nav, extra_name, target_stamps)
 
-    for field in ("vx", "vy", "vz", "height"):
-        frame[field] = extra_values_linear(nav, field, target_stamps)
+    for extra_field in ("vx", "vy", "vz", "height"):
+        frame[extra_field] = extra_values_linear(nav, extra_field, target_stamps)
     frame["velocity_norm"] = np.linalg.norm(frame[["vx", "vy", "vz"]].to_numpy(dtype=float), axis=1)
     return frame
 
@@ -813,16 +813,16 @@ def vloc_nav_status_frame(nav: Trajectory, target_stamps: np.ndarray, timestamps
 def vloc_est_status_frame(vloc: Trajectory) -> pd.DataFrame:
     """提取有效 VLOC 样本自身的状态字段。"""
     frame = pd.DataFrame({"timestamp": vloc.stamps})
-    for field in ("vloc_mode", "num_inliers", "reset_count", "height"):
-        frame[field] = trajectory_extra_or_nan(vloc, field)
+    for extra_field in ("vloc_mode", "num_inliers", "reset_count", "height"):
+        frame[extra_field] = trajectory_extra_or_nan(vloc, extra_field)
     return frame
 
 
 def vo_est_status_frame(vo: Trajectory) -> pd.DataFrame:
     """提取有效 VO 样本自身的状态字段。"""
     frame = pd.DataFrame({"timestamp": vo.stamps})
-    for field in ("num_inliers", "is_keyframe", "time_cost", "reset_count", "evaluation_segment_id"):
-        frame[field] = trajectory_extra_or_nan(vo, field)
+    for extra_field in ("num_inliers", "is_keyframe", "time_cost", "reset_count", "evaluation_segment_id"):
+        frame[extra_field] = trajectory_extra_or_nan(vo, extra_field)
     return frame
 
 
@@ -874,9 +874,9 @@ def vo_comparison_frame(
             axis=1,
         )
     if len(vo_status) == len(frame):
-        for field in ("num_inliers", "is_keyframe", "time_cost", "reset_count", "evaluation_segment_id"):
-            if field in vo_status:
-                frame[field] = vo_status[field].to_numpy(dtype=float)
+        for extra_field in ("num_inliers", "is_keyframe", "time_cost", "reset_count", "evaluation_segment_id"):
+            if extra_field in vo_status:
+                frame[extra_field] = vo_status[extra_field].to_numpy(dtype=float)
     return frame
 
 
@@ -4436,11 +4436,6 @@ def report_to_json(report: dict[str, Any]) -> str:
 def _jsonable_report(report: dict[str, Any]) -> dict[str, Any]:
     """report_to_json() 的入口包装，保持调用语义清晰。"""
     return _jsonable_value(report)
-
-
-def _jsonable_dict(data: dict[str, Any]) -> dict[str, Any]:
-    """兼容旧调用的 dict 转 JSON 工具。"""
-    return _jsonable_value(data)
 
 
 def _jsonable_value(value: Any) -> Any:

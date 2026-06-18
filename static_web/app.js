@@ -1,9 +1,11 @@
 const state = {
-  pyodide: null,
-  evaluateVlocBundleJson: null,
-  evaluateVoBundleJson: null,
+  worker: null,
+  workerReady: false,
+  workerRequestId: 0,
+  workerRequests: new Map(),
   report: null,
   loadingStep: "",
+  chartRenderToken: 0,
   activePointSelectionChartId: null,
   focusedPointSelectionId: null,
   pointSelectionSequence: 0,
@@ -29,7 +31,6 @@ const els = {
   logDirButton: document.getElementById("logDirButton"),
   dataDirStatus: document.getElementById("dataDirStatus"),
   logDirStatus: document.getElementById("logDirStatus"),
-  modeAndAlignmentSection: document.getElementById("modeAndAlignmentSection"),
   vlocChartDirectorySection: document.getElementById("vlocChartDirectorySection"),
   vlocChartList: document.getElementById("vlocChartList"),
   vlocChartSelectAll: document.getElementById("vlocChartSelectAll"),
@@ -149,17 +150,13 @@ function wireEvents() {
   els.clearAllPointSelections?.addEventListener("click", clearAllPointSelections);
   document.addEventListener("keydown", handlePointSelectionKeydown);
   els.runButton.addEventListener("click", runEvaluation);
-  els.downloadJson.addEventListener("click", () => downloadText("vo_evaluation_metrics.json", JSON.stringify(state.report, null, 2), "application/json"));
-  els.downloadPoseCsv.addEventListener("click", () => downloadText("vo_per_pose_errors.csv", toCsv(state.report?.per_pose || []), "text/csv"));
-  els.downloadSegmentCsv.addEventListener("click", () => downloadText("vo_segment_errors.csv", toCsv(state.report?.segment_records || []), "text/csv"));
-  els.downloadWorstCsv.addEventListener("click", () => downloadText("vo_worst_segments.csv", toCsv(state.report?.worst_segments || []), "text/csv"));
+  els.downloadJson.addEventListener("click", downloadReportJson);
+  els.downloadPoseCsv.addEventListener("click", () => downloadReportCsvSlice("per_pose", "vo_per_pose_errors.csv"));
+  els.downloadSegmentCsv.addEventListener("click", () => downloadReportCsvSlice("segment_records", "vo_segment_errors.csv"));
+  els.downloadWorstCsv.addEventListener("click", () => downloadReportCsvSlice("worst_segments", "vo_worst_segments.csv"));
   els.downloadConfigJson.addEventListener("click", () => downloadText("vo_evaluation_config.json", JSON.stringify(state.report?.config || {}, null, 2), "application/json"));
-  els.downloadTrajectoryExcel.addEventListener("click", () => downloadBytes(
-    "vo_trajectory_exports.xlsx",
-    buildTrajectoryWorkbook(state.report?.trajectory_exports || {}),
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ));
-  els.downloadHtml.addEventListener("click", () => downloadText("vo_evaluation_report.html", buildHtmlReport(), "text/html"));
+  els.downloadTrajectoryExcel.addEventListener("click", downloadTrajectoryExcel);
+  els.downloadHtml.addEventListener("click", downloadHtmlReport);
   updateEntryModeUi();
   renderVlocChartDirectory();
   renderVoChartDirectory();
@@ -171,59 +168,55 @@ async function initPyodide() {
   if (window.location.protocol === "file:") {
     throw new Error("local_file_protocol");
   }
-  if (typeof loadPyodide !== "function") {
-    throw new Error("pyodide_script_missing");
-  }
-
-  state.loadingStep = "pyodide";
-  els.status.textContent = "加载 Pyodide...";
-  state.pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX_URL });
-
+  state.loadingStep = "worker";
+  els.status.textContent = "加载后台运行环境...";
+  state.worker = new Worker("./worker.js");
+  state.worker.addEventListener("message", handleWorkerMessage);
+  state.worker.addEventListener("error", (event) => {
+    rejectPendingWorkerRequests(event.message || "worker_error");
+  });
   state.loadingStep = "packages";
-  els.status.textContent = "加载 numpy/pandas...";
-  await state.pyodide.loadPackage(["numpy", "pandas"]);
-
-  state.loadingStep = "local_python";
-  const [evaluatorCode, runnerCode] = await Promise.all([
-    fetchText("./py/evaluator.py"),
-    fetchText("./py/browser_runner.py"),
-  ]);
-
-  state.pyodide.FS.mkdirTree("/vo_eval");
-  state.pyodide.FS.writeFile("/vo_eval/__init__.py", "");
-  state.pyodide.FS.writeFile("/vo_eval/evaluator.py", evaluatorCode);
-  state.pyodide.FS.writeFile("/browser_runner.py", runnerCode);
-  state.pyodide.runPython(`
-import sys
-sys.path.insert(0, "/")
-from browser_runner import evaluate_vloc_bundle_json, evaluate_vo_bundle_json
-`);
-  state.evaluateVlocBundleJson = state.pyodide.globals.get("evaluate_vloc_bundle_json");
-  state.evaluateVoBundleJson = state.pyodide.globals.get("evaluate_vo_bundle_json");
+  els.status.textContent = "后台加载 Pyodide/numpy/pandas...";
+  await workerRequest("init", { pyodideIndexUrl: PYODIDE_INDEX_URL });
+  state.workerReady = true;
 }
 
-async function fetchText(url) {
-  let response;
-  const cacheBust = `cache_bust=${Date.now()}`;
-  const requestUrl = `${url}${url.includes("?") ? "&" : "?"}${cacheBust}`;
-  try {
-    response = await fetch(requestUrl, { cache: "no-store" });
-  } catch (error) {
-    throw new Error(`local_fetch_failed:${url}:${error.message}`);
+function handleWorkerMessage(event) {
+  const { id, ok, result, error } = event.data || {};
+  const request = state.workerRequests.get(id);
+  if (!request) {
+    return;
   }
-  if (!response.ok) {
-    throw new Error(`local_fetch_status:${url}:${response.status}`);
+  state.workerRequests.delete(id);
+  if (ok) {
+    request.resolve(result);
+  } else {
+    request.reject(new Error(error || "worker_request_failed"));
   }
-  return response.text();
+}
+
+function workerRequest(type, payload = {}) {
+  if (!state.worker) {
+    return Promise.reject(new Error("worker_not_created"));
+  }
+  const id = ++state.workerRequestId;
+  return new Promise((resolve, reject) => {
+    state.workerRequests.set(id, { resolve, reject });
+    state.worker.postMessage({ id, type, payload });
+  });
+}
+
+function rejectPendingWorkerRequests(message) {
+  for (const request of state.workerRequests.values()) {
+    request.reject(new Error(message));
+  }
+  state.workerRequests.clear();
 }
 
 function describeRuntimeError(error) {
   const message = error?.message || String(error);
   if (message === "local_file_protocol") {
     return "当前页面是直接打开的本地 index.html。请进入 static_web 目录后运行 python3 -m http.server 8765，再访问 http://localhost:8765/；公网部署时也必须通过 http/https URL 访问。";
-  }
-  if (message === "pyodide_script_missing") {
-    return "Pyodide 脚本没有加载成功。请检查网络是否能访问 cdn.jsdelivr.net，或部署时改用可访问的 Pyodide CDN/本地镜像。";
   }
   if (message.startsWith("local_fetch_failed:")) {
     const [, url] = message.split(":");
@@ -243,7 +236,7 @@ function describeRuntimeError(error) {
 }
 
 function updateRunButton() {
-  const hasRuntime = Boolean(state.evaluateVlocBundleJson && state.evaluateVoBundleJson);
+  const hasRuntime = Boolean(state.workerReady);
   const missing = missingBundleFiles();
   els.runButton.disabled = !(hasRuntime && missing.length === 0);
 }
@@ -255,29 +248,18 @@ async function runEvaluation() {
     const entryMode = valueOf("entryMode");
     const payload = await buildBundlePayload(entryMode);
     const config = buildConfig();
-    const reportJson = entryMode === "vloc"
-      ? state.evaluateVlocBundleJson(
-        payload.imuText,
-        payload.estimateText,
-        payload.homePointText,
-        payload.calibRawText,
-        JSON.stringify(config),
-        payload.imuName,
-        payload.estimateName,
-        payload.homePointName,
-        payload.calibRawName,
-      )
-      : state.evaluateVoBundleJson(
-        payload.imuText,
-        payload.estimateText,
-        payload.homePointText,
-        payload.calibRawText,
-        JSON.stringify(config),
-        payload.imuName,
-        payload.estimateName,
-        payload.homePointName,
-        payload.calibRawName,
-      );
+    const reportJson = await workerRequest("evaluate", {
+      entryMode,
+      imuText: payload.imuText,
+      estimateText: payload.estimateText,
+      homePointText: payload.homePointText,
+      calibRawText: payload.calibRawText,
+      configJson: JSON.stringify(config),
+      imuName: payload.imuName,
+      estimateName: payload.estimateName,
+      homePointName: payload.homePointName,
+      calibRawName: payload.calibRawName,
+    });
     state.report = JSON.parse(String(reportJson));
     renderReport(state.report);
     enableDownloads(true);
@@ -445,6 +427,16 @@ function visibleChartIdsForEntryMode(entryMode) {
   return entryMode === "vloc" ? VLOC_VISIBLE_CHART_IDS : VO_VISIBLE_CHART_IDS;
 }
 
+function selectedChartIdsForEntryMode(entryMode) {
+  if (entryMode === "vloc") {
+    return selectedVlocChartIds();
+  }
+  if (entryMode === "vo") {
+    return selectedVoChartIds();
+  }
+  return new Set();
+}
+
 function selectedVlocChartIds() {
   if (!(state.vlocSelectedChartIds instanceof Set)) {
     state.vlocSelectedChartIds = new Set(VLOC_VISIBLE_CHART_IDS);
@@ -498,8 +490,10 @@ function handleVlocChartDirectoryChange(event) {
     selected.add(chartId);
   } else {
     selected.delete(chartId);
+    purgeChart(chartId);
   }
   applyEntryModeChartVisibility(reportEntryMode(state.report));
+  scheduleRenderCharts(state.report);
 }
 
 function handleVoChartDirectoryChange(event) {
@@ -513,20 +507,26 @@ function handleVoChartDirectoryChange(event) {
     selected.add(chartId);
   } else {
     selected.delete(chartId);
+    purgeChart(chartId);
   }
   applyEntryModeChartVisibility(reportEntryMode(state.report));
+  scheduleRenderCharts(state.report);
 }
 
 function setVlocChartDirectorySelection(chartIdsToShow) {
   state.vlocSelectedChartIds = new Set(chartIdsToShow);
   renderVlocChartDirectory();
   applyEntryModeChartVisibility(reportEntryMode(state.report));
+  purgeUnselectedCharts(reportEntryMode(state.report));
+  scheduleRenderCharts(state.report);
 }
 
 function setVoChartDirectorySelection(chartIdsToShow) {
   state.voSelectedChartIds = new Set(chartIdsToShow);
   renderVoChartDirectory();
   applyEntryModeChartVisibility(reportEntryMode(state.report));
+  purgeUnselectedCharts(reportEntryMode(state.report));
+  scheduleRenderCharts(state.report);
 }
 
 function selectAllVlocChartDirectory() {
@@ -1079,6 +1079,7 @@ function applyEntryModeChartVisibility(entryMode) {
 
 function resetRenderedReport() {
   state.report = null;
+  state.chartRenderToken += 1;
   resetPointSelectionState();
   clearMessage();
   if (els.metrics) {
@@ -1111,9 +1112,6 @@ function updateEntryModeUi() {
   document.querySelectorAll("[data-entry-show]").forEach((node) => {
     node.hidden = !entryModeMatchesRule(node.dataset.entryShow, entryMode);
   });
-  if (els.modeAndAlignmentSection) {
-    els.modeAndAlignmentSection.hidden = entryMode === "vloc" || entryMode === "vo";
-  }
   applyEntryModeTitles(entryMode);
   renderVlocChartDirectory();
   renderVoChartDirectory();
@@ -1141,28 +1139,8 @@ function numberOf(id) {
   return value;
 }
 
-function integerOf(id) {
-  return Math.trunc(numberOf(id));
-}
-
-function boolOf(id) {
-  return valueOf(id) === "true";
-}
-
-function parseFloatList(text) {
-  const values = text
-    .replaceAll(";", ",")
-    .split(",")
-    .map((item) => Number(item.trim()))
-    .filter((value) => Number.isFinite(value) && value > 0);
-  if (!values.length) {
-    throw new Error("至少需要一个子轨迹长度");
-  }
-  return values;
-}
-
 function setBusy(isBusy) {
-  const hasRuntime = Boolean(state.evaluateVlocBundleJson && state.evaluateVoBundleJson);
+  const hasRuntime = Boolean(state.workerReady);
   els.runButton.disabled = isBusy || !hasRuntime || missingBundleFiles().length > 0;
   els.runButton.textContent = isBusy ? "计算中..." : "运行评估";
 }
@@ -1180,7 +1158,7 @@ function renderReport(report) {
   updateEntryModeUi();
   renderMetrics(report);
   renderMessages(report);
-  renderCharts(report);
+  scheduleRenderCharts(report);
 }
 
 function renderMetrics(report) {
@@ -1298,230 +1276,345 @@ function renderMessages(report) {
   }
 }
 
-function renderCharts(report) {
+function scheduleRenderCharts(report) {
+  if (!report) {
+    return;
+  }
+  const entryMode = reportEntryMode(report);
+  applyEntryModeChartVisibility(entryMode);
+  purgeUnselectedCharts(entryMode);
+  const token = ++state.chartRenderToken;
+  const selectedIds = Array.from(selectedChartIdsForEntryMode(entryMode)).filter((id) => visibleChartIdsForEntryMode(entryMode).includes(id));
+  (async () => {
+    for (const chartId of selectedIds) {
+      if (token !== state.chartRenderToken) {
+        return;
+      }
+      await nextRenderFrame();
+      if (token !== state.chartRenderToken) {
+        return;
+      }
+      renderCharts(report, chartId);
+    }
+  })();
+}
+
+function nextRenderFrame() {
+  if (typeof requestAnimationFrame === "function") {
+    return new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  if (typeof setTimeout === "function") {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return Promise.resolve();
+}
+
+function purgeChart(chartId) {
+  const node = document.getElementById(chartId);
+  if (!node) {
+    return;
+  }
+  if (typeof Plotly !== "undefined" && typeof Plotly.purge === "function") {
+    Plotly.purge(chartId);
+  }
+  node.innerHTML = "";
+}
+
+function purgeUnselectedCharts(entryMode) {
+  const selectedIds = selectedChartIdsForEntryMode(entryMode);
+  const visibleIds = new Set(visibleChartIdsForEntryMode(entryMode));
+  for (const chartId of chartIds) {
+    if (!visibleIds.has(chartId) || selectedIds.has(chartId)) {
+      continue;
+    }
+    purgeChart(chartId);
+  }
+}
+
+function shouldRenderChart(chartId, onlyChartId, selectedIds) {
+  return (!onlyChartId || onlyChartId === chartId) && selectedIds.has(chartId);
+}
+
+function renderCharts(report, onlyChartId = null) {
   const entryMode = reportEntryMode(report);
   const isVloc = entryMode === "vloc";
   applyEntryModeChartVisibility(entryMode);
+  const selectedIds = selectedChartIdsForEntryMode(entryMode);
   if (isVloc) {
-    renderVlocCharts(report);
+    renderVlocCharts(report, onlyChartId, selectedIds);
     return;
   }
 
-  const perPose = report.per_pose || [];
   const details = report.vo_details || {};
+  const comparison = details.comparison || [];
+  const perPose = comparison.length ? comparison : (report.per_pose || []);
+  const isComparisonRows = comparison.length > 0;
   const navStatus = details.nav_status || [];
   const voStatus = details.vo_status || [];
   const rpeRows = report.trajectory_exports?.rpe_per_frame || [];
+  const navPositionFields = isComparisonRows ? ["nav_x_m", "nav_y_m", "nav_z_m"] : ["gt_x_m", "gt_y_m", "gt_z_m"];
+  const voPositionFields = isComparisonRows ? ["vo_x_aligned_m", "vo_y_aligned_m", "vo_z_aligned_m"] : ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"];
+  const positionErrorFields = isComparisonRows ? ["position_error_x_m", "position_error_y_m", "position_error_z_m"] : ["x_error_m", "y_error_m", "z_error_m"];
+  const positionErrorNormField = isComparisonRows ? "position_error_3d_m" : "error_m";
+  const horizontalErrorField = isComparisonRows ? "horizontal_position_error_m" : "horizontal_error_m";
 
-  const [gtX3d, gtY3d, gtZ3d] = segmentedValues(perPose, ["gt_x_m", "gt_y_m", "gt_z_m"], "visual_segment_id");
-  const [estX3d, estY3d, estZ3d] = segmentedValues(perPose, ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"], "visual_segment_id");
-  Plotly.newPlot("trajectory3d", [
-    { x: gtX3d, y: gtY3d, z: gtZ3d, mode: "lines", type: "scatter3d", name: "Ground truth" },
-    { x: estX3d, y: estY3d, z: estZ3d, mode: "lines", type: "scatter3d", name: "VO aligned" },
-    ...segmentEndpointTraces3d(perPose, ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"], "vo", {
-      startColor: "#9333ea",
-      endColor: "#ef4444",
-      startSymbol: "diamond",
-      endSymbol: "x",
-      markerSize: 5,
-      markerLineWidth: 1,
-      textSize: 10,
-    }),
-  ], layout("3D 轨迹", { scene: { xaxis: { title: "x m" }, yaxis: { title: "y m" }, zaxis: { title: "z m" } } }));
+  if (shouldRenderChart("trajectory3d", onlyChartId, selectedIds)) {
+    const [gtX3d, gtY3d, gtZ3d] = segmentedValues(perPose, navPositionFields, "visual_segment_id");
+    const [estX3d, estY3d, estZ3d] = segmentedValues(perPose, voPositionFields, "visual_segment_id");
+    Plotly.newPlot("trajectory3d", [
+      { x: gtX3d, y: gtY3d, z: gtZ3d, mode: "lines", type: "scatter3d", name: "Ground truth" },
+      { x: estX3d, y: estY3d, z: estZ3d, mode: "lines", type: "scatter3d", name: "VO aligned" },
+      ...segmentEndpointTraces3d(perPose, voPositionFields, "vo", {
+        startColor: "#9333ea",
+        endColor: "#ef4444",
+        startSymbol: "diamond",
+        endSymbol: "x",
+        markerSize: 5,
+        markerLineWidth: 1,
+        textSize: 10,
+      }),
+    ], layout("3D 轨迹", { scene: { xaxis: { title: "x m" }, yaxis: { title: "y m" }, zaxis: { title: "z m" } } }));
+  }
 
-  const [dist3d, err3d] = segmentedValues(perPose, ["distance_m", "error_m"]);
-  const [distH, errH] = segmentedValues(perPose, ["distance_m", "horizontal_error_m"]);
-  Plotly.newPlot("errorDistance", [
-    { x: dist3d, y: err3d, mode: "lines", type: "scatter", name: "3D error" },
-    { x: distH, y: errH, mode: "lines", type: "scatter", name: "horizontal" },
-  ], layout("ATE 绝对位姿误差", { xaxis: { title: "distance m" }, yaxis: { title: "error m" } }));
+  if (shouldRenderChart("errorDistance", onlyChartId, selectedIds)) {
+    const [dist3d, err3d] = segmentedValues(perPose, ["distance_m", positionErrorNormField]);
+    const [distH, errH] = segmentedValues(perPose, ["distance_m", horizontalErrorField]);
+    Plotly.newPlot("errorDistance", [
+      { x: dist3d, y: err3d, mode: "lines", type: "scatter", name: "3D error" },
+      { x: distH, y: errH, mode: "lines", type: "scatter", name: "horizontal" },
+    ], layout("ATE 绝对位姿误差", { xaxis: { title: "distance m" }, yaxis: { title: "error m" } }));
+  }
 
-  renderMultiFieldTimeChart("navStatusModes", navStatus, "导航状态信息", [
-    { field: "flight_mode", name: "flight_mode" },
-    { field: "navi_mode", name: "navi_mode" },
-    { field: "rtk_yaw", name: "rtk_yaw" },
-    { field: "rtk_alti", name: "rtk_alti" },
-  ], { yTitle: "state" });
-  renderSingleCompositeChart("navVelocity", navStatus, {
-    title: "导航速度信息",
-    rows: [
-      { label: "vx", field: "vx", unit: "m/s" },
-      { label: "vy", field: "vy", unit: "m/s" },
-      { label: "vz", field: "vz", unit: "m/s" },
-      { label: "velocity_norm", field: "velocity_norm", unit: "m/s" },
-    ],
-  });
-  renderMultiFieldTimeChart("navResetCounts", navStatus, "导航 reset 计数", [
-    { field: "position_reset_count", name: "position_reset_count" },
-    { field: "altitude_reset_count", name: "altitude_reset_count" },
-    { field: "heading_reset_count", name: "heading_reset_count" },
-  ], { yTitle: "count" });
-  renderSingleCompositeChart("voStatus", voStatus, {
-    title: "VO 状态信息",
-    rows: [
-      { label: "num_inliers", field: "num_inliers", unit: "value" },
-      { label: "is_keyframe", field: "is_keyframe", unit: "value" },
-      { label: "time_cost", field: "time_cost", unit: "ms" },
-      { label: "reset_count", field: "reset_count", unit: "value" },
-    ],
-  });
-  renderPairCompositeChart("positionCompareComposite", perPose, {
-    title: "位置随时间变化",
-    leftName: "Ground truth",
-    rightName: "VO aligned",
-    rows: [
-      { label: "X", left: "gt_x_m", right: "est_x_aligned_m", unit: "m" },
-      { label: "Y", left: "gt_y_m", right: "est_y_aligned_m", unit: "m" },
-      { label: "Z", left: "gt_z_m", right: "est_z_aligned_m", unit: "m" },
-    ],
-  });
-  renderPairCompositeChart("attitudeCompareComposite", perPose, {
-    title: "姿态随时间变化",
-    leftName: "Ground truth",
-    rightName: "VO aligned",
-    rows: [
-      { label: "Yaw", left: "gt_yaw_deg", right: "est_yaw_aligned_deg", unit: "deg", unwrap: true },
-      { label: "Pitch", left: "gt_pitch_deg", right: "est_pitch_aligned_deg", unit: "deg", unwrap: true },
-      { label: "Roll", left: "gt_roll_deg", right: "est_roll_aligned_deg", unit: "deg", unwrap: true },
-    ],
-  });
-  renderSingleCompositeChart("positionErrorComposite", perPose, {
-    title: "位置误差随时间变化",
-    rows: [
-      { label: "X 误差", field: "x_error_m", unit: "m" },
-      { label: "Y 误差", field: "y_error_m", unit: "m" },
-      { label: "Z 误差", field: "z_error_m", unit: "m" },
-    ],
-  });
-  renderSingleCompositeChart("attitudeErrorComposite", perPose, {
-    title: "姿态误差随时间变化",
-    rows: [
-      { label: "Yaw 误差", field: "yaw_error_signed_deg", unit: "deg", unwrap: true },
-      { label: "Pitch 误差", field: "pitch_error_signed_deg", unit: "deg", unwrap: true },
-      { label: "Roll 误差", field: "roll_error_signed_deg", unit: "deg", unwrap: true },
-    ],
-  });
+  if (shouldRenderChart("navStatusModes", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("navStatusModes", navStatus, "导航状态信息", [
+      { field: "flight_mode", name: "flight_mode" },
+      { field: "navi_mode", name: "navi_mode" },
+      { field: "rtk_yaw", name: "rtk_yaw" },
+      { field: "rtk_alti", name: "rtk_alti" },
+    ], { yTitle: "state" });
+  }
+  if (shouldRenderChart("navVelocity", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("navVelocity", navStatus, {
+      title: "导航速度信息",
+      rows: [
+        { label: "vx", field: "vx", unit: "m/s" },
+        { label: "vy", field: "vy", unit: "m/s" },
+        { label: "vz", field: "vz", unit: "m/s" },
+        { label: "velocity_norm", field: "velocity_norm", unit: "m/s" },
+      ],
+    });
+  }
+  if (shouldRenderChart("navResetCounts", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("navResetCounts", navStatus, "导航 reset 计数", [
+      { field: "position_reset_count", name: "position_reset_count" },
+      { field: "altitude_reset_count", name: "altitude_reset_count" },
+      { field: "heading_reset_count", name: "heading_reset_count" },
+    ], { yTitle: "count" });
+  }
+  if (shouldRenderChart("voStatus", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("voStatus", voStatus, {
+      title: "VO 状态信息",
+      rows: [
+        { label: "num_inliers", field: "num_inliers", unit: "value" },
+        { label: "is_keyframe", field: "is_keyframe", unit: "value" },
+        { label: "time_cost", field: "time_cost", unit: "ms" },
+        { label: "reset_count", field: "reset_count", unit: "value" },
+      ],
+    });
+  }
+  if (shouldRenderChart("positionCompareComposite", onlyChartId, selectedIds)) {
+    renderPairCompositeChart("positionCompareComposite", perPose, {
+      title: "位置随时间变化",
+      leftName: "Ground truth",
+      rightName: "VO aligned",
+      rows: [
+        { label: "X", left: navPositionFields[0], right: voPositionFields[0], unit: "m" },
+        { label: "Y", left: navPositionFields[1], right: voPositionFields[1], unit: "m" },
+        { label: "Z", left: navPositionFields[2], right: voPositionFields[2], unit: "m" },
+      ],
+    });
+  }
+  if (shouldRenderChart("attitudeCompareComposite", onlyChartId, selectedIds)) {
+    renderPairCompositeChart("attitudeCompareComposite", perPose, {
+      title: "姿态随时间变化",
+      leftName: "Ground truth",
+      rightName: "VO aligned",
+      rows: [
+        { label: "Yaw", left: isComparisonRows ? "nav_yaw_deg" : "gt_yaw_deg", right: isComparisonRows ? "vo_yaw_aligned_deg" : "est_yaw_aligned_deg", unit: "deg", unwrap: true },
+        { label: "Pitch", left: isComparisonRows ? "nav_pitch_deg" : "gt_pitch_deg", right: isComparisonRows ? "vo_pitch_aligned_deg" : "est_pitch_aligned_deg", unit: "deg", unwrap: true },
+        { label: "Roll", left: isComparisonRows ? "nav_roll_deg" : "gt_roll_deg", right: isComparisonRows ? "vo_roll_aligned_deg" : "est_roll_aligned_deg", unit: "deg", unwrap: true },
+      ],
+    });
+  }
+  if (shouldRenderChart("positionErrorComposite", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("positionErrorComposite", perPose, {
+      title: "位置误差随时间变化",
+      rows: [
+        { label: "X 误差", field: positionErrorFields[0], unit: "m" },
+        { label: "Y 误差", field: positionErrorFields[1], unit: "m" },
+        { label: "Z 误差", field: positionErrorFields[2], unit: "m" },
+      ],
+    });
+  }
+  if (shouldRenderChart("attitudeErrorComposite", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("attitudeErrorComposite", perPose, {
+      title: "姿态误差随时间变化",
+      rows: [
+        { label: "Yaw 误差", field: isComparisonRows ? "attitude_error_yaw_deg" : "yaw_error_signed_deg", unit: "deg", unwrap: true },
+        { label: "Pitch 误差", field: isComparisonRows ? "attitude_error_pitch_deg" : "pitch_error_signed_deg", unit: "deg", unwrap: true },
+        { label: "Roll 误差", field: isComparisonRows ? "attitude_error_roll_deg" : "roll_error_signed_deg", unit: "deg", unwrap: true },
+      ],
+    });
+  }
 
-  renderRpeTimeChart("rpeTranslationTime", rpeRows, {
-    title: "RPE 平移误差随时间变化",
-    field: "rpe_translation_m",
-    unit: "m",
-    name: "rpe_translation_m",
-  });
-  renderRpeTimeChart("rpeRotationTime", rpeRows, {
-    title: "RPE 旋转误差随时间变化",
-    field: "rpe_rotation_deg",
-    unit: "deg",
-    name: "rpe_rotation_deg",
-  });
+  if (shouldRenderChart("rpeTranslationTime", onlyChartId, selectedIds)) {
+    renderRpeTimeChart("rpeTranslationTime", rpeRows, {
+      title: "RPE 平移误差随时间变化",
+      field: "rpe_translation_m",
+      unit: "m",
+      name: "rpe_translation_m",
+    });
+  }
+  if (shouldRenderChart("rpeRotationTime", onlyChartId, selectedIds)) {
+    renderRpeTimeChart("rpeRotationTime", rpeRows, {
+      title: "RPE 旋转误差随时间变化",
+      field: "rpe_rotation_deg",
+      unit: "deg",
+      name: "rpe_rotation_deg",
+    });
+  }
 }
 
-function renderVlocCharts(report) {
+function renderVlocCharts(report, onlyChartId = null, selectedIds = selectedVlocChartIds()) {
   const details = report.vloc_details || {};
   const comparison = details.comparison || [];
   const navStatus = details.nav_status || [];
   const vlocStatus = details.vloc_status || [];
   const rows = comparison;
 
-  const [navN3d, navE3d, navD3d] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "nav_d_m"], "visual_segment_id");
-  const [vlocN3d, vlocE3d, vlocD3d] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "vloc_d_m"], "visual_segment_id");
-  Plotly.newPlot("trajectory3d", [
-    { x: navN3d, y: navE3d, z: navD3d, mode: "lines", type: "scatter3d", name: "nav" },
-    { x: vlocN3d, y: vlocE3d, z: vlocD3d, mode: "lines", type: "scatter3d", name: "vloc" },
-    ...segmentEndpointTraces3d(rows, ["vloc_n_m", "vloc_e_m", "vloc_d_m"], "vloc", {
-      startColor: "#9333ea",
-      endColor: "#ef4444",
-      startSymbol: "diamond",
-      endSymbol: "x",
-      markerSize: 5,
-      markerLineWidth: 1,
-      textSize: 10,
-    }),
-  ], layout("3D 轨迹", { scene: { xaxis: { title: "north m" }, yaxis: { title: "east m" }, zaxis: { title: "down m" } } }));
+  if (shouldRenderChart("trajectory3d", onlyChartId, selectedIds)) {
+    const [navN3d, navE3d, navD3d] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "nav_d_m"], "visual_segment_id");
+    const [vlocN3d, vlocE3d, vlocD3d] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "vloc_d_m"], "visual_segment_id");
+    Plotly.newPlot("trajectory3d", [
+      { x: navN3d, y: navE3d, z: navD3d, mode: "lines", type: "scatter3d", name: "nav" },
+      { x: vlocN3d, y: vlocE3d, z: vlocD3d, mode: "lines", type: "scatter3d", name: "vloc" },
+      ...segmentEndpointTraces3d(rows, ["vloc_n_m", "vloc_e_m", "vloc_d_m"], "vloc", {
+        startColor: "#9333ea",
+        endColor: "#ef4444",
+        startSymbol: "diamond",
+        endSymbol: "x",
+        markerSize: 5,
+        markerLineWidth: 1,
+        textSize: 10,
+      }),
+    ], layout("3D 轨迹", { scene: { xaxis: { title: "north m" }, yaxis: { title: "east m" }, zaxis: { title: "down m" } } }));
+  }
 
-  const [navN, navE, navTime] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "timestamp"]);
-  const [vlocN, vlocE, vlocTime] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "timestamp"]);
-  Plotly.newPlot("trajectoryXY", [
-    { x: navN, y: navE, customdata: navTime, mode: "lines", type: "scatter", name: "nav" },
-    { x: vlocN, y: vlocE, customdata: vlocTime, mode: "lines", type: "scatter", name: "vloc" },
-  ], layout("俯视 NE 轨迹", { xaxis: { title: "north m" }, yaxis: { title: "east m", scaleanchor: "x" } }));
-  ensurePointSelectionTools("trajectoryXY");
+  if (shouldRenderChart("trajectoryXY", onlyChartId, selectedIds)) {
+    const [navN, navE, navTime] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "timestamp"]);
+    const [vlocN, vlocE, vlocTime] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "timestamp"]);
+    Plotly.newPlot("trajectoryXY", [
+      { x: navN, y: navE, customdata: navTime, mode: "lines", type: "scatter", name: "nav" },
+      { x: vlocN, y: vlocE, customdata: vlocTime, mode: "lines", type: "scatter", name: "vloc" },
+    ], layout("俯视 NE 轨迹", { xaxis: { title: "north m" }, yaxis: { title: "east m", scaleanchor: "x" } }));
+    ensurePointSelectionTools("trajectoryXY");
+  }
 
-  renderMultiFieldTimeChart("errorDistance", rows, "误差随路程变化", [
-    { field: "position_error_3d_m", name: "3D position error" },
-    { field: "horizontal_position_error_m", name: "horizontal error" },
-    { field: "vertical_position_error_abs_m", name: "vertical abs error" },
-  ], { xField: "distance_m", xTitle: "distance m", yTitle: "error m" });
+  if (shouldRenderChart("errorDistance", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("errorDistance", rows, "误差随路程变化", [
+      { field: "position_error_3d_m", name: "3D position error" },
+      { field: "horizontal_position_error_m", name: "horizontal error" },
+      { field: "vertical_position_error_abs_m", name: "vertical abs error" },
+    ], { xField: "distance_m", xTitle: "distance m", yTitle: "error m" });
+  }
 
-  renderMultiFieldTimeChart("heightComparison", rows, "对地高随时间变化", [
-    { field: "nav_height_m", name: "nav height" },
-    { field: "vloc_height_m", name: "vloc height" },
-  ], { yTitle: "height m" });
-  renderPairCompositeChart("positionCompareComposite", rows, {
-    title: "NED 随时间变化",
-    leftName: "nav",
-    rightName: "vloc",
-    rows: [
-      { label: "N", left: "nav_n_m", right: "vloc_n_m", unit: "m" },
-      { label: "E", left: "nav_e_m", right: "vloc_e_m", unit: "m" },
-      { label: "D", left: "nav_d_m", right: "vloc_d_m", unit: "m" },
-    ],
-  });
-  renderPairCompositeChart("attitudeCompareComposite", rows, {
-    title: "YPR 随时间变化",
-    leftName: "nav",
-    rightName: "vloc",
-    rows: [
-      { label: "Yaw", left: "nav_yaw_deg", right: "vloc_yaw_deg", unit: "deg", unwrap: true },
-      { label: "Pitch", left: "nav_pitch_deg", right: "vloc_pitch_deg", unit: "deg", unwrap: true },
-      { label: "Roll", left: "nav_roll_deg", right: "vloc_roll_deg", unit: "deg", unwrap: true },
-    ],
-  });
-  renderSingleCompositeChart("positionErrorComposite", rows, {
-    title: "NED 误差随时间变化",
-    rows: [
-      { label: "N 误差", field: "position_error_n_m", unit: "m" },
-      { label: "E 误差", field: "position_error_e_m", unit: "m" },
-      { label: "D 误差", field: "position_error_d_m", unit: "m" },
-    ],
-  });
-  renderSingleCompositeChart("attitudeErrorComposite", rows, {
-    title: "YPR 误差随时间变化",
-    rows: [
-      { label: "Yaw 误差", field: "attitude_error_yaw_deg", unit: "deg", unwrap: true },
-      { label: "Pitch 误差", field: "attitude_error_pitch_deg", unit: "deg", unwrap: true },
-      { label: "Roll 误差", field: "attitude_error_roll_deg", unit: "deg", unwrap: true },
-    ],
-  });
+  if (shouldRenderChart("heightComparison", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("heightComparison", rows, "对地高随时间变化", [
+      { field: "nav_height_m", name: "nav height" },
+      { field: "vloc_height_m", name: "vloc height" },
+    ], { yTitle: "height m" });
+  }
+  if (shouldRenderChart("positionCompareComposite", onlyChartId, selectedIds)) {
+    renderPairCompositeChart("positionCompareComposite", rows, {
+      title: "NED 随时间变化",
+      leftName: "nav",
+      rightName: "vloc",
+      rows: [
+        { label: "N", left: "nav_n_m", right: "vloc_n_m", unit: "m" },
+        { label: "E", left: "nav_e_m", right: "vloc_e_m", unit: "m" },
+        { label: "D", left: "nav_d_m", right: "vloc_d_m", unit: "m" },
+      ],
+    });
+  }
+  if (shouldRenderChart("attitudeCompareComposite", onlyChartId, selectedIds)) {
+    renderPairCompositeChart("attitudeCompareComposite", rows, {
+      title: "YPR 随时间变化",
+      leftName: "nav",
+      rightName: "vloc",
+      rows: [
+        { label: "Yaw", left: "nav_yaw_deg", right: "vloc_yaw_deg", unit: "deg", unwrap: true },
+        { label: "Pitch", left: "nav_pitch_deg", right: "vloc_pitch_deg", unit: "deg", unwrap: true },
+        { label: "Roll", left: "nav_roll_deg", right: "vloc_roll_deg", unit: "deg", unwrap: true },
+      ],
+    });
+  }
+  if (shouldRenderChart("positionErrorComposite", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("positionErrorComposite", rows, {
+      title: "NED 误差随时间变化",
+      rows: [
+        { label: "N 误差", field: "position_error_n_m", unit: "m" },
+        { label: "E 误差", field: "position_error_e_m", unit: "m" },
+        { label: "D 误差", field: "position_error_d_m", unit: "m" },
+      ],
+    });
+  }
+  if (shouldRenderChart("attitudeErrorComposite", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("attitudeErrorComposite", rows, {
+      title: "YPR 误差随时间变化",
+      rows: [
+        { label: "Yaw 误差", field: "attitude_error_yaw_deg", unit: "deg", unwrap: true },
+        { label: "Pitch 误差", field: "attitude_error_pitch_deg", unit: "deg", unwrap: true },
+        { label: "Roll 误差", field: "attitude_error_roll_deg", unit: "deg", unwrap: true },
+      ],
+    });
+  }
 
-  renderMultiFieldTimeChart("navStatusModes", navStatus, "导航状态信息", [
-    { field: "flight_mode", name: "flight_mode" },
-    { field: "navi_mode", name: "navi_mode" },
-    { field: "rtk_yaw", name: "rtk_yaw" },
-    { field: "rtk_alti", name: "rtk_alti" },
-  ], { yTitle: "state" });
-  renderSingleCompositeChart("navVelocity", navStatus, {
-    title: "导航速度信息",
-    rows: [
-      { label: "vx", field: "vx", unit: "m/s" },
-      { label: "vy", field: "vy", unit: "m/s" },
-      { label: "vz", field: "vz", unit: "m/s" },
-      { label: "velocity_norm", field: "velocity_norm", unit: "m/s" },
-    ],
-  });
-  renderMultiFieldTimeChart("navResetCounts", navStatus, "导航 reset 计数", [
-    { field: "position_reset_count", name: "position_reset_count" },
-    { field: "altitude_reset_count", name: "altitude_reset_count" },
-    { field: "heading_reset_count", name: "heading_reset_count" },
-  ], { yTitle: "count" });
-  renderSingleCompositeChart("vlocStatus", vlocStatus, {
-    title: "VLOC 状态信息",
-    rows: [
-      { label: "vloc_mode", field: "vloc_mode", unit: "value" },
-      { label: "num_inliers", field: "num_inliers", unit: "value" },
-      { label: "reset_count", field: "reset_count", unit: "value" },
-    ],
-  });
+  if (shouldRenderChart("navStatusModes", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("navStatusModes", navStatus, "导航状态信息", [
+      { field: "flight_mode", name: "flight_mode" },
+      { field: "navi_mode", name: "navi_mode" },
+      { field: "rtk_yaw", name: "rtk_yaw" },
+      { field: "rtk_alti", name: "rtk_alti" },
+    ], { yTitle: "state" });
+  }
+  if (shouldRenderChart("navVelocity", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("navVelocity", navStatus, {
+      title: "导航速度信息",
+      rows: [
+        { label: "vx", field: "vx", unit: "m/s" },
+        { label: "vy", field: "vy", unit: "m/s" },
+        { label: "vz", field: "vz", unit: "m/s" },
+        { label: "velocity_norm", field: "velocity_norm", unit: "m/s" },
+      ],
+    });
+  }
+  if (shouldRenderChart("navResetCounts", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("navResetCounts", navStatus, "导航 reset 计数", [
+      { field: "position_reset_count", name: "position_reset_count" },
+      { field: "altitude_reset_count", name: "altitude_reset_count" },
+      { field: "heading_reset_count", name: "heading_reset_count" },
+    ], { yTitle: "count" });
+  }
+  if (shouldRenderChart("vlocStatus", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("vlocStatus", vlocStatus, {
+      title: "VLOC 状态信息",
+      rows: [
+        { label: "vloc_mode", field: "vloc_mode", unit: "value" },
+        { label: "num_inliers", field: "num_inliers", unit: "value" },
+        { label: "reset_count", field: "reset_count", unit: "value" },
+      ],
+    });
+  }
 }
 
 function renderPairCompositeChart(id, rows, spec) {
@@ -2083,6 +2176,57 @@ function enableDownloads(enabled) {
   });
 }
 
+async function downloadReportJson() {
+  try {
+    const text = state.workerReady
+      ? String(await workerRequest("slice", { sliceName: "full_report" }))
+      : JSON.stringify(state.report || {}, null, 2);
+    downloadText("vo_evaluation_metrics.json", text, "application/json");
+  } catch (error) {
+    showMessage(`导出 JSON 失败：${error.message}`, "error");
+  }
+}
+
+async function downloadReportCsvSlice(sliceName, filename) {
+  try {
+    const rows = await fetchReportSlice(sliceName);
+    downloadText(filename, toCsv(Array.isArray(rows) ? rows : []), "text/csv");
+  } catch (error) {
+    showMessage(`导出 CSV 失败：${error.message}`, "error");
+  }
+}
+
+async function downloadTrajectoryExcel() {
+  try {
+    const trajectoryExports = await fetchReportSlice("trajectory_exports");
+    downloadBytes(
+      "vo_trajectory_exports.xlsx",
+      buildTrajectoryWorkbook(trajectoryExports || {}),
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+  } catch (error) {
+    showMessage(`导出 Excel 失败：${error.message}`, "error");
+  }
+}
+
+async function downloadHtmlReport() {
+  try {
+    downloadText("vo_evaluation_report.html", buildHtmlReport(state.report || {}), "text/html");
+  } catch (error) {
+    showMessage(`导出 HTML 失败：${error.message}`, "error");
+  }
+}
+
+async function fetchReportSlice(sliceName) {
+  if (!state.workerReady) {
+    if (sliceName === "full_report") return state.report || {};
+    if (sliceName === "trajectory_exports") return state.report?.trajectory_exports || {};
+    return state.report?.[sliceName] || (sliceName === "config" ? {} : []);
+  }
+  const text = await workerRequest("slice", { sliceName });
+  return JSON.parse(String(text));
+}
+
 function toCsv(rows) {
   if (!rows.length) {
     return "";
@@ -2106,8 +2250,8 @@ function csvCell(value) {
   return text;
 }
 
-function buildHtmlReport() {
-  const report = reportForHtmlExport(state.report || {});
+function buildHtmlReport(sourceReport = state.report || {}) {
+  const report = reportForHtmlExport(sourceReport || {});
   const tuningRows = buildTuningConclusionRows(report);
   const status = reportDiagnosticStatus(tuningRows);
   const healthCards = buildHealthDashboardCards(report);
@@ -2265,7 +2409,12 @@ function downloadBlob(filename, text, mime) {
 }
 
 function reportForHtmlExport(report) {
-  const { trajectory_exports: _trajectoryExports, ...htmlReport } = report || {};
+  const {
+    trajectory_exports: _trajectoryExports,
+    per_pose: _perPose,
+    segment_records: _segmentRecords,
+    ...htmlReport
+  } = report || {};
   return htmlReport;
 }
 
