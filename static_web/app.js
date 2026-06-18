@@ -286,8 +286,10 @@ async function runEvaluation() {
 function buildConfig() {
   const entryMode = valueOf("entryMode");
   const isVloc = entryMode === "vloc";
-  const maxTimeDiff = isVloc ? -1 : numberOf("maxTimeDiff");
-  const maxInterpolationGap = isVloc ? 1.0 : numberOf("maxInterpolationGap");
+  const isVo = entryMode === "vo";
+  const isFixedWorkflow = isVloc || isVo;
+  const maxTimeDiff = isFixedWorkflow ? -1 : numberOf("maxTimeDiff");
+  const maxInterpolationGap = isFixedWorkflow ? 1.0 : numberOf("maxInterpolationGap");
   const rpeDeltaValue = isVloc ? 1.0 : numberOf("rpeDeltaValue");
   const rpeDeltaUnit = isVloc ? "frames" : valueOf("rpeDeltaUnit");
   const scaleDeltaValue = isVloc ? 1.0 : numberOf("scaleDeltaValue");
@@ -295,16 +297,16 @@ function buildConfig() {
   const segmentLengths = isVloc ? [50, 100, 200, 500, 1000, 2000, 5000] : parseFloatList(valueOf("segmentLengths"));
   return {
     profile: "monocular_long_range_uav",
-    alignment: isVloc ? "none" : valueOf("alignment"),
-    orientation_correction: isVloc ? "none" : valueOf("orientationCorrection"),
-    association_mode: isVloc ? "interpolate_gt" : valueOf("associationMode"),
-    max_time_diff_s: isVloc ? null : (maxTimeDiff < 0 ? null : maxTimeDiff),
-    max_interpolation_gap_s: isVloc ? 1.0 : (maxInterpolationGap < 0 ? null : maxInterpolationGap),
-    allow_extrapolation: isVloc ? false : boolOf("allowExtrapolation"),
-    interpolate_rotation: isVloc ? true : boolOf("interpolateRotation"),
+    alignment: isVloc ? "none" : (isVo ? "sim3" : valueOf("alignment")),
+    orientation_correction: isFixedWorkflow ? "none" : valueOf("orientationCorrection"),
+    association_mode: isFixedWorkflow ? "interpolate_gt" : valueOf("associationMode"),
+    max_time_diff_s: isFixedWorkflow ? null : (maxTimeDiff < 0 ? null : maxTimeDiff),
+    max_interpolation_gap_s: isFixedWorkflow ? 1.0 : (maxInterpolationGap < 0 ? null : maxInterpolationGap),
+    allow_extrapolation: isFixedWorkflow ? false : boolOf("allowExtrapolation"),
+    interpolate_rotation: isFixedWorkflow ? true : boolOf("interpolateRotation"),
     interpolation_position_method: "linear",
     interpolation_rotation_method: "slerp",
-    time_offset_s: isVloc ? 0.0 : numberOf("timeOffset"),
+    time_offset_s: isFixedWorkflow ? 0.0 : numberOf("timeOffset"),
     rpe_delta_frames: rpeDeltaUnit === "frames" ? Math.max(1, Math.round(rpeDeltaValue)) : 1,
     rpe_delta_value: rpeDeltaValue,
     rpe_delta_unit: rpeDeltaUnit,
@@ -317,7 +319,7 @@ function buildConfig() {
     max_segments_per_length: isVloc ? 10000 : integerOf("maxSegments"),
     segment_step_frames: isVloc ? 10 : integerOf("segmentStep"),
     max_segment_length_diff_ratio: isVloc ? 0.05 : numberOf("lengthTolerance"),
-    continuous_segment_policy: isVloc ? "vo_timestamps" : valueOf("segmentPolicy"),
+    continuous_segment_policy: isVloc ? "vo_timestamps" : (isVo ? "segments" : valueOf("segmentPolicy")),
     discontinuity_step_m: isVloc ? 100 : numberOf("discontinuityStep"),
     discontinuity_time_gap_s: isVloc ? 5 : numberOf("discontinuityGap"),
     divergence_abs_m: isVloc ? 30 : numberOf("divergenceAbs"),
@@ -1046,19 +1048,26 @@ function handleEntryModeChange() {
 function updateEntryModeUi() {
   const entryMode = valueOf("entryMode");
   document.querySelectorAll("[data-entry-hide]").forEach((node) => {
-    node.hidden = node.dataset.entryHide === entryMode;
+    node.hidden = entryModeMatchesRule(node.dataset.entryHide, entryMode);
   });
   document.querySelectorAll("[data-entry-show]").forEach((node) => {
     node.hidden = node.dataset.entryShow !== entryMode;
   });
   if (els.modeAndAlignmentSection) {
-    els.modeAndAlignmentSection.hidden = entryMode === "vloc";
+    els.modeAndAlignmentSection.hidden = entryMode === "vloc" || entryMode === "vo";
   }
   applyEntryModeTitles(entryMode);
   renderVlocChartDirectory();
   applyEntryModeChartVisibility(entryMode);
   updateEntryModeHint();
   updateRunButton();
+}
+
+function entryModeMatchesRule(rule, entryMode) {
+  return String(rule || "")
+    .split(/[,\s]+/)
+    .filter(Boolean)
+    .includes(entryMode);
 }
 
 function valueOf(id) {

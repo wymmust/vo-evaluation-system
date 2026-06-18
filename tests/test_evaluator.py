@@ -12,11 +12,13 @@ from vo_eval.evaluator import (
     EvaluationConfig,
     HomePoint,
     SfVlocBundle,
+    SfVoBundle,
     SUPPORTED_EVALUATION_FORMATS,
     Trajectory,
     build_associated_trajectories,
     evaluate_trajectories,
     evaluate_vloc_bundle,
+    evaluate_vo_bundle,
     euler_yaw_pitch_roll_to_matrix,
     get_evaluation_format_spec,
     load_vloc_evaluation_bundle,
@@ -317,9 +319,9 @@ def sample_vloc_text() -> str:
 
 
 def sample_vo_text() -> str:
-    return """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
-10.0 50 21 22 23 90 2 -1 1 12.5 0
-10.1 51 22 23 24 91 3 -2 0 13.5 1
+    return """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count depth_mean depth_min depth_max
+10.0 50 21 22 23 90 2 -1 1 12.5 0 4.1 0.2 8.9
+10.1 51 22 23 24 91 3 -2 0 13.5 1 4.2 0.3 9.0
 """
 
 
@@ -397,6 +399,73 @@ def sample_vloc_bundle_with_large_nav_gap() -> SfVlocBundle:
     )
 
 
+def sample_vo_bundle_with_reset_segments() -> SfVoBundle:
+    home = HomePoint(longitude=121.2, latitude=31.1, altitude_msl=50.0)
+    nav_stamps = np.round(np.arange(0.0, 55.1, 0.1), 3)
+    nav_positions = np.column_stack([nav_stamps, np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps))])
+    nav_rot = euler_yaw_pitch_roll_to_matrix(np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps)))
+    nav = Trajectory(
+        "imu.txt",
+        nav_stamps,
+        nav_positions,
+        nav_rot,
+        extras={
+            "latitude": np.full(len(nav_stamps), home.latitude, dtype=float),
+            "longitude": np.full(len(nav_stamps), home.longitude, dtype=float),
+            "altitude_msl": np.full(len(nav_stamps), home.altitude_msl, dtype=float),
+            "height": np.zeros(len(nav_stamps), dtype=float),
+            "status": np.zeros(len(nav_stamps), dtype=float),
+            "flight_mode": np.zeros(len(nav_stamps), dtype=float),
+            "vx": np.ones(len(nav_stamps), dtype=float),
+            "vy": np.zeros(len(nav_stamps), dtype=float),
+            "vz": np.zeros(len(nav_stamps), dtype=float),
+            "position_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "altitude_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "heading_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "navi_mode": np.zeros(len(nav_stamps), dtype=float),
+            "rtk_yaw": np.zeros(len(nav_stamps), dtype=float),
+            "rtk_altitude": np.zeros(len(nav_stamps), dtype=float),
+        },
+        source_format="sf_imu",
+    )
+
+    invalid_stamps = np.round(np.arange(0.0, 5.0, 0.1), 3)
+    valid_1_stamps = np.round(np.arange(10.0, 30.1, 0.1), 3)
+    valid_2_stamps = np.round(np.arange(30.2, 50.3, 0.1), 3)
+    vo_stamps = np.concatenate([invalid_stamps, valid_1_stamps, valid_2_stamps])
+    vo_positions = np.column_stack([vo_stamps, np.zeros(len(vo_stamps)), np.zeros(len(vo_stamps))])
+    vo_rot = euler_yaw_pitch_roll_to_matrix(np.zeros(len(vo_stamps)), np.zeros(len(vo_stamps)), np.zeros(len(vo_stamps)))
+    vo = Trajectory(
+        "vo.txt",
+        vo_stamps,
+        vo_positions,
+        vo_rot,
+        extras={
+            "num_inliers": np.full(len(vo_stamps), 80.0, dtype=float),
+            "is_keyframe": np.ones(len(vo_stamps), dtype=float),
+            "time_cost": np.full(len(vo_stamps), 12.0, dtype=float),
+            "reset_count": np.concatenate(
+                [
+                    np.zeros(len(invalid_stamps), dtype=float),
+                    np.ones(len(valid_1_stamps), dtype=float),
+                    np.full(len(valid_2_stamps), 2.0, dtype=float),
+                ]
+            ),
+        },
+        source_format="sf_vo",
+    )
+    calibration = parse_calib_raw_fixed(sample_identity_calib_text())
+    return SfVoBundle(
+        nav=nav,
+        vo=vo,
+        home_point=home,
+        calibration=calibration,
+        data_dir=Path("/tmp/data_dir"),
+        log_dir=Path("/tmp/log_dir"),
+        files={},
+    )
+
+
 def test_vloc_detail_summary_contains_requested_scalar_error_metrics():
     bundle = sample_vloc_bundle_with_large_nav_gap()
     report = evaluate_vloc_bundle(bundle)
@@ -444,11 +513,23 @@ def test_fixed_sf_parsers_use_documented_column_order_without_header_adaptation(
     assert vo.source_format == "sf_vo"
     assert np.allclose(vo.positions[0], [21, 22, 23])
     assert np.allclose(vo.extras["time_cost"], [12.5, 13.5])
+    assert "depth_mean" not in vo.extras
+    assert "depth_min" not in vo.extras
+    assert "depth_max" not in vo.extras
 
     home = parse_home_point_fixed("121.2 31.1 51.0\n", name="home_point.txt")
     assert home.longitude == 121.2
     assert home.latitude == 31.1
     assert home.altitude_msl == 51.0
+
+
+def test_vo_fixed_rejects_legacy_11_column_format():
+    legacy_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
+10.0 50 21 22 23 90 2 -1 1 12.5 0
+"""
+
+    with pytest.raises(ValueError, match="expects 14 columns"):
+        parse_vo_fixed(legacy_text, name="vo.txt")
 
 
 def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
@@ -529,6 +610,48 @@ def test_vloc_report_contains_nav_vloc_specific_detail_tables():
     assert {"position_error_n_m", "position_error_e_m", "position_error_d_m"}.issubset(comparison.columns)
     assert np.allclose(comparison["position_error_n_m"].to_numpy(), 1.0, atol=0.02)
     assert np.allclose(comparison["position_error_e_m"].to_numpy(), 0.0, atol=1e-6)
+
+
+def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
+    bundle = sample_vo_bundle_with_reset_segments()
+    report = evaluate_vo_bundle(
+        bundle,
+        EvaluationConfig(
+            alignment="none",
+            orientation_correction="auto",
+            association_mode="nearest",
+            max_interpolation_gap_s=10.0,
+            allow_extrapolation=True,
+            time_offset_s=2.0,
+        ),
+    )
+
+    assert report["inputs"]["entry_mode"] == "vo"
+    assert report["inputs"]["workflow"] == "sf_vo"
+    assert report["config"]["alignment"] == "sim3"
+    assert report["config"]["orientation_correction"] == "none"
+    assert report["config"]["association_mode"] == "interpolate_gt"
+    assert report["config"]["max_interpolation_gap_s"] == 1.0
+    assert report["config"]["allow_extrapolation"] is False
+    assert report["config"]["time_offset_s"] == 0.0
+    assert report["config"]["continuous_segment_policy"] == "segments"
+
+    assert report["association"]["dropped_est_invalid_segment"] == 50
+    assert report["association"]["valid_est_after_segment_filter"] == 402
+    assert report["summary"]["raw_est_poses"] == int(len(bundle.vo.positions))
+    assert report["summary"]["matched_poses"] == 402
+    assert report["alignment"]["base_mode"] == "sim3"
+    assert report["alignment"]["segment_count"] == 2
+    assert report["ate_position_m"]["rmse"] < 1e-6
+
+    all_breaks = report["discontinuities"]["all_matches"]["breaks"]
+    assert any("evaluation_segment_id" in item["reasons"] for item in all_breaks)
+
+    details = report["vo_details"]
+    assert {"comparison", "nav_status", "vo_status", "segment_filter"}.issubset(details)
+    assert len(details["comparison"]) == 402
+    assert set(details["comparison"]["segment_id"].astype(int)) == {0, 1}
+    assert {"num_inliers", "is_keyframe", "time_cost", "reset_count"}.issubset(details["vo_status"].columns)
 
 
 def test_fixed_parser_rejects_wrong_column_count():

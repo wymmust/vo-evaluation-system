@@ -128,21 +128,16 @@ def main() -> None:
             discontinuity_gap = 5.0
             divergence_abs = 30.0
             divergence_rel = 3.0
-        else:
-            alignment_label = st.selectbox("轨迹对齐", list(ALIGNMENT_OPTIONS), index=1)
-            orientation_label = st.selectbox("VO 姿态修正", list(ORIENTATION_CORRECTION_OPTIONS), index=0)
-            association_label = st.selectbox("时间同步方式", list(ASSOCIATION_OPTIONS), index=0)
-            max_time_diff = st.number_input("时间关联最大误差 s（不按时间则填 -1）", value=0.02, min_value=-1.0, step=0.01)
-            interpolation_preset_label = st.selectbox("Reference 频率 / 插值间隔预设", list(INTERPOLATION_GAP_PRESETS), index=0)
-            max_interpolation_gap = st.number_input(
-                "GT 插值最大间隔 s（不限制填 -1）",
-                value=float(INTERPOLATION_GAP_PRESETS[interpolation_preset_label]),
-                min_value=-1.0,
-                step=0.01,
-            )
-            allow_extrapolation = st.checkbox("允许外推（不推荐）", value=False)
-            interpolate_rotation = st.checkbox("GT 姿态用 SLERP 插值", value=True)
-            time_offset = st.number_input("VO 时间戳偏移 s（按 TUM：加到 VO 时间戳）", value=0.0, step=0.01)
+        if entry_mode == "vo":
+            st.caption("VO 固定使用 GT 插值到 VO 时间戳，最大 GT 插值间隔 1.0 s；按 reset_count 有效连续段分别做 Sim3，不允许外推，时间偏移固定为 0。")
+            max_time_diff = -1.0
+            max_interpolation_gap = 1.0
+            allow_extrapolation = False
+            interpolate_rotation = True
+            time_offset = 0.0
+            alignment_label = None
+            orientation_label = None
+            association_label = None
             rpe_value_col, rpe_unit_col = st.columns([2, 1])
             with rpe_value_col:
                 rpe_delta_value = st.number_input("RPE 统计间隔", value=1.0, min_value=0.001, step=1.0)
@@ -157,7 +152,7 @@ def main() -> None:
             max_segments = st.number_input("每个长度最多抽样段数", value=10000, min_value=100, step=1000)
             segment_step = st.number_input("子轨迹起点步长 frames（KITTI 默认 10）", value=10, min_value=1, step=1)
             length_tolerance = st.number_input("子轨迹长度容差比例", value=0.05, min_value=0.0, max_value=1.0, step=0.01)
-            segment_policy_label = st.selectbox("VO重置/大跳变处理", list(SEGMENT_POLICY_OPTIONS), index=1)
+            segment_policy_label = "按VO连续段逐段评估"
             discontinuity_step = st.number_input("断点步长阈值 m", value=100.0, min_value=0.0, step=10.0)
             discontinuity_gap = st.number_input("断点时间间隔阈值 s", value=5.0, min_value=0.0, step=1.0)
             divergence_abs = st.number_input("发散绝对阈值 m", value=30.0, min_value=0.0, step=1.0)
@@ -213,16 +208,16 @@ def main() -> None:
             )
         else:
             cfg = evaluator.EvaluationConfig(
-                alignment=ALIGNMENT_OPTIONS[alignment_label],
-                orientation_correction=ORIENTATION_CORRECTION_OPTIONS[orientation_label],
-                association_mode=ASSOCIATION_OPTIONS[association_label],
-                max_time_diff_s=None if max_time_diff < 0 else float(max_time_diff),
-                max_interpolation_gap_s=None if max_interpolation_gap < 0 else float(max_interpolation_gap),
-                allow_extrapolation=bool(allow_extrapolation),
-                interpolate_rotation=bool(interpolate_rotation),
+                alignment="sim3",
+                orientation_correction="none",
+                association_mode="interpolate_gt",
+                max_time_diff_s=None,
+                max_interpolation_gap_s=1.0,
+                allow_extrapolation=False,
+                interpolate_rotation=True,
                 interpolation_position_method="linear",
                 interpolation_rotation_method="slerp",
-                time_offset_s=float(time_offset),
+                time_offset_s=0.0,
                 **common_cfg,
             )
         if entry_mode == "vloc":
@@ -230,9 +225,7 @@ def main() -> None:
             report = evaluator.evaluate_vloc_bundle(bundle, cfg)
         else:
             bundle = evaluator.load_vo_evaluation_bundle(data_dir, log_dir)
-            gt = bundle.nav
-            est = bundle.vo
-            report = evaluator.evaluate_trajectories(gt, est, cfg)
+            report = evaluator.evaluate_vo_bundle(bundle, cfg)
     except Exception as exc:
         st.error(f"评估失败：{exc}")
         return

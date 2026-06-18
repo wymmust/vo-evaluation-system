@@ -16,8 +16,8 @@ from pathlib import Path
 
 from vo_eval.evaluator import (
     EvaluationConfig,
-    evaluate_trajectories,
     evaluate_vloc_bundle,
+    evaluate_vo_bundle,
     parse_calib_raw_fixed,
     parse_home_point_fixed,
     parse_imu_fixed,
@@ -25,6 +25,7 @@ from vo_eval.evaluator import (
     parse_vo_fixed,
     report_to_json,
     SfVlocBundle,
+    SfVoBundle,
 )
 
 
@@ -76,7 +77,16 @@ def evaluate_vo_bundle_json(
     config = _config_from_json(config_json)
     nav = parse_imu_fixed(imu_text, name=imu_name)
     est = parse_vo_fixed(vo_text, name=vo_name)
-    parse_home_point_fixed(home_point_text, name=home_point_name)
-    parse_calib_raw_fixed(calib_raw_text, name=calib_raw_name)
-    report = evaluate_trajectories(nav, est, config)
+    home_point = parse_home_point_fixed(home_point_text, name=home_point_name)
+    calibration = parse_calib_raw_fixed(calib_raw_text, name=calib_raw_name)
+    bundle = SfVoBundle(
+        nav=nav,
+        vo=est,
+        home_point=home_point,
+        calibration=calibration,
+        data_dir=Path("/data_dir"),
+        log_dir=Path("/log_dir"),
+        files={},
+    )
+    report = evaluate_vo_bundle(bundle, config)
     return report_to_json(report)

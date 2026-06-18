@@ -75,7 +75,10 @@ def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
     assert 'max_interpolation_gap_s=1.0' in source
     assert "length_tolerance = st.number_input(" in source
     assert "value=0.05" in source
-    assert 'segment_policy_label = st.selectbox("VO重置/大跳变处理", list(SEGMENT_POLICY_OPTIONS), index=1)' in source
+    assert 'if entry_mode == "vo":' in source
+    assert 'report = evaluator.evaluate_vo_bundle(bundle, cfg)' in source
+    assert 'segment_policy_label = "按VO连续段逐段评估"' in source
+    assert 'entry_mode == "vo" and st.selectbox("轨迹对齐"' not in source
     assert 'segment_policy_label = "按VO时间戳统一评估（推荐）"' in source
     assert 'divergence_abs = st.number_input("发散绝对阈值 m", value=30.0' in source
     assert 'divergence_rel = st.number_input("发散相对阈值 % 路程", value=3.0' in source
@@ -278,6 +281,124 @@ def test_static_vloc_mode_hides_transform_controls_and_uses_fixed_sync_defaults(
     assert payload["hiddenStates"] == [True, False]
 
 
+def test_static_vo_mode_hides_fixed_workflow_controls_and_uses_fixed_defaults():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const makeElement = (value = "") => ({
+          value,
+          files: [],
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          style: {},
+          classList: { add() {}, remove() {} },
+          addEventListener() {},
+          click() {},
+        });
+        const elements = {
+          runtimeStatus: makeElement(),
+          message: makeElement(),
+          runButton: makeElement(),
+          entryMode: makeElement("vo"),
+          entryModeHint: makeElement(),
+          dataDirFiles: makeElement(),
+          logDirFiles: makeElement(),
+          dataDirButton: makeElement(),
+          logDirButton: makeElement(),
+          dataDirStatus: makeElement(),
+          logDirStatus: makeElement(),
+          downloadJson: makeElement(),
+          downloadPoseCsv: makeElement(),
+          downloadSegmentCsv: makeElement(),
+          downloadWorstCsv: makeElement(),
+          downloadConfigJson: makeElement(),
+          downloadTrajectoryExcel: makeElement(),
+          downloadHtml: makeElement(),
+          interpolationPreset: makeElement("0.05"),
+          maxInterpolationGap: makeElement("0.05"),
+          maxTimeDiff: makeElement("0.50"),
+          allowExtrapolation: makeElement("true"),
+          interpolateRotation: makeElement("false"),
+          timeOffset: makeElement("2.0"),
+          rpeDeltaValue: makeElement("100"),
+          rpeDeltaUnit: makeElement("meters"),
+          scaleDeltaValue: makeElement("50"),
+          scaleDeltaUnit: makeElement("meters"),
+          segmentLengths: makeElement("100,200"),
+          maxSegments: makeElement("500"),
+          segmentStep: makeElement("5"),
+          lengthTolerance: makeElement("0.10"),
+          alignment: makeElement("none"),
+          orientationCorrection: makeElement("auto"),
+          associationMode: makeElement("nearest"),
+          discontinuityStep: makeElement("100"),
+          discontinuityGap: makeElement("5"),
+          divergenceAbs: makeElement("10"),
+          divergenceRel: makeElement("2"),
+          segmentPolicy: makeElement("longest"),
+          modeAndAlignmentSection: makeElement(),
+        };
+        const hiddenNodes = [
+          { dataset: { entryHide: "vloc,vo" }, hidden: false },
+          { dataset: { entryHide: "vloc" }, hidden: false },
+        ];
+        const shownNodes = [
+          { dataset: { entryShow: "vo" }, hidden: true },
+        ];
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || makeElement(); },
+          createElement() { return { ...makeElement(), remove() {} }; },
+          querySelectorAll(selector) {
+            if (selector === "[data-entry-hide]") return hiddenNodes;
+            if (selector === "[data-entry-show]") return shownNodes;
+            return [];
+          },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot() {}, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+        context.updateEntryModeUi();
+        process.stdout.write(JSON.stringify({
+          config: context.buildConfig(),
+          hiddenStates: hiddenNodes.map((node) => node.hidden),
+          shownStates: shownNodes.map((node) => node.hidden),
+          sectionHidden: elements.modeAndAlignmentSection.hidden,
+        }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload["config"]["alignment"] == "sim3"
+    assert payload["config"]["orientation_correction"] == "none"
+    assert payload["config"]["association_mode"] == "interpolate_gt"
+    assert payload["config"]["max_time_diff_s"] is None
+    assert payload["config"]["max_interpolation_gap_s"] == 1.0
+    assert payload["config"]["allow_extrapolation"] is False
+    assert payload["config"]["interpolate_rotation"] is True
+    assert payload["config"]["time_offset_s"] == 0.0
+    assert payload["config"]["continuous_segment_policy"] == "segments"
+    assert payload["config"]["rpe_delta_value"] == 100
+    assert payload["config"]["segment_lengths_m"] == [100, 200]
+    assert payload["hiddenStates"] == [True, False]
+    assert payload["shownStates"] == [False]
+    assert payload["sectionHidden"] is True
+
+
 def test_static_browser_runner_uses_fixed_bundle_parsers_instead_of_legacy_single_file_loader(tmp_path):
     runner_path = Path("static_web/py/browser_runner.py")
     spec = importlib.util.spec_from_file_location("browser_runner_test", runner_path)
@@ -285,18 +406,24 @@ def test_static_browser_runner_uses_fixed_bundle_parsers_instead_of_legacy_singl
     assert spec.loader is not None
     spec.loader.exec_module(module)
 
-    imu_text = """ts ts_fcc status flight_mode x y z yaw pitch roll vx vy vz position_reset_count altitude_reset_count heading_reset_count latitude longitude altitude altitude_msl height
-10.0 100.0 4194305 3 1 2 3 1.57079632679 0.1 -0.2 0.4 0.5 0.6 0 1 2 31.1 121.2 50 51 5
-10.1 100.1 268435457 3 2 3 4 1.67079632679 0.2 -0.3 0.5 0.6 0.7 0 1 2 31.2 121.3 51 52 6
-"""
+    imu_rows = [
+        "ts ts_fcc status flight_mode x y z yaw pitch roll vx vy vz position_reset_count altitude_reset_count heading_reset_count latitude longitude altitude altitude_msl height"
+    ]
+    for i in range(220):
+        t = 10.0 + i * 0.1
+        imu_rows.append(
+            f"{t:.1f} {100.0 + i * 0.1:.1f} 4194305 3 {t:.6f} 0 0 0 0 0 1 0 0 0 1 2 31.1 121.2 50 51 5"
+        )
+    imu_text = "\n".join(imu_rows)
     vloc_text = """ts status num_inliers reset_count x y z yaw pitch roll latitude longitude height
 10.0 2 42 0 1.1 2.1 3.1 90 2 -1 31.1 121.2 5
 10.1 3 43 1 2.1 3.1 4.1 91 3 -2 31.2 121.3 6
 """
-    vo_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
-10.0 50 1.2 2.2 3.2 90 2 -1 1 12.5 0
-10.1 51 2.2 3.2 4.2 91 3 -2 0 13.5 1
-"""
+    vo_rows = ["ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count depth_mean depth_min depth_max"]
+    for i in range(201):
+        t = 10.0 + i * 0.1
+        vo_rows.append(f"{t:.1f} 50 {t:.6f} 0 0 0 0 0 1 12.5 0 4.1 0.2 8.9")
+    vo_text = "\n".join(vo_rows)
     home_text = "121.2 31.1 51.0\n"
     calib_text = """%YAML:1.0
 ---
@@ -334,7 +461,8 @@ cam0:
             "calib_raw.yaml",
         )
     )
-    assert vo_report["summary"]["matched_poses"] == 2
+    assert vo_report["summary"]["matched_poses"] == 201
+    assert vo_report["association"]["valid_est_after_segment_filter"] == 201
 
 
 def test_static_python_sources_are_fetched_without_browser_cache():

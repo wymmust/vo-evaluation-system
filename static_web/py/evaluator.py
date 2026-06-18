@@ -389,6 +389,9 @@ class SfVoBundle:
 
 
 VLOC_FIXED_MAX_INTERPOLATION_GAP_S = 1.0
+VO_FIXED_MAX_INTERPOLATION_GAP_S = 1.0
+VO_MIN_VALID_SEGMENT_DURATION_S = 10.0
+VO_MIN_VALID_SEGMENT_FRAMES = 200
 WGS84_A_M = 6378137.0
 WGS84_F = 1.0 / 298.257223563
 WGS84_E2 = WGS84_F * (2.0 - WGS84_F)
@@ -523,6 +526,9 @@ VO_FIXED_COLUMNS = (
     "is_keyframe",
     "time_cost",
     "reset_count",
+    "depth_mean",
+    "depth_min",
+    "depth_max",
 )
 
 
@@ -642,6 +648,54 @@ def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None =
     return report
 
 
+def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = None) -> dict[str, Any]:
+    """按需求文档固定流程评估 sf_vo。
+
+    这条入口和 VLOC 分开：
+    - 固定读取 data_dir/imu.txt 和 log_dir/vo.txt；
+    - 固定把 VO cam 位姿通过 calib_raw.yaml 外参转到 body；
+    - 固定按 reset_count 连续段切分，丢弃小于 10 s 或小于 200 帧的短段；
+    - 固定把 GT 插值到有效 VO 时间戳，最大 GT 插值间隔 1.0 s；
+    - 固定按连续段分别做 Sim3，让每个 VO 重置后的局部坐标系单独对齐。
+    """
+
+    cfg = normalized_vo_evaluation_config(config)
+    nav_body = sf_nav_to_body_trajectory(bundle.nav)
+    vo_body = sf_vo_to_body_trajectory(bundle.vo, bundle.calibration)
+
+    valid_indices, valid_segment_ids, segment_filter = vo_valid_segment_indices(vo_body)
+    if len(valid_indices) < 2:
+        raise ValueError("No VO reset segment remains after filtering duration >= 10s and frame count >= 200")
+
+    vo_valid = subset_trajectory(vo_body, valid_indices)
+    vo_valid.extras["evaluation_segment_id"] = np.asarray(valid_segment_ids, dtype=int)
+    report = evaluate_trajectories(nav_body, vo_valid, cfg)
+    report["association"]["dropped_est_invalid_segment"] = int(segment_filter["dropped_pose_count"])
+    report["association"]["valid_est_after_segment_filter"] = int(len(vo_valid.positions))
+    report["association"]["vo_reset_segment_filter"] = segment_filter
+    visual_segment_ids = (
+        report["per_pose"]["visual_segment_id"].to_numpy(dtype=int)
+        if "visual_segment_id" in report["per_pose"]
+        else None
+    )
+    report["vo_details"] = build_vo_detail_report(nav_body, vo_valid, cfg, report, visual_segment_ids=visual_segment_ids)
+    report["inputs"]["entry_mode"] = "vo"
+    report["inputs"]["workflow"] = "sf_vo"
+    report["inputs"]["fixed_rules"] = {
+        "alignment": "sim3",
+        "orientation_correction": "none",
+        "association_mode": "interpolate_gt",
+        "max_interpolation_gap_s": float(VO_FIXED_MAX_INTERPOLATION_GAP_S),
+        "allow_extrapolation": False,
+        "time_offset_s": 0.0,
+        "continuous_segment_policy": "segments",
+        "min_valid_segment_duration_s": float(VO_MIN_VALID_SEGMENT_DURATION_S),
+        "min_valid_segment_frames": int(VO_MIN_VALID_SEGMENT_FRAMES),
+    }
+    report["summary"]["raw_est_poses"] = int(len(bundle.vo.positions))
+    return report
+
+
 def build_vloc_detail_report(
     nav: Trajectory,
     vloc: Trajectory,
@@ -691,6 +745,47 @@ def build_vloc_detail_report(
     }
 
 
+def build_vo_detail_report(
+    nav: Trajectory,
+    vo: Trajectory,
+    cfg: EvaluationConfig,
+    report: dict[str, Any],
+    visual_segment_ids: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """构造 VO 页面专用明细。
+
+    comparison 使用通用 evaluator 已经算好的 Sim3 后 per_pose 数据：
+    这样页面看到的 VO 轨迹、ATE/RPE 和导出结果使用同一套对齐结果。
+    """
+    nav_eval, vo_eval, _assoc = build_associated_trajectories(nav, vo, cfg)
+    timestamps = vo_eval.stamps
+    target_stamps = np.asarray(vo_eval.extras.get("target_stamp", timestamps + float(cfg.time_offset_s)), dtype=float)
+    if len(timestamps) == 0:
+        empty = pd.DataFrame()
+        return {"summary": {}, "comparison": empty, "nav_status": empty, "vo_status": empty, "segment_filter": {}}
+
+    nav_status = vloc_nav_status_frame(nav, target_stamps, timestamps)
+    vo_status = vo_est_status_frame(vo_eval)
+    comparison = vo_comparison_frame(report.get("per_pose", pd.DataFrame()), vo_status, visual_segment_ids=visual_segment_ids)
+    summary = {
+        "trajectory_length_m": float(report.get("summary", {}).get("gt_path_length_m", math.nan)),
+        "mean_error_pos_xy": float(report.get("ate_horizontal_m", {}).get("mean", math.nan)),
+        "mean_error_pos_z": float(report.get("ate_vertical_m", {}).get("mean", math.nan)),
+        "max_error_pos_xy": float(report.get("ate_horizontal_m", {}).get("max", math.nan)),
+        "max_error_pos_z": float(report.get("ate_vertical_m", {}).get("max", math.nan)),
+        "mean_error_euler": float(report.get("ate_orientation_deg", {}).get("mean", math.nan)) if report.get("ate_orientation_deg") else math.nan,
+        "max_error_euler": float(report.get("ate_orientation_deg", {}).get("max", math.nan)) if report.get("ate_orientation_deg") else math.nan,
+    }
+    segment_filter = report.get("association", {}).get("vo_reset_segment_filter", {})
+    return {
+        "summary": summary,
+        "comparison": comparison,
+        "nav_status": nav_status,
+        "vo_status": vo_status,
+        "segment_filter": segment_filter,
+    }
+
+
 def vloc_nav_status_frame(nav: Trajectory, target_stamps: np.ndarray, timestamps: np.ndarray) -> pd.DataFrame:
     """把 nav 状态按需求文档插到有效 VLOC 时间戳。
 
@@ -709,8 +804,8 @@ def vloc_nav_status_frame(nav: Trajectory, target_stamps: np.ndarray, timestamps
     for output_name, extra_name in nearest_fields.items():
         frame[output_name] = extra_values_nearest(nav, extra_name, target_stamps)
 
-    for extra_field in ("vx", "vy", "vz", "height"):
-        frame[extra_field] = extra_values_linear(nav, extra_field, target_stamps)
+    for field in ("vx", "vy", "vz", "height"):
+        frame[field] = extra_values_linear(nav, field, target_stamps)
     frame["velocity_norm"] = np.linalg.norm(frame[["vx", "vy", "vz"]].to_numpy(dtype=float), axis=1)
     return frame
 
@@ -718,8 +813,70 @@ def vloc_nav_status_frame(nav: Trajectory, target_stamps: np.ndarray, timestamps
 def vloc_est_status_frame(vloc: Trajectory) -> pd.DataFrame:
     """提取有效 VLOC 样本自身的状态字段。"""
     frame = pd.DataFrame({"timestamp": vloc.stamps})
-    for extra_field in ("vloc_mode", "num_inliers", "reset_count", "height"):
-        frame[extra_field] = trajectory_extra_or_nan(vloc, extra_field)
+    for field in ("vloc_mode", "num_inliers", "reset_count", "height"):
+        frame[field] = trajectory_extra_or_nan(vloc, field)
+    return frame
+
+
+def vo_est_status_frame(vo: Trajectory) -> pd.DataFrame:
+    """提取有效 VO 样本自身的状态字段。"""
+    frame = pd.DataFrame({"timestamp": vo.stamps})
+    for field in ("num_inliers", "is_keyframe", "time_cost", "reset_count", "evaluation_segment_id"):
+        frame[field] = trajectory_extra_or_nan(vo, field)
+    return frame
+
+
+def vo_comparison_frame(
+    per_pose: pd.DataFrame,
+    vo_status: pd.DataFrame,
+    visual_segment_ids: np.ndarray | None = None,
+) -> pd.DataFrame:
+    """VO 逐帧对比表，位置误差按 nav - aligned VO 输出。"""
+    if per_pose.empty:
+        return pd.DataFrame()
+    frame = pd.DataFrame(
+        {
+            "timestamp": per_pose["timestamp"].to_numpy(dtype=float),
+            "segment_id": per_pose["segment_id"].to_numpy(dtype=int),
+            "visual_segment_id": (
+                np.asarray(visual_segment_ids, dtype=int)
+                if visual_segment_ids is not None and len(visual_segment_ids) == len(per_pose)
+                else per_pose.get("visual_segment_id", per_pose["segment_id"]).to_numpy(dtype=int)
+            ),
+            "distance_m": per_pose["distance_m"].to_numpy(dtype=float),
+            "nav_x_m": per_pose["gt_x_m"].to_numpy(dtype=float),
+            "nav_y_m": per_pose["gt_y_m"].to_numpy(dtype=float),
+            "nav_z_m": per_pose["gt_z_m"].to_numpy(dtype=float),
+            "vo_x_aligned_m": per_pose["est_x_aligned_m"].to_numpy(dtype=float),
+            "vo_y_aligned_m": per_pose["est_y_aligned_m"].to_numpy(dtype=float),
+            "vo_z_aligned_m": per_pose["est_z_aligned_m"].to_numpy(dtype=float),
+            "position_error_x_m": -per_pose["x_error_m"].to_numpy(dtype=float),
+            "position_error_y_m": -per_pose["y_error_m"].to_numpy(dtype=float),
+            "position_error_z_m": -per_pose["z_error_m"].to_numpy(dtype=float),
+            "position_error_3d_m": per_pose["error_m"].to_numpy(dtype=float),
+            "horizontal_position_error_m": per_pose["horizontal_error_m"].to_numpy(dtype=float),
+            "vertical_position_error_signed_m": -per_pose["z_error_m"].to_numpy(dtype=float),
+            "vertical_position_error_abs_m": per_pose["vertical_error_abs_m"].to_numpy(dtype=float),
+        }
+    )
+    if {"gt_yaw_deg", "est_yaw_aligned_deg", "yaw_error_signed_deg"}.issubset(per_pose.columns):
+        frame["nav_yaw_deg"] = per_pose["gt_yaw_deg"].to_numpy(dtype=float)
+        frame["nav_pitch_deg"] = per_pose["gt_pitch_deg"].to_numpy(dtype=float)
+        frame["nav_roll_deg"] = per_pose["gt_roll_deg"].to_numpy(dtype=float)
+        frame["vo_yaw_aligned_deg"] = per_pose["est_yaw_aligned_deg"].to_numpy(dtype=float)
+        frame["vo_pitch_aligned_deg"] = per_pose["est_pitch_aligned_deg"].to_numpy(dtype=float)
+        frame["vo_roll_aligned_deg"] = per_pose["est_roll_aligned_deg"].to_numpy(dtype=float)
+        frame["attitude_error_yaw_deg"] = -per_pose["yaw_error_signed_deg"].to_numpy(dtype=float)
+        frame["attitude_error_pitch_deg"] = -per_pose["pitch_error_signed_deg"].to_numpy(dtype=float)
+        frame["attitude_error_roll_deg"] = -per_pose["roll_error_signed_deg"].to_numpy(dtype=float)
+        frame["attitude_error_euler_norm_deg"] = np.linalg.norm(
+            frame[["attitude_error_yaw_deg", "attitude_error_pitch_deg", "attitude_error_roll_deg"]].to_numpy(dtype=float),
+            axis=1,
+        )
+    if len(vo_status) == len(frame):
+        for field in ("num_inliers", "is_keyframe", "time_cost", "reset_count", "evaluation_segment_id"):
+            if field in vo_status:
+                frame[field] = vo_status[field].to_numpy(dtype=float)
     return frame
 
 
@@ -894,9 +1051,10 @@ def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
 
 
 def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
-    """按需求文档固定 11 列解析 VO 输出。
+    """按需求文档固定 14 列解析 VO 输出。
 
     不根据表头猜列名；yaw/pitch/roll 固定为角度。
+    最后三列 depth_mean/depth_min/depth_max 只用于固定格式校验，不参与评估指标。
     """
 
     data = _read_fixed_numeric_table(text, len(VO_FIXED_COLUMNS), name, "VO")
@@ -959,6 +1117,45 @@ def normalized_vloc_evaluation_config(config: EvaluationConfig | None = None) ->
     )
 
 
+def normalized_vo_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
+    """把用户配置收敛成 sf_vo 固定评估参数。
+
+    VO 和 VLOC 的关键区别是：VO 是可能无尺度且会 reset 的轨迹，因此固定走 Sim3，
+    并把 reset_count 形成的连续段交给 evaluate_trajectories() 逐段对齐。
+    """
+    base = config if config is not None else EvaluationConfig()
+    return replace(
+        base,
+        alignment="sim3",
+        orientation_correction="none",
+        association_mode="interpolate_gt",
+        max_time_diff_s=None,
+        max_interpolation_gap_s=float(VO_FIXED_MAX_INTERPOLATION_GAP_S),
+        allow_extrapolation=False,
+        interpolate_rotation=True,
+        interpolation_position_method="linear",
+        interpolation_rotation_method="slerp",
+        time_offset_s=0.0,
+        continuous_segment_policy="segments",
+    )
+
+
+def sf_nav_to_body_trajectory(nav: Trajectory) -> Trajectory:
+    """VO 流程中的 nav GT 已经是 body 坐标系，这里只补齐语义字段。"""
+    extras = dict(nav.extras)
+    extras["body_x_m"] = nav.positions[:, 0]
+    extras["body_y_m"] = nav.positions[:, 1]
+    extras["body_z_m"] = nav.positions[:, 2]
+    return Trajectory(
+        nav.name,
+        nav.stamps,
+        nav.positions,
+        nav.rotations,
+        extras=extras,
+        source_format="sf_imu_body",
+    )
+
+
 def sf_nav_to_body_ned_trajectory(nav: Trajectory, home_point: HomePoint) -> Trajectory:
     """把 nav GT 转成以 home_point 为原点的 body/NED 轨迹。"""
     latitude = _required_extra(nav, "latitude")
@@ -1015,6 +1212,107 @@ def sf_vloc_to_body_ned_trajectory(vloc: Trajectory, home_point: HomePoint, cali
         extras=extras,
         source_format="sf_vloc_body_ned",
     )
+
+
+def sf_vo_to_body_trajectory(vo: Trajectory, calibration: Calibration) -> Trajectory:
+    """把 VO camera 位姿转成 body 位姿。
+
+    需求文档定义 VO 输出在 cam frame，评估时要和 nav body frame 对比。
+    这里按 T_world_body = T_world_cam * T_cam_imu * T_imu_body 组合外参；
+    单位外参时输出应与原始 VO 完全一致。
+    """
+    t_cam_body = np.asarray(calibration.t_cam_imu, dtype=float) @ np.asarray(calibration.t_imu_body, dtype=float)
+    rot_cam_body = t_cam_body[:3, :3]
+    trans_cam_body = t_cam_body[:3, 3]
+
+    rotations = vo.rotations
+    body_positions = np.asarray(vo.positions, dtype=float)
+    body_rotations = rotations
+    if rotations is not None:
+        body_positions = body_positions + np.einsum("nij,j->ni", rotations, trans_cam_body)
+        body_rotations = np.einsum("nij,jk->nik", rotations, rot_cam_body)
+
+    extras = dict(vo.extras)
+    extras["cam_x_m"] = vo.positions[:, 0]
+    extras["cam_y_m"] = vo.positions[:, 1]
+    extras["cam_z_m"] = vo.positions[:, 2]
+    extras["body_x_m"] = body_positions[:, 0]
+    extras["body_y_m"] = body_positions[:, 1]
+    extras["body_z_m"] = body_positions[:, 2]
+    return Trajectory(
+        vo.name,
+        vo.stamps,
+        body_positions,
+        body_rotations,
+        extras=extras,
+        source_format="sf_vo_body",
+    )
+
+
+def vo_valid_segment_indices(vo: Trajectory) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """按 reset_count 连续段筛选 VO 有效段。
+
+    规则来自需求文档：
+    - reset_count 变化代表 VO 重新初始化，新段不能和旧段混成一条连续轨迹；
+    - 每段 duration < 10 s 或 frame count < 200 都视为无效，先过滤；
+    - 剩余有效段会重新编号为 evaluation_segment_id，供 Sim3 分段对齐和 3D 起终点显示使用。
+    """
+    reset_count = trajectory_extra_or_nan(vo, "reset_count")
+    n = len(vo.positions)
+    if n == 0:
+        return np.asarray([], dtype=int), np.asarray([], dtype=int), {
+            "segments": [],
+            "valid_segment_count": 0,
+            "invalid_segment_count": 0,
+            "dropped_pose_count": 0,
+        }
+
+    starts = [0]
+    for idx in range(n - 1):
+        current = reset_count[idx]
+        nxt = reset_count[idx + 1]
+        changed = current != nxt
+        if not np.isfinite(current) or not np.isfinite(nxt):
+            changed = True
+        if changed:
+            starts.append(idx + 1)
+    starts.append(n)
+
+    valid_indices: list[int] = []
+    valid_segment_ids: list[int] = []
+    segment_infos: list[dict[str, Any]] = []
+    next_valid_segment_id = 0
+    for raw_segment_id, (start, end) in enumerate(zip(starts[:-1], starts[1:])):
+        count = int(end - start)
+        duration_s = float(vo.stamps[end - 1] - vo.stamps[start]) if count > 1 else 0.0
+        valid = count >= VO_MIN_VALID_SEGMENT_FRAMES and duration_s >= VO_MIN_VALID_SEGMENT_DURATION_S
+        info = {
+            "raw_segment_id": int(raw_segment_id),
+            "start_index": int(start),
+            "end_index": int(end),
+            "count": count,
+            "duration_s": duration_s,
+            "reset_count": float(reset_count[start]) if np.isfinite(reset_count[start]) else math.nan,
+            "valid": bool(valid),
+        }
+        if valid:
+            segment_indices = list(range(start, end))
+            valid_indices.extend(segment_indices)
+            valid_segment_ids.extend([next_valid_segment_id] * count)
+            info["evaluation_segment_id"] = int(next_valid_segment_id)
+            next_valid_segment_id += 1
+        segment_infos.append(info)
+
+    valid_idx_arr = np.asarray(valid_indices, dtype=int)
+    valid_seg_arr = np.asarray(valid_segment_ids, dtype=int)
+    return valid_idx_arr, valid_seg_arr, {
+        "min_duration_s": float(VO_MIN_VALID_SEGMENT_DURATION_S),
+        "min_frames": int(VO_MIN_VALID_SEGMENT_FRAMES),
+        "segments": segment_infos,
+        "valid_segment_count": int(next_valid_segment_id),
+        "invalid_segment_count": int(sum(1 for item in segment_infos if not item["valid"])),
+        "dropped_pose_count": int(n - len(valid_idx_arr)),
+    }
 
 
 def _required_extra(traj: Trajectory, key: str) -> np.ndarray:
@@ -1197,12 +1495,18 @@ def evaluate_trajectories(
     original_gt_pos = gt.positions[gt_idx]
     original_est_pos = est.positions[est_idx]
     original_stamps = gt.stamps[gt_idx]
+    forced_segment_ids = None
+    if "evaluation_segment_id" in est.extras:
+        candidate_segment_ids = np.asarray(est.extras["evaluation_segment_id"])
+        if len(candidate_segment_ids) == len(est.positions):
+            forced_segment_ids = candidate_segment_ids[est_idx]
     discontinuities_all = detect_associated_discontinuities(
         original_stamps,
         original_gt_pos,
         original_est_pos,
         step_threshold_m=cfg.discontinuity_step_m,
         time_gap_threshold_s=cfg.discontinuity_time_gap_s,
+        forced_segment_ids=forced_segment_ids,
     )
     eval_ranges = select_evaluation_segments(discontinuities_all["segments"], cfg.continuous_segment_policy, original_match_count)
     if not eval_ranges:
@@ -3147,10 +3451,13 @@ def detect_associated_discontinuities(
     est_pos: np.ndarray,
     step_threshold_m: float,
     time_gap_threshold_s: float,
+    forced_segment_ids: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """断点/重置诊断。
 
     根据 GT 步长、VO 步长、时间间隔判断是否存在大跳变。
+    如果传入 forced_segment_ids，则相邻样本的分段 id 变化也会被当作断点，
+    这用于 VO reset_count 切段后的强制分段评估。
     默认评估策略不会丢弃这些点，只把信息放入 report["discontinuities"] 供诊断。
 
     断点来源：
@@ -3175,10 +3482,15 @@ def detect_associated_discontinuities(
     gt_steps = np.linalg.norm(np.diff(gt_pos, axis=0), axis=1)
     est_steps = np.linalg.norm(np.diff(est_pos, axis=0), axis=1)
     time_gaps = np.diff(stamps)
+    forced_ids = np.asarray(forced_segment_ids).reshape(-1) if forced_segment_ids is not None else None
+    if forced_ids is not None and len(forced_ids) != n:
+        forced_ids = None
     break_after = np.zeros(n - 1, dtype=bool)
     breaks: list[dict[str, Any]] = []
     for idx, (gt_step, est_step, time_gap) in enumerate(zip(gt_steps, est_steps, time_gaps)):
         reasons: list[str] = []
+        if forced_ids is not None and forced_ids[idx] != forced_ids[idx + 1]:
+            reasons.append("evaluation_segment_id")
         if step_threshold_m > 0 and gt_step > step_threshold_m:
             reasons.append("gt_step")
         if step_threshold_m > 0 and est_step > step_threshold_m:
