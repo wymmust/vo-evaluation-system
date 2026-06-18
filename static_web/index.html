@@ -50,6 +50,8 @@
           <p class="section-hint">浏览器不会暴露本地绝对路径，这里只显示目录名和文件数量。</p>
         </section>
 
+        <button id="runButton" disabled>运行评估</button>
+
         <section id="modeAndAlignmentSection" data-entry-hide="vloc">
           <h2>模式与对齐</h2>
           <label>
@@ -192,7 +194,15 @@
           </label>
         </section>
 
-        <button id="runButton" disabled>运行评估</button>
+        <section id="vlocChartDirectorySection" data-entry-show="vloc">
+          <h2>图表目录</h2>
+          <p class="section-hint">选择右侧展示的 VLOC 图表，评估后默认全开。</p>
+          <div id="vlocChartList" class="chart-directory-list"></div>
+          <div class="chart-directory-actions">
+            <button id="vlocChartSelectAll" type="button">全选</button>
+            <button id="vlocChartClear" type="button">清除</button>
+          </div>
+        </section>
       </aside>
 
       <section class="content">

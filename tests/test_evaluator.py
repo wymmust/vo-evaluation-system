@@ -126,6 +126,30 @@ def test_streamlit_composite_charts_share_hover_spikes_across_subplots():
         assert fig.layout.xaxis2.spikemode == "across"
 
 
+def test_streamlit_vloc_chart_directory_is_wired_to_vloc_visuals_only():
+    source = Path("app.py").read_text()
+    assert "VLOC_CHART_OPTIONS" in source
+    assert "show_vloc_chart_directory()" in source
+    assert "show_visuals(report, entry_mode, selected_vloc_chart_ids)" in source
+    assert "show_vloc_visuals(report, selected_vloc_chart_ids)" in source
+    assert "图表目录" in source
+    for chart_id in [
+        "trajectory3d",
+        "trajectoryXY",
+        "errorDistance",
+        "heightComparison",
+        "navStatusModes",
+        "navVelocity",
+        "navResetCounts",
+        "vlocStatus",
+        "positionCompareComposite",
+        "attitudeCompareComposite",
+        "positionErrorComposite",
+        "attitudeErrorComposite",
+    ]:
+        assert chart_id in source
+
+
 def test_streamlit_sim3_scale_time_series_uses_exported_scale_by_timestamp():
     from app import make_sim3_scale_time_series
 

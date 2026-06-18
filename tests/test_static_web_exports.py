@@ -43,6 +43,8 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
     css = Path("static_web/style.css").read_text()
     assert "[hidden]" in css
     assert "display: none !important" in css
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr));" in css
+    assert "font-size: 13px;" in css
 
 
 def test_static_dead_report_and_time_series_helpers_are_removed():
@@ -1133,6 +1135,137 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
     assert payload["voState"]["trajectory3dHidden"] is False
     assert "VO" in payload["voState"]["summaryTitle"]
     assert "VO" in payload["voState"]["visualTitle"]
+
+
+def test_static_vloc_chart_directory_controls_only_vloc_charts():
+    html = Path("static_web/index.html").read_text()
+    assert "图表目录" in html
+    for element_id in ["vlocChartDirectorySection", "vlocChartList", "vlocChartSelectAll", "vlocChartClear"]:
+        assert f'id="{element_id}"' in html
+    assert html.index('id="runButton"') < html.index('id="vlocChartDirectorySection"')
+
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const makeElement = (value = "") => ({
+          value,
+          files: [],
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          style: {},
+          dataset: {},
+          classList: { add() {}, remove() {} },
+          addEventListener() {},
+          click() {},
+        });
+        const elements = {
+          runtimeStatus: makeElement(),
+          message: makeElement(),
+          runButton: makeElement(),
+          entryMode: makeElement("vloc"),
+          entryModeHint: makeElement(),
+          dataDirFiles: makeElement(),
+          logDirFiles: makeElement(),
+          dataDirButton: makeElement(),
+          logDirButton: makeElement(),
+          dataDirStatus: makeElement(),
+          logDirStatus: makeElement(),
+          modeAndAlignmentSection: makeElement(),
+          vlocChartDirectorySection: makeElement(),
+          vlocChartList: makeElement(),
+          vlocChartSelectAll: makeElement(),
+          vlocChartClear: makeElement(),
+          interpolationPreset: makeElement("0.15"),
+          maxInterpolationGap: makeElement("0.15"),
+          downloadJson: makeElement(),
+          downloadPoseCsv: makeElement(),
+          downloadSegmentCsv: makeElement(),
+          downloadWorstCsv: makeElement(),
+          downloadConfigJson: makeElement(),
+          downloadTrajectoryExcel: makeElement(),
+          downloadHtml: makeElement(),
+          metrics: makeElement(),
+          summaryKicker: makeElement(),
+          summaryTitle: makeElement(),
+          visualKicker: makeElement(),
+          visualTitle: makeElement(),
+        };
+        [
+          "trajectory3d", "trajectoryXY", "errorDistance",
+          "heightComparison", "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus",
+          "segmentError", "speedError", "sim3ScaleTime",
+          "positionCompareComposite", "attitudeCompareComposite",
+          "positionErrorComposite", "attitudeErrorComposite",
+          "rpeTranslationTime", "rpeRotationTime",
+        ].forEach((id) => { elements[id] = makeElement(); });
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || makeElement(); },
+          createElement() { return { ...makeElement(), remove() {} }; },
+          querySelectorAll() { return []; },
+        };
+        const purged = [];
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot() {}, purge(id) { purged.push(id); } },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+
+        context.renderVlocChartDirectory();
+        const itemCount = (elements.vlocChartList.innerHTML.match(/data-chart-id=/g) || []).length;
+        const checkedCount = (elements.vlocChartList.innerHTML.match(/checked/g) || []).length;
+
+        context.clearVlocChartDirectory();
+        const hiddenAfterClear = [
+          "trajectory3d", "trajectoryXY", "errorDistance", "heightComparison",
+          "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus",
+          "positionCompareComposite", "attitudeCompareComposite",
+          "positionErrorComposite", "attitudeErrorComposite",
+        ].every((id) => elements[id].hidden === true);
+
+        context.selectAllVlocChartDirectory();
+        const visibleAfterSelectAll = [
+          "trajectory3d", "trajectoryXY", "errorDistance", "heightComparison",
+          "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus",
+          "positionCompareComposite", "attitudeCompareComposite",
+          "positionErrorComposite", "attitudeErrorComposite",
+        ].every((id) => elements[id].hidden === false);
+
+        context.clearVlocChartDirectory();
+        elements.entryMode.value = "vo";
+        context.applyEntryModeChartVisibility("vo");
+        const voStillVisible = ["segmentError", "speedError", "sim3ScaleTime", "rpeTranslationTime", "rpeRotationTime"].every((id) => elements[id].hidden === false);
+
+        process.stdout.write(JSON.stringify({
+          itemCount,
+          checkedCount,
+          hiddenAfterClear,
+          visibleAfterSelectAll,
+          voStillVisible,
+          purged,
+        }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload["itemCount"] == 12
+    assert payload["checkedCount"] == 12
+    assert payload["hiddenAfterClear"] is True
+    assert payload["visibleAfterSelectAll"] is True
+    assert payload["voStillVisible"] is True
+    assert "trajectory3d" not in payload["purged"]
 
 
 def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():

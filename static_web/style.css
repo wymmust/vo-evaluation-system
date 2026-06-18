@@ -427,6 +427,67 @@ button:disabled {
   font-weight: 650;
 }
 
+.chart-directory-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.chart-directory-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  min-height: 34px;
+  padding: 6px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--heading);
+  font-size: 13px;
+  line-height: 1.25;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.chart-directory-item:hover {
+  border-color: #bfd1eb;
+  background: #f8fbff;
+}
+
+.chart-directory-item input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  min-height: 0;
+  flex: 0 0 14px;
+  margin: 0;
+  padding: 0;
+  border-radius: 3px;
+  box-shadow: none;
+  accent-color: var(--accent);
+}
+
+.chart-directory-item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chart-directory-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.chart-directory-actions button {
+  min-height: 30px;
+  margin-top: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  box-shadow: none;
+}
+
 .chart-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

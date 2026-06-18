@@ -71,6 +71,23 @@ INTERPOLATION_GAP_PRESETS = {
     "自定义": 0.15,
 }
 
+VLOC_CHART_OPTIONS = [
+    ("trajectory3d", "3D 轨迹"),
+    ("trajectoryXY", "俯视 NE 轨迹"),
+    ("errorDistance", "误差随路程变化"),
+    ("heightComparison", "对地高随时间变化"),
+    ("navStatusModes", "导航状态信息"),
+    ("navVelocity", "导航速度信息"),
+    ("navResetCounts", "导航 reset 计数"),
+    ("vlocStatus", "VLOC 状态信息"),
+    ("positionCompareComposite", "NED 随时间变化"),
+    ("attitudeCompareComposite", "YPR 随时间变化"),
+    ("positionErrorComposite", "NED 误差随时间变化"),
+    ("attitudeErrorComposite", "YPR 误差随时间变化"),
+]
+
+VLOC_CHART_IDS = tuple(chart_id for chart_id, _label in VLOC_CHART_OPTIONS)
+
 
 def main() -> None:
     """页面入口：选择 VLOC/VO 流程 -> 输入 data_dir/log_dir -> 调用 evaluator -> 展示 report。"""
@@ -146,6 +163,10 @@ def main() -> None:
             divergence_abs = st.number_input("发散绝对阈值 m", value=30.0, min_value=0.0, step=1.0)
             divergence_rel = st.number_input("发散相对阈值 % 路程", value=3.0, min_value=0.0, step=0.5)
 
+        selected_vloc_chart_ids = set(VLOC_CHART_IDS)
+        if entry_mode == "vloc":
+            selected_vloc_chart_ids = show_vloc_chart_directory()
+
     st.subheader(entry_label)
 
     if not data_dir or not log_dir:
@@ -217,7 +238,7 @@ def main() -> None:
         return
 
     show_summary(report, entry_mode)
-    show_visuals(report, entry_mode)
+    show_visuals(report, entry_mode, selected_vloc_chart_ids)
     show_tables_and_downloads(report)
 
 
@@ -268,8 +289,6 @@ def show_summary(report: dict[str, Any], entry_mode: str) -> None:
     ate = report["ate_position_m"] or {}
     vertical = report["ate_vertical_m"] or {}
     rpe = (report["rpe_frame_delta"].get("translation_m") or {})
-    div = report["divergence"]
-    assoc = report.get("association", {})
     orientation_info = report.get("orientation_correction", {})
     alignment = report.get("alignment", {})
     breaks = nested(report, "discontinuities", "all_matches", "break_count", default=0)
@@ -512,7 +531,7 @@ def divergence_summary_label(divergence: dict[str, Any]) -> str:
     )
 
 
-def show_visuals(report: dict[str, Any], entry_mode: str) -> None:
+def show_visuals(report: dict[str, Any], entry_mode: str, selected_vloc_chart_ids: set[str] | None = None) -> None:
     """可视化区域。
 
     图表与指标对应：
@@ -525,7 +544,7 @@ def show_visuals(report: dict[str, Any], entry_mode: str) -> None:
     - RPE 平移/旋转误差随时间变化：使用当前 RPE 帧数或距离配置。
     """
     if entry_mode == "vloc":
-        show_vloc_visuals(report)
+        show_vloc_visuals(report, selected_vloc_chart_ids)
         return
 
     per_pose = report["per_pose"]
@@ -625,7 +644,34 @@ def show_visuals(report: dict[str, Any], entry_mode: str) -> None:
     st.download_button("下载 HTML 可视化报告", html, file_name="vo_evaluation_report.html", mime="text/html")
 
 
-def show_vloc_visuals(report: dict[str, Any]) -> None:
+def show_vloc_chart_directory() -> set[str]:
+    """VLOC 图表目录：控制右侧 12 张 VLOC 图的显示/隐藏。"""
+    st.header("图表目录")
+    st.caption("选择要在右侧展示的 VLOC 图表；评估完成后默认全部打开。")
+    for chart_id in VLOC_CHART_IDS:
+        key = f"vloc_chart_{chart_id}"
+        if key not in st.session_state:
+            st.session_state[key] = True
+
+    select_col, clear_col = st.columns(2)
+    if select_col.button("全选", key="vloc_chart_select_all"):
+        for chart_id in VLOC_CHART_IDS:
+            st.session_state[f"vloc_chart_{chart_id}"] = True
+    if clear_col.button("清除", key="vloc_chart_clear"):
+        for chart_id in VLOC_CHART_IDS:
+            st.session_state[f"vloc_chart_{chart_id}"] = False
+
+    selected: set[str] = set()
+    for start in range(0, len(VLOC_CHART_OPTIONS), 3):
+        columns = st.columns(3)
+        for column, (chart_id, label) in zip(columns, VLOC_CHART_OPTIONS[start : start + 3]):
+            with column:
+                if st.checkbox(label, key=f"vloc_chart_{chart_id}"):
+                    selected.add(chart_id)
+    return selected
+
+
+def show_vloc_visuals(report: dict[str, Any], selected_chart_ids: set[str] | None = None) -> None:
     """VLOC 专用可视化页面。
 
     VLOC 需求文档要求按 nav/vloc 对比展示：
@@ -724,34 +770,46 @@ def show_vloc_visuals(report: dict[str, Any]) -> None:
         ],
     )
 
+    selected = selected_chart_ids if selected_chart_ids is not None else set(VLOC_CHART_IDS)
+    selected = set(selected)
+
+    def plot_selected(figures: list[tuple[str, go.Figure]]) -> None:
+        for chart_id, fig in figures:
+            if chart_id in selected:
+                st.plotly_chart(fig, use_container_width=True)
+
     st.subheader("VLOC 可视化")
-    for fig in [fig3d, fig_xy, fig_error, fig_height]:
-        st.plotly_chart(fig, use_container_width=True)
-    st.markdown("#### 导航与 VLOC 状态")
-    for fig in [nav_mode_fig, nav_velocity_fig, nav_reset_fig, vloc_status_fig]:
-        st.plotly_chart(fig, use_container_width=True)
-    st.markdown("#### Nav / VLOC 随时间变化与误差")
-    for fig in [fig_position_compare, fig_attitude_compare, fig_position_error, fig_attitude_error]:
-        st.plotly_chart(fig, use_container_width=True)
+    trajectory_figs = [
+        ("trajectory3d", fig3d),
+        ("trajectoryXY", fig_xy),
+        ("errorDistance", fig_error),
+        ("heightComparison", fig_height),
+    ]
+    status_figs = [
+        ("navStatusModes", nav_mode_fig),
+        ("navVelocity", nav_velocity_fig),
+        ("navResetCounts", nav_reset_fig),
+        ("vlocStatus", vloc_status_fig),
+    ]
+    comparison_figs = [
+        ("positionCompareComposite", fig_position_compare),
+        ("attitudeCompareComposite", fig_attitude_compare),
+        ("positionErrorComposite", fig_position_error),
+        ("attitudeErrorComposite", fig_attitude_error),
+    ]
+    plot_selected(trajectory_figs)
+    if selected.intersection(chart_id for chart_id, _fig in status_figs):
+        st.markdown("#### 导航与 VLOC 状态")
+        plot_selected(status_figs)
+    if selected.intersection(chart_id for chart_id, _fig in comparison_figs):
+        st.markdown("#### Nav / VLOC 随时间变化与误差")
+        plot_selected(comparison_figs)
 
     if not comparison.empty:
         with st.expander("VLOC 逐帧对比明细"):
             st.dataframe(comparison, use_container_width=True, hide_index=True)
 
-    html_figs = [
-        fig3d,
-        fig_xy,
-        fig_error,
-        fig_height,
-        nav_mode_fig,
-        nav_velocity_fig,
-        nav_reset_fig,
-        vloc_status_fig,
-        fig_position_compare,
-        fig_attitude_compare,
-        fig_position_error,
-        fig_attitude_error,
-    ]
+    html_figs = [fig for chart_id, fig in [*trajectory_figs, *status_figs, *comparison_figs] if chart_id in selected]
     html = build_html_report(report, html_figs)
     st.download_button("下载 HTML 可视化报告", html, file_name="vo_evaluation_report.html", mime="text/html")
 

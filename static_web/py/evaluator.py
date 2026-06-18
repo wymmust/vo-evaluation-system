@@ -709,8 +709,8 @@ def vloc_nav_status_frame(nav: Trajectory, target_stamps: np.ndarray, timestamps
     for output_name, extra_name in nearest_fields.items():
         frame[output_name] = extra_values_nearest(nav, extra_name, target_stamps)
 
-    for field in ("vx", "vy", "vz", "height"):
-        frame[field] = extra_values_linear(nav, field, target_stamps)
+    for extra_field in ("vx", "vy", "vz", "height"):
+        frame[extra_field] = extra_values_linear(nav, extra_field, target_stamps)
     frame["velocity_norm"] = np.linalg.norm(frame[["vx", "vy", "vz"]].to_numpy(dtype=float), axis=1)
     return frame
 
@@ -718,8 +718,8 @@ def vloc_nav_status_frame(nav: Trajectory, target_stamps: np.ndarray, timestamps
 def vloc_est_status_frame(vloc: Trajectory) -> pd.DataFrame:
     """提取有效 VLOC 样本自身的状态字段。"""
     frame = pd.DataFrame({"timestamp": vloc.stamps})
-    for field in ("vloc_mode", "num_inliers", "reset_count", "height"):
-        frame[field] = trajectory_extra_or_nan(vloc, field)
+    for extra_field in ("vloc_mode", "num_inliers", "reset_count", "height"):
+        frame[extra_field] = trajectory_extra_or_nan(vloc, extra_field)
     return frame
 
 

@@ -26,6 +26,10 @@ const els = {
   dataDirStatus: document.getElementById("dataDirStatus"),
   logDirStatus: document.getElementById("logDirStatus"),
   modeAndAlignmentSection: document.getElementById("modeAndAlignmentSection"),
+  vlocChartDirectorySection: document.getElementById("vlocChartDirectorySection"),
+  vlocChartList: document.getElementById("vlocChartList"),
+  vlocChartSelectAll: document.getElementById("vlocChartSelectAll"),
+  vlocChartClear: document.getElementById("vlocChartClear"),
   downloadJson: document.getElementById("downloadJson"),
   downloadPoseCsv: document.getElementById("downloadPoseCsv"),
   downloadSegmentCsv: document.getElementById("downloadSegmentCsv"),
@@ -63,6 +67,21 @@ const VLOC_ONLY_CHART_IDS = new Set([
   "vlocStatus",
 ]);
 
+const VLOC_CHART_OPTIONS = [
+  { id: "trajectory3d", label: "3D 轨迹" },
+  { id: "trajectoryXY", label: "俯视 NE 轨迹" },
+  { id: "errorDistance", label: "误差随路程变化" },
+  { id: "heightComparison", label: "对地高随时间变化" },
+  { id: "navStatusModes", label: "导航状态信息" },
+  { id: "navVelocity", label: "导航速度信息" },
+  { id: "navResetCounts", label: "导航 reset 计数" },
+  { id: "vlocStatus", label: "VLOC 状态信息" },
+  { id: "positionCompareComposite", label: "NED 随时间变化" },
+  { id: "attitudeCompareComposite", label: "YPR 随时间变化" },
+  { id: "positionErrorComposite", label: "NED 误差随时间变化" },
+  { id: "attitudeErrorComposite", label: "YPR 误差随时间变化" },
+];
+
 const VO_ONLY_CHART_IDS = new Set([
   "segmentError",
   "speedError",
@@ -71,8 +90,10 @@ const VO_ONLY_CHART_IDS = new Set([
   "rpeRotationTime",
 ]);
 
-const VLOC_VISIBLE_CHART_IDS = chartIds.filter((id) => !VO_ONLY_CHART_IDS.has(id));
+const VLOC_VISIBLE_CHART_IDS = VLOC_CHART_OPTIONS.map((option) => option.id);
 const VO_VISIBLE_CHART_IDS = chartIds.filter((id) => !VLOC_ONLY_CHART_IDS.has(id));
+
+state.vlocSelectedChartIds = new Set(VLOC_VISIBLE_CHART_IDS);
 
 init();
 
@@ -97,6 +118,9 @@ function wireEvents() {
   els.dataDirButton.addEventListener("click", () => els.dataDirFiles.click());
   els.logDirButton.addEventListener("click", () => els.logDirFiles.click());
   document.getElementById("interpolationPreset").addEventListener("change", applyInterpolationPreset);
+  els.vlocChartList?.addEventListener("change", handleVlocChartDirectoryChange);
+  els.vlocChartSelectAll?.addEventListener("click", selectAllVlocChartDirectory);
+  els.vlocChartClear?.addEventListener("click", clearVlocChartDirectory);
   els.runButton.addEventListener("click", runEvaluation);
   els.downloadJson.addEventListener("click", () => downloadText("vo_evaluation_metrics.json", JSON.stringify(state.report, null, 2), "application/json"));
   els.downloadPoseCsv.addEventListener("click", () => downloadText("vo_per_pose_errors.csv", toCsv(state.report?.per_pose || []), "text/csv"));
@@ -110,6 +134,7 @@ function wireEvents() {
   ));
   els.downloadHtml.addEventListener("click", () => downloadText("vo_evaluation_report.html", buildHtmlReport(), "text/html"));
   updateEntryModeUi();
+  renderVlocChartDirectory();
   updateDirectoryStatus("data");
   updateDirectoryStatus("log");
 }
@@ -402,6 +427,59 @@ function visibleChartIdsForEntryMode(entryMode) {
   return entryMode === "vloc" ? VLOC_VISIBLE_CHART_IDS : VO_VISIBLE_CHART_IDS;
 }
 
+function selectedVlocChartIds() {
+  if (!(state.vlocSelectedChartIds instanceof Set)) {
+    state.vlocSelectedChartIds = new Set(VLOC_VISIBLE_CHART_IDS);
+  }
+  return state.vlocSelectedChartIds;
+}
+
+function resetVlocChartDirectorySelection() {
+  state.vlocSelectedChartIds = new Set(VLOC_VISIBLE_CHART_IDS);
+}
+
+function renderVlocChartDirectory() {
+  if (!els.vlocChartList) {
+    return;
+  }
+  const selected = selectedVlocChartIds();
+  els.vlocChartList.innerHTML = VLOC_CHART_OPTIONS.map((option) => `
+    <label class="chart-directory-item">
+      <input type="checkbox" data-chart-id="${escapeHtml(option.id)}" ${selected.has(option.id) ? "checked" : ""} />
+      <span>${escapeHtml(option.label)}</span>
+    </label>
+  `).join("");
+}
+
+function handleVlocChartDirectoryChange(event) {
+  const target = event.target;
+  const chartId = target?.dataset?.chartId;
+  if (!chartId || !VLOC_VISIBLE_CHART_IDS.includes(chartId)) {
+    return;
+  }
+  const selected = selectedVlocChartIds();
+  if (target.checked) {
+    selected.add(chartId);
+  } else {
+    selected.delete(chartId);
+  }
+  applyEntryModeChartVisibility(reportEntryMode(state.report));
+}
+
+function setVlocChartDirectorySelection(chartIdsToShow) {
+  state.vlocSelectedChartIds = new Set(chartIdsToShow);
+  renderVlocChartDirectory();
+  applyEntryModeChartVisibility(reportEntryMode(state.report));
+}
+
+function selectAllVlocChartDirectory() {
+  setVlocChartDirectorySelection(VLOC_VISIBLE_CHART_IDS);
+}
+
+function clearVlocChartDirectory() {
+  setVlocChartDirectorySelection([]);
+}
+
 function applyEntryModeTitles(entryMode) {
   const isVloc = entryMode === "vloc";
   if (els.summaryKicker) {
@@ -419,13 +497,15 @@ function applyEntryModeTitles(entryMode) {
 }
 
 function applyEntryModeChartVisibility(entryMode) {
-  const visibleIds = new Set(visibleChartIdsForEntryMode(entryMode));
+  const modeVisibleIds = new Set(visibleChartIdsForEntryMode(entryMode));
+  const selectedVlocIds = entryMode === "vloc" ? selectedVlocChartIds() : null;
   for (const id of chartIds) {
     const node = document.getElementById(id);
     if (!node) continue;
-    const shouldShow = visibleIds.has(id);
+    const belongsToMode = modeVisibleIds.has(id);
+    const shouldShow = belongsToMode && (entryMode !== "vloc" || selectedVlocIds.has(id));
     node.hidden = !shouldShow;
-    if (!shouldShow && typeof Plotly !== "undefined" && typeof Plotly.purge === "function") {
+    if (!belongsToMode && typeof Plotly !== "undefined" && typeof Plotly.purge === "function") {
       Plotly.purge(id);
     }
   }
@@ -468,6 +548,7 @@ function updateEntryModeUi() {
     els.modeAndAlignmentSection.hidden = entryMode === "vloc";
   }
   applyEntryModeTitles(entryMode);
+  renderVlocChartDirectory();
   applyEntryModeChartVisibility(entryMode);
   updateEntryModeHint();
   updateRunButton();
@@ -512,6 +593,10 @@ function setBusy(isBusy) {
 }
 
 function renderReport(report) {
+  if (reportEntryMode(report) === "vloc") {
+    resetVlocChartDirectorySelection();
+    renderVlocChartDirectory();
+  }
   updateEntryModeUi();
   renderMetrics(report);
   renderMessages(report);
