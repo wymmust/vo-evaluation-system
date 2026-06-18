@@ -92,44 +92,7 @@
 
         <section id="evaluationParametersSection" data-entry-hide="vloc">
           <h2>评估参数</h2>
-          <label data-entry-hide="vloc,vo">
-            时间关联最大误差 s（不按时间填 -1）
-            <input id="maxTimeDiff" type="number" value="0.02" step="0.01" />
-          </label>
-          <label data-entry-hide="vloc,vo">
-            Reference 频率 / 插值间隔预设
-            <select id="interpolationPreset">
-              <option value="0.15" selected>20 Hz reference（0.15 s 推荐）</option>
-              <option value="0.05">100 Hz reference（0.05 s）</option>
-              <option value="0.08">50 Hz reference（0.08 s）</option>
-              <option value="0.30">10 Hz reference（0.30 s）</option>
-              <option value="-1">不限制 GT gap</option>
-              <option value="custom">自定义</option>
-            </select>
-          </label>
-          <label data-entry-hide="vloc,vo">
-            GT 插值最大间隔 s（不限制填 -1）
-            <input id="maxInterpolationGap" type="number" value="0.15" step="0.01" />
-          </label>
-          <label data-entry-hide="vloc,vo">
-            插值外推
-            <select id="allowExtrapolation">
-              <option value="false" selected>不允许外推（推荐）</option>
-              <option value="true">允许外推</option>
-            </select>
-          </label>
-          <label data-entry-hide="vloc,vo">
-            姿态插值
-            <select id="interpolateRotation">
-              <option value="true" selected>GT 姿态用 SLERP 插值</option>
-              <option value="false">只插位置，不插姿态</option>
-            </select>
-          </label>
-          <label data-entry-hide="vloc,vo">
-            VO 时间戳偏移 s
-            <input id="timeOffset" type="number" value="0" step="0.01" />
-          </label>
-          <label data-entry-hide="vloc">
+          <label>
             RPE 统计间隔
             <div class="inline-fields">
               <input id="rpeDeltaValue" type="number" value="1" min="0.001" step="1" />
@@ -139,7 +102,7 @@
               </select>
             </div>
           </label>
-          <label data-entry-hide="vloc">
+          <label>
             尺度图间隔
             <div class="inline-fields">
               <input id="scaleDeltaValue" type="number" value="1" min="0.001" step="1" />
@@ -148,50 +111,6 @@
                 <option value="meters">m</option>
               </select>
             </div>
-          </label>
-          <label data-entry-hide="vloc">
-            长航程子轨迹长度 m
-            <input id="segmentLengths" type="text" value="50,100,200,500,1000,2000,5000" />
-          </label>
-          <label data-entry-hide="vloc">
-            每个长度最多抽样段数
-            <input id="maxSegments" type="number" value="10000" min="100" step="1000" />
-          </label>
-          <label data-entry-hide="vloc">
-            子轨迹起点步长 frames
-            <input id="segmentStep" type="number" value="10" min="1" step="1" />
-          </label>
-          <label data-entry-hide="vloc">
-            子轨迹长度容差比例
-            <input id="lengthTolerance" type="number" value="0.05" min="0" max="1" step="0.01" />
-          </label>
-        </section>
-
-        <section data-entry-hide="vloc">
-          <h2>诊断阈值</h2>
-          <label data-entry-hide="vloc,vo">
-            VO 重置/断点处理
-            <select id="segmentPolicy">
-              <option value="vo_timestamps">按 VO 时间戳统一评估</option>
-              <option value="segments" selected>按 VO 连续段逐段评估</option>
-              <option value="longest">只评估最长连续段</option>
-            </select>
-          </label>
-          <label>
-            断点步长阈值 m
-            <input id="discontinuityStep" type="number" value="100" min="0" step="10" />
-          </label>
-          <label>
-            断点时间间隔阈值 s
-            <input id="discontinuityGap" type="number" value="5" min="0" step="1" />
-          </label>
-          <label>
-            发散绝对阈值 m
-            <input id="divergenceAbs" type="number" value="30" min="0" step="1" />
-          </label>
-          <label>
-            发散相对阈值 % 路程
-            <input id="divergenceRel" type="number" value="3" min="0" step="0.5" />
           </label>
         </section>
 
@@ -254,9 +173,6 @@
             <div id="navVelocity" class="chart"></div>
             <div id="navResetCounts" class="chart"></div>
             <div id="vlocStatus" class="chart"></div>
-            <div id="segmentError" class="chart"></div>
-            <div id="speedError" class="chart"></div>
-            <div id="sim3ScaleTime" class="chart"></div>
             <div id="positionCompareComposite" class="chart"></div>
             <div id="attitudeCompareComposite" class="chart"></div>
             <div id="positionErrorComposite" class="chart"></div>

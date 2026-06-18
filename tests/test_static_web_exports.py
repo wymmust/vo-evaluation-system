@@ -42,6 +42,28 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
     assert 'id="voChartSelectAll"' in html
     assert 'id="voChartClear"' in html
     assert 'id="evaluationParametersSection" data-entry-hide="vloc"' in html
+    assert 'id="rpeDeltaValue"' in html
+    assert 'id="rpeDeltaUnit"' in html
+    assert 'id="scaleDeltaValue"' in html
+    assert 'id="scaleDeltaUnit"' in html
+    for removed_id in [
+        "maxTimeDiff",
+        "interpolationPreset",
+        "maxInterpolationGap",
+        "allowExtrapolation",
+        "interpolateRotation",
+        "timeOffset",
+        "segmentLengths",
+        "maxSegments",
+        "segmentStep",
+        "lengthTolerance",
+        "segmentPolicy",
+        "discontinuityStep",
+        "discontinuityGap",
+        "divergenceAbs",
+        "divergenceRel",
+    ]:
+        assert f'id="{removed_id}"' not in html
     assert 'id="seriesXTime"' not in html
 
     source = Path("static_web/app.js").read_text()
@@ -49,6 +71,28 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
     assert "state.voSelectedChartIds" in source
     assert "renderVoChartDirectory" in source
     assert "selectedVoChartIds" in source
+    for chart_id in [
+        "trajectoryXY",
+        "segmentError",
+        "speedError",
+        "sim3ScaleTime",
+    ]:
+        assert f'id: "{chart_id}"' not in source.split("const VO_CHART_OPTIONS = [", 1)[1].split("];", 1)[0]
+    for chart_id in [
+        "trajectory3d",
+        "errorDistance",
+        "navStatusModes",
+        "navVelocity",
+        "navResetCounts",
+        "vlocStatus",
+        "positionCompareComposite",
+        "attitudeCompareComposite",
+        "positionErrorComposite",
+        "attitudeErrorComposite",
+        "rpeTranslationTime",
+        "rpeRotationTime",
+    ]:
+        assert f'id: "{chart_id}"' in source.split("const VO_CHART_OPTIONS = [", 1)[1].split("];", 1)[0]
 
     css = Path("static_web/style.css").read_text()
     assert "[hidden]" in css
@@ -83,8 +127,19 @@ def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
     assert 'orientation_correction="none"' in source
     assert 'association_mode="interpolate_gt"' in source
     assert 'max_interpolation_gap_s=1.0' in source
-    assert "length_tolerance = st.number_input(" in source
-    assert "value=0.05" in source
+    assert "st.number_input(\"RPE 统计间隔\"" in source
+    assert "st.number_input(\"尺度图间隔\"" in source
+    for removed_widget_call in [
+        'st.text_input("长航程子轨迹长度 m"',
+        'st.number_input("每个长度最多抽样段数"',
+        'st.number_input("子轨迹起点步长',
+        'st.number_input("子轨迹长度容差比例"',
+        'st.number_input("断点步长阈值 m"',
+        'st.number_input("断点时间间隔阈值 s"',
+        'st.number_input("发散绝对阈值 m"',
+        'st.number_input("发散相对阈值 % 路程"',
+    ]:
+        assert removed_widget_call not in source
     assert 'if entry_mode == "vo":' in source
     assert 'report = evaluator.evaluate_vo_bundle(bundle, cfg)' in source
     assert 'segment_policy_label = "按VO连续段逐段评估"' in source
@@ -94,8 +149,6 @@ def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
     assert "selected_vo_chart_ids" in source
     assert "show_visuals(report, entry_mode, selected_vloc_chart_ids, selected_vo_chart_ids)" in source
     assert 'segment_policy_label = "按VO时间戳统一评估（推荐）"' in source
-    assert 'divergence_abs = st.number_input("发散绝对阈值 m", value=30.0' in source
-    assert 'divergence_rel = st.number_input("发散相对阈值 % 路程", value=3.0' in source
     assert "视觉布局与 static_web 保持同一套信息组织" not in source
 
 
@@ -135,8 +188,6 @@ def test_static_directory_picker_shows_selected_directory_name_in_custom_status(
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
-          interpolationPreset: makeElement("0.15"),
-          maxInterpolationGap: makeElement("0.15"),
         };
         const document = {
           body: { appendChild() {} },
@@ -224,28 +275,13 @@ def test_static_vloc_mode_hides_transform_controls_and_uses_fixed_sync_defaults(
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
-          interpolationPreset: makeElement("0.15"),
-          maxInterpolationGap: makeElement("0.15"),
-          maxTimeDiff: makeElement("0.02"),
-          allowExtrapolation: makeElement("false"),
-          interpolateRotation: makeElement("true"),
-          timeOffset: makeElement("2.0"),
           rpeDeltaValue: makeElement("1"),
           rpeDeltaUnit: makeElement("frames"),
           scaleDeltaValue: makeElement("100"),
           scaleDeltaUnit: makeElement("meters"),
-          segmentLengths: makeElement("50,100"),
-          maxSegments: makeElement("10000"),
-          segmentStep: makeElement("10"),
-          lengthTolerance: makeElement("0.05"),
           alignment: makeElement("sim3"),
           orientationCorrection: makeElement("auto"),
           associationMode: makeElement("nearest"),
-          discontinuityStep: makeElement("100"),
-          discontinuityGap: makeElement("5"),
-          divergenceAbs: makeElement("10"),
-          divergenceRel: makeElement("2"),
-          segmentPolicy: makeElement("segments"),
           modeAndAlignmentSection: makeElement(),
         };
         const hiddenNodes = [
@@ -331,28 +367,13 @@ def test_static_vo_mode_hides_fixed_workflow_controls_and_uses_fixed_defaults():
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
-          interpolationPreset: makeElement("0.05"),
-          maxInterpolationGap: makeElement("0.05"),
-          maxTimeDiff: makeElement("0.50"),
-          allowExtrapolation: makeElement("true"),
-          interpolateRotation: makeElement("false"),
-          timeOffset: makeElement("2.0"),
           rpeDeltaValue: makeElement("100"),
           rpeDeltaUnit: makeElement("meters"),
           scaleDeltaValue: makeElement("50"),
           scaleDeltaUnit: makeElement("meters"),
-          segmentLengths: makeElement("100,200"),
-          maxSegments: makeElement("500"),
-          segmentStep: makeElement("5"),
-          lengthTolerance: makeElement("0.10"),
           alignment: makeElement("none"),
           orientationCorrection: makeElement("auto"),
           associationMode: makeElement("nearest"),
-          discontinuityStep: makeElement("100"),
-          discontinuityGap: makeElement("5"),
-          divergenceAbs: makeElement("10"),
-          divergenceRel: makeElement("2"),
-          segmentPolicy: makeElement("longest"),
           modeAndAlignmentSection: makeElement(),
         };
         const hiddenNodes = [
@@ -407,7 +428,17 @@ def test_static_vo_mode_hides_fixed_workflow_controls_and_uses_fixed_defaults():
     assert payload["config"]["time_offset_s"] == 0.0
     assert payload["config"]["continuous_segment_policy"] == "segments"
     assert payload["config"]["rpe_delta_value"] == 100
-    assert payload["config"]["segment_lengths_m"] == [100, 200]
+    assert payload["config"]["rpe_delta_unit"] == "meters"
+    assert payload["config"]["scale_delta_value"] == 50
+    assert payload["config"]["scale_delta_unit"] == "meters"
+    assert payload["config"]["segment_lengths_m"] == [50, 100, 200, 500, 1000, 2000, 5000]
+    assert payload["config"]["max_segments_per_length"] == 10000
+    assert payload["config"]["segment_step_frames"] == 10
+    assert payload["config"]["max_segment_length_diff_ratio"] == 0.05
+    assert payload["config"]["discontinuity_step_m"] == 100
+    assert payload["config"]["discontinuity_time_gap_s"] == 5
+    assert payload["config"]["divergence_abs_m"] == 30
+    assert payload["config"]["divergence_rel_percent"] == 3
     assert payload["hiddenStates"] == [True, False]
     assert payload["shownStates"] == [False]
     assert payload["sectionHidden"] is True
@@ -488,35 +519,37 @@ def test_static_python_sources_are_fetched_without_browser_cache():
 
 def test_static_scale_interval_controls_are_wired_into_config():
     html = Path("static_web/index.html").read_text()
+    assert 'id="rpeDeltaValue"' in html
+    assert 'id="rpeDeltaUnit"' in html
     assert 'id="scaleDeltaValue"' in html
     assert 'id="scaleDeltaUnit"' in html
+    for removed_id in [
+        "maxTimeDiff",
+        "maxInterpolationGap",
+        "allowExtrapolation",
+        "interpolateRotation",
+        "timeOffset",
+        "segmentLengths",
+        "maxSegments",
+        "segmentStep",
+        "lengthTolerance",
+        "discontinuityStep",
+        "discontinuityGap",
+        "divergenceAbs",
+        "divergenceRel",
+    ]:
+        assert f'id="{removed_id}"' not in html
 
     script = textwrap.dedent(
         r"""
         const fs = require("fs");
         const vm = require("vm");
         const elements = {
-          maxTimeDiff: { value: "0.02" },
-          maxInterpolationGap: { value: "0.15" },
-          allowExtrapolation: { value: "false" },
-          interpolateRotation: { value: "true" },
-          timeOffset: { value: "0" },
+          entryMode: { value: "vo" },
           rpeDeltaValue: { value: "1" },
           rpeDeltaUnit: { value: "frames" },
           scaleDeltaValue: { value: "100" },
           scaleDeltaUnit: { value: "meters" },
-          segmentLengths: { value: "50,100" },
-          maxSegments: { value: "10000" },
-          segmentStep: { value: "10" },
-          lengthTolerance: { value: "0.2" },
-          alignment: { value: "sim3" },
-          orientationCorrection: { value: "auto" },
-          associationMode: { value: "interpolate_gt" },
-          discontinuityStep: { value: "100" },
-          discontinuityGap: { value: "5" },
-          divergenceAbs: { value: "10" },
-          divergenceRel: { value: "2" },
-          segmentPolicy: { value: "segments" },
         };
         const element = { addEventListener() {}, classList: { add() {}, remove() {} }, style: {}, files: [], value: "" };
         const document = {
@@ -635,11 +668,16 @@ def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets(
 def test_static_visualization_renders_time_series_and_rpe_charts():
     html = Path("static_web/index.html").read_text()
     expected_ids = [
+        "trajectory3d",
+        "errorDistance",
+        "navStatusModes",
+        "navVelocity",
+        "navResetCounts",
+        "vlocStatus",
         "positionCompareComposite",
         "attitudeCompareComposite",
         "positionErrorComposite",
         "attitudeErrorComposite",
-        "sim3ScaleTime",
         "rpeTranslationTime",
         "rpeRotationTime",
     ]
@@ -712,6 +750,16 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
           per_pose: perPose,
           segment_errors: [],
           speed_bins: [],
+          vo_details: {
+            nav_status: [
+              { timestamp: 0, flight_mode: 3, navi_mode: 5, rtk_yaw: 1, rtk_alti: 0, position_reset_count: 0, altitude_reset_count: 1, heading_reset_count: 2, vx: 0.1, vy: 0.2, vz: 0.3, velocity_norm: 0.374 },
+              { timestamp: 1, flight_mode: 4, navi_mode: 6, rtk_yaw: 1, rtk_alti: 1, position_reset_count: 0, altitude_reset_count: 1, heading_reset_count: 3, vx: 0.4, vy: 0.5, vz: 0.6, velocity_norm: 0.877 },
+            ],
+            vo_status: [
+              { timestamp: 0, num_inliers: 40, is_keyframe: 1, time_cost: 3.5, reset_count: 0 },
+              { timestamp: 1, num_inliers: 41, is_keyframe: 0, time_cost: 3.7, reset_count: 1 },
+            ],
+          },
           trajectory_exports: {
             sim3_vo_tum: [
               { timestamp: 0, segment_id: 0, sim3_scale: 2 },
@@ -732,9 +780,12 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
         process.stdout.write(JSON.stringify({
           ids: plots.map((plot) => plot.id),
           trajectory3dNames: byId.trajectory3d.data.map((trace) => trace.name),
-          gtStartText: byId.trajectory3d.data[2].text,
-          gtEndText: byId.trajectory3d.data[3].text,
-          gtStartMarker: byId.trajectory3d.data[2].marker,
+          voStartText: byId.trajectory3d.data.find((trace) => trace.name === "vo start").text,
+          voEndText: byId.trajectory3d.data.find((trace) => trace.name === "vo end").text,
+          voStartMarker: byId.trajectory3d.data.find((trace) => trace.name === "vo start").marker,
+          voStartTextFont: byId.trajectory3d.data.find((trace) => trace.name === "vo start").textfont,
+          navVelocityNames: byId.navVelocity.data.map((trace) => trace.name),
+          voStatusNames: byId.vlocStatus.data.map((trace) => trace.name),
           positionCompareNames: byId.positionCompareComposite.data.map((trace) => trace.name),
           thirdRowColors: [
             byId.positionCompareComposite.data[4].line.color,
@@ -747,60 +798,20 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
     payload = json.loads(result.stdout)
     rendered_ids = set(payload["ids"])
     assert set(expected_ids).issubset(rendered_ids)
-    assert {"GT start", "GT end", "VO start", "VO end"}.issubset(set(payload["trajectory3dNames"]))
-    assert payload["gtStartText"] == ["GT S1", "GT S2"]
-    assert payload["gtEndText"] == ["GT E1", "GT E2"]
-    assert payload["gtStartMarker"]["size"] == 9
-    assert payload["gtStartMarker"]["color"] == "#2563eb"
+    assert {"trajectoryXY", "segmentError", "speedError", "sim3ScaleTime"}.isdisjoint(rendered_ids)
+    assert "GT start" not in payload["trajectory3dNames"]
+    assert "GT end" not in payload["trajectory3dNames"]
+    assert {"vo start", "vo end"}.issubset(set(payload["trajectory3dNames"]))
+    assert payload["voStartText"] == ["vo S1", "vo S2"]
+    assert payload["voEndText"] == ["vo E1", "vo E2"]
+    assert payload["voStartMarker"]["size"] == 5
+    assert payload["voStartMarker"]["color"] == "#9333ea"
+    assert payload["voStartMarker"]["line"]["width"] == 1
+    assert payload["voStartTextFont"]["size"] == 10
+    assert "velocity_norm" in payload["navVelocityNames"]
+    assert {"num_inliers", "is_keyframe", "time_cost", "reset_count"}.issubset(set(payload["voStatusNames"]))
     assert {"X Ground truth", "X VO aligned", "Y Ground truth", "Y VO aligned", "Z Ground truth", "Z VO aligned"} == set(payload["positionCompareNames"])
     assert payload["thirdRowColors"] == ["#dc2626", "#0891b2"]
-
-
-def test_static_sim3_scale_chart_uses_local_scale_by_timestamp():
-    script = textwrap.dedent(
-        r"""
-        const fs = require("fs");
-        const vm = require("vm");
-        const element = {
-          addEventListener() {},
-          classList: { add() {}, remove() {} },
-          style: {},
-          files: [],
-          value: "",
-          disabled: false,
-          hidden: false,
-          textContent: "",
-        };
-        const document = {
-          body: { appendChild() {} },
-          getElementById() { return element; },
-          createElement() { return { ...element, click() {}, remove() {} }; },
-        };
-        const plots = [];
-        const context = {
-          console,
-          document,
-          window: { location: { protocol: "http:" } },
-          TextEncoder,
-          Uint8Array,
-          DataView,
-          Blob: function Blob() {},
-          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
-          Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); }, purge() {} },
-        };
-        context.globalThis = context;
-        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
-        vm.runInNewContext(code, context);
-        context.renderSim3ScaleTimeChart("sim3ScaleTime", [
-          { timestamp: 10, segment_id: 0, local_sim3_scale: 2, scale_available: true },
-          { timestamp: 11, segment_id: 0, local_sim3_scale: 2, scale_available: true },
-          { timestamp: 20, segment_id: 1, local_sim3_scale: 3, scale_available: true },
-        ], {});
-        process.stdout.write(JSON.stringify({ x: plots[0].data[0].x, y: plots[0].data[0].y }));
-        """
-    )
-    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
-    assert json.loads(result.stdout) == {"x": [10, 11, 20], "y": [2, 2, 3]}
 
 
 def test_static_composite_angle_time_series_unwraps_180_degree_boundary():
@@ -1192,8 +1203,6 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           modeAndAlignmentSection: makeElement(),
-          interpolationPreset: makeElement("0.15"),
-          maxInterpolationGap: makeElement("0.15"),
           downloadJson: makeElement(),
           downloadPoseCsv: makeElement(),
           downloadSegmentCsv: makeElement(),
@@ -1204,9 +1213,6 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
           trajectory3d: makeElement(),
           trajectoryXY: makeElement(),
           errorDistance: makeElement(),
-          segmentError: makeElement(),
-          speedError: makeElement(),
-          sim3ScaleTime: makeElement(),
           rpeTranslationTime: makeElement(),
           rpeRotationTime: makeElement(),
           summaryKicker: makeElement(),
@@ -1238,9 +1244,6 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
 
         context.updateEntryModeUi();
         const vlocState = {
-          segmentErrorHidden: elements.segmentError.hidden,
-          speedErrorHidden: elements.speedError.hidden,
-          sim3ScaleHidden: elements.sim3ScaleTime.hidden,
           rpeTranslationHidden: elements.rpeTranslationTime.hidden,
           trajectory3dHidden: elements.trajectory3d.hidden,
           summaryTitle: elements.summaryTitle.textContent,
@@ -1250,9 +1253,6 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
         elements.entryMode.value = "vo";
         context.updateEntryModeUi();
         const voState = {
-          segmentErrorHidden: elements.segmentError.hidden,
-          speedErrorHidden: elements.speedError.hidden,
-          sim3ScaleHidden: elements.sim3ScaleTime.hidden,
           rpeTranslationHidden: elements.rpeTranslationTime.hidden,
           trajectory3dHidden: elements.trajectory3d.hidden,
           summaryTitle: elements.summaryTitle.textContent,
@@ -1264,16 +1264,10 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     payload = json.loads(result.stdout)
-    assert payload["vlocState"]["segmentErrorHidden"] is True
-    assert payload["vlocState"]["speedErrorHidden"] is True
-    assert payload["vlocState"]["sim3ScaleHidden"] is True
     assert payload["vlocState"]["rpeTranslationHidden"] is True
     assert payload["vlocState"]["trajectory3dHidden"] is False
     assert "VLOC" in payload["vlocState"]["summaryTitle"]
     assert "VLOC" in payload["vlocState"]["visualTitle"]
-    assert payload["voState"]["segmentErrorHidden"] is False
-    assert payload["voState"]["speedErrorHidden"] is False
-    assert payload["voState"]["sim3ScaleHidden"] is False
     assert payload["voState"]["rpeTranslationHidden"] is False
     assert payload["voState"]["trajectory3dHidden"] is False
     assert "VO" in payload["voState"]["summaryTitle"]
@@ -1321,8 +1315,6 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
           vlocChartList: makeElement(),
           vlocChartSelectAll: makeElement(),
           vlocChartClear: makeElement(),
-          interpolationPreset: makeElement("0.15"),
-          maxInterpolationGap: makeElement("0.15"),
           downloadJson: makeElement(),
           downloadPoseCsv: makeElement(),
           downloadSegmentCsv: makeElement(),
@@ -1339,7 +1331,6 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
         [
           "trajectory3d", "trajectoryXY", "errorDistance",
           "heightComparison", "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus",
-          "segmentError", "speedError", "sim3ScaleTime",
           "positionCompareComposite", "attitudeCompareComposite",
           "positionErrorComposite", "attitudeErrorComposite",
           "rpeTranslationTime", "rpeRotationTime",
@@ -1389,7 +1380,12 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
         context.clearVlocChartDirectory();
         elements.entryMode.value = "vo";
         context.applyEntryModeChartVisibility("vo");
-        const voStillVisible = ["segmentError", "speedError", "sim3ScaleTime", "rpeTranslationTime", "rpeRotationTime"].every((id) => elements[id].hidden === false);
+        const voStillVisible = [
+          "trajectory3d", "errorDistance", "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus",
+          "positionCompareComposite", "attitudeCompareComposite", "positionErrorComposite", "attitudeErrorComposite",
+          "rpeTranslationTime", "rpeRotationTime",
+        ].every((id) => elements[id].hidden === false);
+        const voDemandExcludedHidden = ["trajectoryXY", "heightComparison"].every((id) => elements[id].hidden === true);
 
         process.stdout.write(JSON.stringify({
           itemCount,
@@ -1397,6 +1393,7 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
           hiddenAfterClear,
           visibleAfterSelectAll,
           voStillVisible,
+          voDemandExcludedHidden,
           purged,
         }));
         """
@@ -1408,6 +1405,7 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
     assert payload["hiddenAfterClear"] is True
     assert payload["visibleAfterSelectAll"] is True
     assert payload["voStillVisible"] is True
+    assert payload["voDemandExcludedHidden"] is True
     assert "trajectory3d" not in payload["purged"]
 
 
@@ -1467,8 +1465,6 @@ def test_static_vloc_point_selection_excludes_3d_and_records_points():
           pointSelectionOutputSection: makeElement(),
           pointSelectionOutput: makeElement(),
           clearAllPointSelections: makeElement(),
-          interpolationPreset: makeElement("0.15"),
-          maxInterpolationGap: makeElement("0.15"),
           downloadJson: makeElement(),
           downloadPoseCsv: makeElement(),
           downloadSegmentCsv: makeElement(),
@@ -1485,7 +1481,6 @@ def test_static_vloc_point_selection_excludes_3d_and_records_points():
         [
           "trajectory3d", "trajectoryXY", "errorDistance",
           "heightComparison", "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus",
-          "segmentError", "speedError", "sim3ScaleTime",
           "positionCompareComposite", "attitudeCompareComposite",
           "positionErrorComposite", "attitudeErrorComposite",
           "rpeTranslationTime", "rpeRotationTime",
@@ -1713,8 +1708,6 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           modeAndAlignmentSection: makeElement(),
-          interpolationPreset: makeElement("0.15"),
-          maxInterpolationGap: makeElement("0.15"),
           downloadJson: makeElement(),
           downloadPoseCsv: makeElement(),
           downloadSegmentCsv: makeElement(),
@@ -1726,7 +1719,6 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
         };
         [
           "trajectory3d", "trajectoryXY", "errorDistance",
-          "segmentError", "speedError", "sim3ScaleTime",
           "positionCompareComposite", "attitudeCompareComposite",
           "positionErrorComposite", "attitudeErrorComposite",
           "rpeTranslationTime", "rpeRotationTime",
@@ -1795,7 +1787,6 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
           heightNames: byId.heightComparison.data.map((trace) => trace.name),
           navVelocityNames: byId.navVelocity.data.map((trace) => trace.name),
           vlocStatusNames: byId.vlocStatus.data.map((trace) => trace.name),
-          segmentHidden: elements.segmentError.hidden,
           navStatusHidden: elements.navStatusModes.hidden,
         }));
         """
@@ -1824,7 +1815,6 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
     assert payload["heightNames"] == ["nav height", "vloc height"]
     assert "velocity_norm" in payload["navVelocityNames"]
     assert {"vloc_mode", "reset_count", "num_inliers"}.issubset(set(payload["vlocStatusNames"]))
-    assert payload["segmentHidden"] is True
     assert payload["navStatusHidden"] is False
 
 
@@ -1858,8 +1848,6 @@ def test_static_vloc_metrics_hide_vo_specific_summary_cards():
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           modeAndAlignmentSection: makeElement(),
-          interpolationPreset: makeElement("0.15"),
-          maxInterpolationGap: makeElement("0.15"),
           downloadJson: makeElement(),
           downloadPoseCsv: makeElement(),
           downloadSegmentCsv: makeElement(),

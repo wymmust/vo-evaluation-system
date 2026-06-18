@@ -152,22 +152,24 @@ def test_streamlit_chart_directory_is_wired_to_vloc_and_vo_visuals():
         "attitudeErrorComposite",
     ]:
         assert chart_id in source
-
-
-def test_streamlit_sim3_scale_time_series_uses_exported_scale_by_timestamp():
-    from app import make_sim3_scale_time_series
-
-    frame = pd.DataFrame(
-        {
-            "timestamp": [10, 11, 20],
-            "segment_id": [0, 0, 1],
-            "local_sim3_scale": [2.0, 2.0, 3.0],
-        }
-    )
-    fig = make_sim3_scale_time_series(frame)
-
-    assert list(fig.data[0].x) == [10, 11, 20]
-    assert list(fig.data[0].y) == [2.0, 2.0, 3.0]
+    vo_options_source = source.split("VO_CHART_OPTIONS = [", 1)[1].split("]", 1)[0]
+    for chart_id in ["trajectoryXY", "segmentError", "speedError", "sim3ScaleTime", "heightComparison"]:
+        assert f'("{chart_id}",' not in vo_options_source
+    for chart_id in [
+        "trajectory3d",
+        "errorDistance",
+        "navStatusModes",
+        "navVelocity",
+        "navResetCounts",
+        "vlocStatus",
+        "positionCompareComposite",
+        "attitudeCompareComposite",
+        "positionErrorComposite",
+        "attitudeErrorComposite",
+        "rpeTranslationTime",
+        "rpeRotationTime",
+    ]:
+        assert f'("{chart_id}",' in vo_options_source
 
 
 def test_streamlit_trajectory_3d_marks_each_segment_start_and_end():
@@ -188,14 +190,18 @@ def test_streamlit_trajectory_3d_marks_each_segment_start_and_end():
     fig = make_trajectory_3d(frame)
     traces = {trace.name: trace for trace in fig.data}
 
-    assert {"GT start", "GT end", "VO start", "VO end"}.issubset(traces)
-    assert list(traces["GT start"].x) == [0.0, 10.0]
-    assert list(traces["GT end"].x) == [1.0, 11.0]
-    assert list(traces["GT start"].text) == ["GT S1", "GT S2"]
-    assert list(traces["GT end"].text) == ["GT E1", "GT E2"]
-    assert traces["GT start"].marker.size == 9
-    assert traces["GT start"].marker.color == "#2563eb"
-    assert traces["GT end"].marker.color == "#f97316"
+    assert "GT start" not in traces
+    assert "GT end" not in traces
+    assert {"vo start", "vo end"}.issubset(traces)
+    assert list(traces["vo start"].x) == [0.1, 10.1]
+    assert list(traces["vo end"].x) == [1.1, 11.1]
+    assert list(traces["vo start"].text) == ["vo S1", "vo S2"]
+    assert list(traces["vo end"].text) == ["vo E1", "vo E2"]
+    assert traces["vo start"].marker.size == 5
+    assert traces["vo start"].marker.color == "#9333ea"
+    assert traces["vo start"].marker.line.width == 1
+    assert traces["vo start"].textfont.size == 10
+    assert traces["vo end"].marker.color == "#ef4444"
 
 
 def test_streamlit_vloc_trajectory_3d_marks_only_vloc_endpoints_with_small_markers():

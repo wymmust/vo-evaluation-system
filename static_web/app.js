@@ -59,9 +59,6 @@ const chartIds = [
   "navVelocity",
   "navResetCounts",
   "vlocStatus",
-  "segmentError",
-  "speedError",
-  "sim3ScaleTime",
   "positionCompareComposite",
   "attitudeCompareComposite",
   "positionErrorComposite",
@@ -87,11 +84,11 @@ const VLOC_CHART_OPTIONS = [
 
 const VO_CHART_OPTIONS = [
   { id: "trajectory3d", label: "3D 轨迹" },
-  { id: "trajectoryXY", label: "俯视 XY 轨迹" },
-  { id: "errorDistance", label: "误差随路程变化" },
-  { id: "segmentError", label: "按距离子轨迹误差" },
-  { id: "speedError", label: "速度分箱误差" },
-  { id: "sim3ScaleTime", label: "局部 Sim3 尺度" },
+  { id: "errorDistance", label: "ATE 绝对位姿误差" },
+  { id: "navStatusModes", label: "导航状态信息" },
+  { id: "navVelocity", label: "导航速度信息" },
+  { id: "navResetCounts", label: "导航 reset 计数" },
+  { id: "vlocStatus", label: "VO 状态信息" },
   { id: "positionCompareComposite", label: "位置随时间变化" },
   { id: "attitudeCompareComposite", label: "姿态随时间变化" },
   { id: "positionErrorComposite", label: "位置误差随时间变化" },
@@ -141,7 +138,6 @@ function wireEvents() {
   els.entryMode.addEventListener("change", handleEntryModeChange);
   els.dataDirButton.addEventListener("click", () => els.dataDirFiles.click());
   els.logDirButton.addEventListener("click", () => els.logDirFiles.click());
-  document.getElementById("interpolationPreset").addEventListener("change", applyInterpolationPreset);
   els.vlocChartList?.addEventListener("change", handleVlocChartDirectoryChange);
   els.vlocChartSelectAll?.addEventListener("click", selectAllVlocChartDirectory);
   els.vlocChartClear?.addEventListener("click", clearVlocChartDirectory);
@@ -294,27 +290,23 @@ async function runEvaluation() {
 function buildConfig() {
   const entryMode = valueOf("entryMode");
   const isVloc = entryMode === "vloc";
-  const isVo = entryMode === "vo";
-  const isFixedWorkflow = isVloc || isVo;
-  const maxTimeDiff = isFixedWorkflow ? -1 : numberOf("maxTimeDiff");
-  const maxInterpolationGap = isFixedWorkflow ? 1.0 : numberOf("maxInterpolationGap");
   const rpeDeltaValue = isVloc ? 1.0 : numberOf("rpeDeltaValue");
   const rpeDeltaUnit = isVloc ? "frames" : valueOf("rpeDeltaUnit");
   const scaleDeltaValue = isVloc ? 1.0 : numberOf("scaleDeltaValue");
   const scaleDeltaUnit = isVloc ? "frames" : valueOf("scaleDeltaUnit");
-  const segmentLengths = isVloc ? [50, 100, 200, 500, 1000, 2000, 5000] : parseFloatList(valueOf("segmentLengths"));
+  const defaultSegmentLengthsM = [50, 100, 200, 500, 1000, 2000, 5000];
   return {
     profile: "monocular_long_range_uav",
-    alignment: isVloc ? "none" : (isVo ? "sim3" : valueOf("alignment")),
-    orientation_correction: isFixedWorkflow ? "none" : valueOf("orientationCorrection"),
-    association_mode: isFixedWorkflow ? "interpolate_gt" : valueOf("associationMode"),
-    max_time_diff_s: isFixedWorkflow ? null : (maxTimeDiff < 0 ? null : maxTimeDiff),
-    max_interpolation_gap_s: isFixedWorkflow ? 1.0 : (maxInterpolationGap < 0 ? null : maxInterpolationGap),
-    allow_extrapolation: isFixedWorkflow ? false : boolOf("allowExtrapolation"),
-    interpolate_rotation: isFixedWorkflow ? true : boolOf("interpolateRotation"),
+    alignment: isVloc ? "none" : "sim3",
+    orientation_correction: "none",
+    association_mode: "interpolate_gt",
+    max_time_diff_s: null,
+    max_interpolation_gap_s: 1.0,
+    allow_extrapolation: false,
+    interpolate_rotation: true,
     interpolation_position_method: "linear",
     interpolation_rotation_method: "slerp",
-    time_offset_s: isFixedWorkflow ? 0.0 : numberOf("timeOffset"),
+    time_offset_s: 0.0,
     rpe_delta_frames: rpeDeltaUnit === "frames" ? Math.max(1, Math.round(rpeDeltaValue)) : 1,
     rpe_delta_value: rpeDeltaValue,
     rpe_delta_unit: rpeDeltaUnit,
@@ -323,27 +315,19 @@ function buildConfig() {
     scale_delta_unit: scaleDeltaUnit,
     scale_distance_tolerance_ratio: 0.05,
     rpe_delta_seconds: [1, 5, 10],
-    segment_lengths_m: segmentLengths,
-    max_segments_per_length: isVloc ? 10000 : integerOf("maxSegments"),
-    segment_step_frames: isVloc ? 10 : integerOf("segmentStep"),
-    max_segment_length_diff_ratio: isVloc ? 0.05 : numberOf("lengthTolerance"),
-    continuous_segment_policy: isVloc ? "vo_timestamps" : (isVo ? "segments" : valueOf("segmentPolicy")),
-    discontinuity_step_m: isVloc ? 100 : numberOf("discontinuityStep"),
-    discontinuity_time_gap_s: isVloc ? 5 : numberOf("discontinuityGap"),
-    divergence_abs_m: isVloc ? 30 : numberOf("divergenceAbs"),
-    divergence_rel_percent: isVloc ? 3 : numberOf("divergenceRel"),
+    segment_lengths_m: defaultSegmentLengthsM,
+    max_segments_per_length: 10000,
+    segment_step_frames: 10,
+    max_segment_length_diff_ratio: 0.05,
+    continuous_segment_policy: isVloc ? "vo_timestamps" : "segments",
+    discontinuity_step_m: 100,
+    discontinuity_time_gap_s: 5,
+    divergence_abs_m: 30,
+    divergence_rel_percent: 3,
     divergence_min_distance_m: 100,
     divergence_min_time_s: 5,
     top_k_worst_segments: 10,
   };
-}
-
-function applyInterpolationPreset() {
-  const preset = valueOf("interpolationPreset");
-  if (preset === "custom") {
-    return;
-  }
-  document.getElementById("maxInterpolationGap").value = preset;
 }
 
 function requiredBundleFiles(entryMode) {
@@ -1309,9 +1293,9 @@ function renderCharts(report) {
   }
 
   const perPose = report.per_pose || [];
-  const segmentSummary = report.segment_errors || [];
-  const speedBins = report.speed_bins || [];
-  const sim3Rows = report.trajectory_exports?.scale_per_frame || report.trajectory_exports?.sim3_vo_tum || [];
+  const details = report.vo_details || {};
+  const navStatus = details.nav_status || [];
+  const voStatus = details.vo_status || [];
   const rpeRows = report.trajectory_exports?.rpe_per_frame || [];
 
   const [gtX3d, gtY3d, gtZ3d] = segmentedValues(perPose, ["gt_x_m", "gt_y_m", "gt_z_m"], "visual_segment_id");
@@ -1319,51 +1303,53 @@ function renderCharts(report) {
   Plotly.newPlot("trajectory3d", [
     { x: gtX3d, y: gtY3d, z: gtZ3d, mode: "lines", type: "scatter3d", name: "Ground truth" },
     { x: estX3d, y: estY3d, z: estZ3d, mode: "lines", type: "scatter3d", name: "VO aligned" },
-    ...segmentEndpointTraces3d(perPose, ["gt_x_m", "gt_y_m", "gt_z_m"], "GT", {
-      startColor: "#2563eb",
-      endColor: "#f97316",
-      startSymbol: "circle",
-      endSymbol: "square",
-    }),
-    ...segmentEndpointTraces3d(perPose, ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"], "VO", {
+    ...segmentEndpointTraces3d(perPose, ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"], "vo", {
       startColor: "#9333ea",
       endColor: "#ef4444",
       startSymbol: "diamond",
       endSymbol: "x",
+      markerSize: 5,
+      markerLineWidth: 1,
+      textSize: 10,
     }),
   ], layout("3D 轨迹", { scene: { xaxis: { title: "x m" }, yaxis: { title: "y m" }, zaxis: { title: "z m" } } }));
-
-  const [gtX, gtY] = segmentedValues(perPose, ["gt_x_m", "gt_y_m"]);
-  const [estX, estY] = segmentedValues(perPose, ["est_x_aligned_m", "est_y_aligned_m"]);
-  Plotly.newPlot("trajectoryXY", [
-    { x: gtX, y: gtY, mode: "lines", type: "scatter", name: "Ground truth" },
-    { x: estX, y: estY, mode: "lines", type: "scatter", name: "VO aligned" },
-  ], layout("俯视 XY 轨迹", { xaxis: { title: "x m" }, yaxis: { title: "y m", scaleanchor: "x" } }));
 
   const [dist3d, err3d] = segmentedValues(perPose, ["distance_m", "error_m"]);
   const [distH, errH] = segmentedValues(perPose, ["distance_m", "horizontal_error_m"]);
   Plotly.newPlot("errorDistance", [
     { x: dist3d, y: err3d, mode: "lines", type: "scatter", name: "3D error" },
     { x: distH, y: errH, mode: "lines", type: "scatter", name: "horizontal" },
-  ], layout("误差随路程变化", { xaxis: { title: "distance m" }, yaxis: { title: "error m" } }));
+  ], layout("ATE 绝对位姿误差", { xaxis: { title: "distance m" }, yaxis: { title: "error m" } }));
 
-  const lengths = segmentSummary.map((row) => row.length_m);
-  Plotly.newPlot("segmentError", [
-    { x: lengths, y: segmentSummary.map((row) => row.translation_error_percent?.mean), mode: "lines+markers", type: "scatter", name: "translation mean %" },
-    { x: lengths, y: segmentSummary.map((row) => row.translation_error_percent?.p95), mode: "lines+markers", type: "scatter", name: "translation p95 %" },
-    { x: lengths, y: segmentSummary.map((row) => row.rotation_error_deg_per_m?.mean ?? null), mode: "lines+markers", type: "scatter", name: "rotation deg/m", yaxis: "y2" },
-  ], layout("按距离子轨迹误差", {
-    xaxis: { title: "segment length m" },
-    yaxis: { title: "translation error %" },
-    yaxis2: { title: "rotation deg/m", overlaying: "y", side: "right" },
-  }));
-
-  Plotly.newPlot("speedError", [
-    { x: speedBins.map((row) => row.speed_bin_mps), y: speedBins.map((row) => row.translation_error_percent?.mean), type: "bar", name: "mean %" },
-    { x: speedBins.map((row) => row.speed_bin_mps), y: speedBins.map((row) => row.translation_error_percent?.p95), type: "bar", name: "p95 %" },
-  ], layout("速度分箱误差", { xaxis: { title: "speed m/s" }, yaxis: { title: "translation error %" }, barmode: "group" }));
-
-  renderSim3ScaleTimeChart("sim3ScaleTime", sim3Rows, report.alignment || {});
+  renderMultiFieldTimeChart("navStatusModes", navStatus, "导航状态信息", [
+    { field: "flight_mode", name: "flight_mode" },
+    { field: "navi_mode", name: "navi_mode" },
+    { field: "rtk_yaw", name: "rtk_yaw" },
+    { field: "rtk_alti", name: "rtk_alti" },
+  ], { yTitle: "state" });
+  renderSingleCompositeChart("navVelocity", navStatus, {
+    title: "导航速度信息",
+    rows: [
+      { label: "vx", field: "vx", unit: "m/s" },
+      { label: "vy", field: "vy", unit: "m/s" },
+      { label: "vz", field: "vz", unit: "m/s" },
+      { label: "velocity_norm", field: "velocity_norm", unit: "m/s" },
+    ],
+  });
+  renderMultiFieldTimeChart("navResetCounts", navStatus, "导航 reset 计数", [
+    { field: "position_reset_count", name: "position_reset_count" },
+    { field: "altitude_reset_count", name: "altitude_reset_count" },
+    { field: "heading_reset_count", name: "heading_reset_count" },
+  ], { yTitle: "count" });
+  renderSingleCompositeChart("vlocStatus", voStatus, {
+    title: "VO 状态信息",
+    rows: [
+      { label: "num_inliers", field: "num_inliers", unit: "value" },
+      { label: "is_keyframe", field: "is_keyframe", unit: "value" },
+      { label: "time_cost", field: "time_cost", unit: "ms" },
+      { label: "reset_count", field: "reset_count", unit: "value" },
+    ],
+  });
   renderPairCompositeChart("positionCompareComposite", perPose, {
     title: "位置随时间变化",
     leftName: "Ground truth",
@@ -1921,30 +1907,6 @@ function renderRpeTimeChart(id, rows, spec) {
   Plotly.newPlot(id, [
     { x: timestamps, y: values, mode: "lines+markers", type: "scatter", name: spec.name },
   ], layout(spec.title, { xaxis: { title: "timestamp s" }, yaxis: { title: spec.unit } }));
-}
-
-function renderSim3ScaleTimeChart(id, rows, alignment = {}) {
-  const cleanRows = rows.filter((row) => (
-    row.scale_available !== false
-    && Number.isFinite(Number(row.timestamp))
-    && (Number.isFinite(Number(row.local_sim3_scale)) || Number.isFinite(Number(row.sim3_scale)))
-  ));
-  const displayRows = cleanRows.map((row) => ({
-    ...row,
-    display_scale: Number.isFinite(Number(row.local_sim3_scale)) ? row.local_sim3_scale : row.sim3_scale,
-  }));
-  const [timestamps, scales] = segmentedValues(displayRows, ["timestamp", "display_scale"]);
-  const fallbackScale = Number(alignment?.scale);
-  const data = timestamps.length
-    ? [{ x: timestamps, y: scales, mode: "lines+markers", type: "scatter", name: "local_sim3_scale" }]
-    : [{
-        x: Number.isFinite(fallbackScale) ? [0] : [],
-        y: Number.isFinite(fallbackScale) ? [fallbackScale] : [],
-        mode: "markers",
-        type: "scatter",
-        name: "local_sim3_scale",
-      }];
-  Plotly.newPlot(id, data, layout("局部 Sim3 尺度随时间戳变化", { xaxis: { title: "timestamp s" }, yaxis: { title: "GT/VO local scale" } }));
 }
 
 function segmentEndpointTraces3d(rows, columns, prefix, style) {
