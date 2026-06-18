@@ -126,6 +126,7 @@ def test_static_directory_picker_shows_selected_directory_name_in_custom_status(
           getElementById(id) { return elements[id] || makeElement(); },
           createElement() { return { ...makeElement(), remove() {} }; },
         };
+        const plotlyCallStats = { addTraceCalls: 0, deleteTraceCalls: 0 };
         const context = {
           console,
           document,
@@ -1266,6 +1267,273 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
     assert payload["visibleAfterSelectAll"] is True
     assert payload["voStillVisible"] is True
     assert "trajectory3d" not in payload["purged"]
+
+
+def test_static_vloc_point_selection_excludes_3d_and_records_points():
+    html = Path("static_web/index.html").read_text()
+    assert 'id="pointSelectionOutputSection"' in html
+    assert 'id="pointSelectionOutput"' in html
+    assert 'id="clearAllPointSelections"' in html
+
+    css = Path("static_web/style.css").read_text()
+    assert ".chart-point-tools" in css
+    assert ".point-selection-card" in css
+    assert ".selection-point-token" in css
+
+    source = Path("static_web/app.js").read_text()
+    assert 'PICKABLE_VLOC_CHART_IDS = VLOC_VISIBLE_CHART_IDS.filter((id) => id !== "trajectory3d")' in source
+    assert 'chart.on("plotly_click"' in source
+    assert 'chart.on("plotly_hover"' in source
+    assert 'event.key !== "Delete"' in source
+
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const makeElement = (value = "") => ({
+          value,
+          files: [],
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          style: {},
+          dataset: {},
+          data: [],
+          classList: { add() {}, remove() {}, toggle() {} },
+          addEventListener() {},
+          appendChild() {},
+          querySelector() { return null; },
+        });
+        const elements = {
+          runtimeStatus: makeElement(),
+          message: makeElement(),
+          runButton: makeElement(),
+          entryMode: makeElement("vloc"),
+          entryModeHint: makeElement(),
+          dataDirFiles: makeElement(),
+          logDirFiles: makeElement(),
+          dataDirButton: makeElement(),
+          logDirButton: makeElement(),
+          dataDirStatus: makeElement(),
+          logDirStatus: makeElement(),
+          modeAndAlignmentSection: makeElement(),
+          vlocChartDirectorySection: makeElement(),
+          vlocChartList: makeElement(),
+          vlocChartSelectAll: makeElement(),
+          vlocChartClear: makeElement(),
+          pointSelectionOutputSection: makeElement(),
+          pointSelectionOutput: makeElement(),
+          clearAllPointSelections: makeElement(),
+          interpolationPreset: makeElement("0.15"),
+          maxInterpolationGap: makeElement("0.15"),
+          downloadJson: makeElement(),
+          downloadPoseCsv: makeElement(),
+          downloadSegmentCsv: makeElement(),
+          downloadWorstCsv: makeElement(),
+          downloadConfigJson: makeElement(),
+          downloadTrajectoryExcel: makeElement(),
+          downloadHtml: makeElement(),
+          metrics: makeElement(),
+          summaryKicker: makeElement(),
+          summaryTitle: makeElement(),
+          visualKicker: makeElement(),
+          visualTitle: makeElement(),
+        };
+        [
+          "trajectory3d", "trajectoryXY", "errorDistance",
+          "heightComparison", "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus",
+          "segmentError", "speedError", "sim3ScaleTime",
+          "positionCompareComposite", "attitudeCompareComposite",
+          "positionErrorComposite", "attitudeErrorComposite",
+          "rpeTranslationTime", "rpeRotationTime",
+        ].forEach((id) => { elements[id] = makeElement(); });
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || makeElement(); },
+          createElement() { return makeElement(); },
+          addEventListener() {},
+          querySelectorAll() { return []; },
+        };
+        const plotlyCallStats = { addTraceCalls: 0, deleteTraceCalls: 0 };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: {
+            addTraces(id, traces) { plotlyCallStats.addTraceCalls += 1; elements[id].data.push(...traces); },
+            deleteTraces(id, indices) { plotlyCallStats.deleteTraceCalls += 1; elements[id].data = elements[id].data.filter((_trace, index) => !indices.includes(index)); },
+            purge(id) { elements[id].data = []; },
+          },
+          elements,
+          plotlyCallStats,
+          process,
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(`${code}
+          state.report = { inputs: { entry_mode: "vloc" } };
+          state.activePointSelectionChartId = "trajectory3d";
+          handlePlotPointClick("trajectory3d", { points: [{ x: 1, y: 2, curveNumber: 0, pointNumber: 0, data: { name: "vloc", customdata: [188.5] } }] });
+          const after3d = state.pointSelections.length;
+          state.activePointSelectionChartId = "trajectoryXY";
+          handlePlotPointClick("trajectoryXY", { points: [{ x: 10, y: 20, curveNumber: 1, pointNumber: 0, data: { name: "vloc", customdata: [188.5], xaxis: "x", yaxis: "y" } }] });
+          const afterXy = state.pointSelections.length;
+          const outputVisible = elements.pointSelectionOutputSection.hidden === false;
+          const outputHtml = elements.pointSelectionOutput.innerHTML;
+          const markerCount = elements.trajectoryXY.data.filter((trace) => trace.meta && trace.meta.pointSelectionMarker).length;
+          const firstMarker = elements.trajectoryXY.data.find((trace) => trace.meta && trace.meta.pointSelectionMarker);
+          const firstHitTarget = elements.trajectoryXY.data.find((trace) => trace.meta && trace.meta.pointSelectionHitTarget);
+          const hitTargetCount = elements.trajectoryXY.data.filter((trace) => trace.meta && trace.meta.pointSelectionHitTarget).length;
+          const firstMarkerColor = firstMarker.marker.color;
+          const firstMarkerLineWidth = firstMarker.marker.line.width;
+          const firstHitTargetSize = firstHitTarget?.marker?.size || 0;
+          const firstHitTargetOpacity = firstHitTarget?.marker?.opacity ?? null;
+          const firstHitTargetHoverInfo = firstHitTarget?.hoverinfo || null;
+          const firstHitTargetHoverTemplate = firstHitTarget?.hovertemplate || null;
+          const mutationCallsAfterFirstSelection = plotlyCallStats.addTraceCalls + plotlyCallStats.deleteTraceCalls;
+          handlePlotPointHover("trajectoryXY", { points: [{ x: 10, y: 20, curveNumber: 1, pointNumber: 0, data: { name: "vloc", customdata: [188.5], xaxis: "x", yaxis: "y" } }] });
+          handlePlotPointHover("trajectoryXY", { points: [{ x: 10, y: 20, curveNumber: 1, pointNumber: 0, data: { name: "vloc", customdata: [188.5], xaxis: "x", yaxis: "y" } }] });
+          const mutationCallsAfterRepeatedSameHover = plotlyCallStats.addTraceCalls + plotlyCallStats.deleteTraceCalls;
+          handlePlotPointClick("trajectoryXY", { points: [{ x: 10, y: 20, curveNumber: 1, pointNumber: 0, data: { name: "vloc", customdata: [188.5], xaxis: "x", yaxis: "y" } }] });
+          const afterClickingSameUnderlyingPoint = state.pointSelections.length;
+          state.focusedPointSelectionId = null;
+          handlePlotPointHover("trajectoryXY", { points: [{ x: 10, y: 20, pointNumber: 0, data: firstHitTarget }] });
+          const focusedByHitTarget = state.focusedPointSelectionId;
+          handlePointSelectionKeydown({ key: "Delete", target: { tagName: "INPUT", type: "checkbox" }, preventDefault() {} });
+          const afterDelete = state.pointSelections.length;
+          state.activePointSelectionChartId = "trajectoryXY";
+          handlePlotPointClick("trajectoryXY", { points: [{ x: 11, y: 21, curveNumber: 1, pointNumber: 0, data: { name: "vloc", customdata: [189.5], xaxis: "x", yaxis: "y" } }] });
+          const reusedMarker = elements.trajectoryXY.data.find((trace) => trace.meta && trace.meta.pointSelectionMarker);
+          const reusedMarkerColor = reusedMarker.marker.color;
+          const reusedMarkerLineWidth = reusedMarker.marker.line.width;
+          handlePlotPointClick("trajectoryXY", { points: [{ x: 12, y: 22, curveNumber: 1, pointNumber: 0, data: { name: "vloc", customdata: [190.5], xaxis: "x", yaxis: "y" } }] });
+          const twoPointsBeforeSecondDelete = state.pointSelections.length;
+          state.activePointSelectionChartId = null;
+          state.focusedPointSelectionId = null;
+          handlePlotPointHover("trajectoryXY", { points: [{ x: 12, y: 22, curveNumber: 1, pointNumber: 0, data: { name: "vloc", customdata: [190.5], xaxis: "x", yaxis: "y" } }] });
+          const focusedBeforeSecondDelete = state.focusedPointSelectionId;
+          handlePointSelectionKeydown({ key: "Delete", target: { tagName: "INPUT", type: "text" }, preventDefault() {} });
+          const afterTextInputDeleteAttempt = state.pointSelections.length;
+          handlePointSelectionKeydown({ key: "Delete", target: { tagName: "DIV" }, preventDefault() {} });
+          const afterSecondDelete = state.pointSelections.length;
+          state.activePointSelectionChartId = "trajectoryXY";
+          [
+            [13, 23, 191.5],
+            [14, 24, 192.5],
+            [15, 25, 193.5],
+          ].forEach(([x, y, timestamp]) => {
+            handlePlotPointClick("trajectoryXY", { points: [{ x, y, curveNumber: 1, pointNumber: 0, data: { name: "vloc", customdata: [timestamp], xaxis: "x", yaxis: "y" } }] });
+          });
+          const multiPointsBeforeBulkDelete = state.pointSelections.length;
+          state.activePointSelectionChartId = null;
+          [
+            [13, 23, 191.5],
+            [14, 24, 192.5],
+            [11, 21, 189.5],
+            [15, 25, 193.5],
+          ].forEach(([x, y, timestamp]) => {
+            handlePlotPointHover("trajectoryXY", { points: [{ x, y, curveNumber: 1, pointNumber: 0, data: { name: "vloc", customdata: [timestamp], xaxis: "x", yaxis: "y" } }] });
+            handlePointSelectionKeydown({ key: "Delete", target: { tagName: "DIV" }, preventDefault() {} });
+          });
+          const afterBulkDelete = state.pointSelections.length;
+          state.activePointSelectionChartId = "trajectoryXY";
+          for (let index = 0; index < 11; index += 1) {
+            handlePlotPointClick("trajectoryXY", { points: [{
+              x: 100 + index,
+              y: 200 + index,
+              curveNumber: 1,
+              pointNumber: 0,
+              data: { name: "vloc", customdata: [300 + index], xaxis: "x", yaxis: "y" },
+            }] });
+          }
+          const blackOneSelection = state.pointSelections.find((selection) => selection.markerColor === "#000000" && selection.markerText === "1");
+          const blackOneMarker = elements.trajectoryXY.data.find((trace) => trace.meta && trace.meta.selectionId === blackOneSelection.id && trace.meta.pointSelectionMarker);
+          state.activePointSelectionChartId = null;
+          state.focusedPointSelectionId = null;
+          handlePlotPointHover("trajectoryXY", { points: [
+            { x: -1, y: -1, curveNumber: 0, pointNumber: 0, data: { name: "unrelated", customdata: [999], xaxis: "x", yaxis: "y" } },
+            { x: blackOneSelection.x, y: blackOneSelection.y, pointNumber: 0, data: blackOneMarker },
+          ] });
+          const focusedBlackOne = state.focusedPointSelectionId;
+          handlePointSelectionKeydown({ key: "Delete", target: { tagName: "DIV" }, preventDefault() {} });
+          const afterBlackOneDelete = state.pointSelections.length;
+          clearAllPointSelections();
+          process.stdout.write(JSON.stringify({
+            pickableHas3d: PICKABLE_VLOC_CHART_IDS.includes("trajectory3d"),
+            pickableHasXy: PICKABLE_VLOC_CHART_IDS.includes("trajectoryXY"),
+            after3d,
+            afterXy,
+            outputVisible,
+            outputHtml,
+            markerCount,
+            hitTargetCount,
+            firstMarkerColor,
+            reusedMarkerColor,
+            firstMarkerLineWidth,
+            reusedMarkerLineWidth,
+            firstHitTargetSize,
+            firstHitTargetOpacity,
+            firstHitTargetHoverInfo,
+            firstHitTargetHoverTemplate,
+            afterClickingSameUnderlyingPoint,
+            focusedByHitTarget,
+            mutationCallsAfterFirstSelection,
+            mutationCallsAfterRepeatedSameHover,
+            afterDelete,
+            twoPointsBeforeSecondDelete,
+            focusedBeforeSecondDelete,
+            afterTextInputDeleteAttempt,
+            afterSecondDelete,
+            multiPointsBeforeBulkDelete,
+            afterBulkDelete,
+            blackOneSelectionId: blackOneSelection.id,
+            focusedBlackOne,
+            afterBlackOneDelete,
+            afterClear: state.pointSelections.length,
+            outputHiddenAfterClear: elements.pointSelectionOutputSection.hidden,
+          }));
+        `, context);
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload["pickableHas3d"] is False
+    assert payload["pickableHasXy"] is True
+    assert payload["after3d"] == 0
+    assert payload["afterXy"] == 1
+    assert payload["outputVisible"] is True
+    assert "俯视 NE 轨迹" in payload["outputHtml"]
+    assert "vloc" in payload["outputHtml"]
+    assert "188.500" in payload["outputHtml"]
+    assert payload["markerCount"] == 1
+    assert payload["hitTargetCount"] == 1
+    assert payload["firstHitTargetSize"] > 10
+    assert payload["firstHitTargetOpacity"] < 0.1
+    assert payload["firstHitTargetHoverInfo"] == "none"
+    assert payload["firstHitTargetHoverTemplate"] is None
+    assert payload["reusedMarkerColor"] == payload["firstMarkerColor"]
+    assert payload["firstMarkerLineWidth"] == 0
+    assert payload["reusedMarkerLineWidth"] == 0
+    assert payload["afterClickingSameUnderlyingPoint"] == 1
+    assert payload["focusedByHitTarget"]
+    assert payload["mutationCallsAfterRepeatedSameHover"] == payload["mutationCallsAfterFirstSelection"]
+    assert payload["afterDelete"] == 0
+    assert payload["twoPointsBeforeSecondDelete"] == 2
+    assert payload["focusedBeforeSecondDelete"]
+    assert payload["afterTextInputDeleteAttempt"] == 2
+    assert payload["afterSecondDelete"] == 1
+    assert payload["multiPointsBeforeBulkDelete"] == 4
+    assert payload["afterBulkDelete"] == 0
+    assert payload["focusedBlackOne"] == payload["blackOneSelectionId"]
+    assert payload["afterBlackOneDelete"] == 10
+    assert payload["afterClear"] == 0
+    assert payload["outputHiddenAfterClear"] is True
 
 
 def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():

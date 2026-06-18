@@ -488,6 +488,74 @@ button:disabled {
   box-shadow: none;
 }
 
+.point-selection-output {
+  display: grid;
+  gap: 10px;
+}
+
+.point-selection-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.point-selection-card h3 {
+  margin: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--heading);
+  font-size: 13px;
+  font-weight: 820;
+}
+
+.point-selection-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.point-selection-table th,
+.point-selection-table td {
+  padding: 6px 7px;
+  border-bottom: 1px solid #edf2f7;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.point-selection-table th {
+  color: var(--muted);
+  font-weight: 780;
+  background: #f8fafc;
+}
+
+.point-selection-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.selection-point-token {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.clear-point-selections {
+  min-height: 32px;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  box-shadow: none;
+}
+
 .chart-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -502,6 +570,46 @@ button:disabled {
   overflow: hidden;
   background: #fff;
   box-shadow: 0 1px 0 rgba(15, 23, 42, 0.02);
+}
+
+.chart.point-selection-active {
+  outline: 2px solid rgba(37, 99, 235, 0.38);
+  outline-offset: -2px;
+}
+
+.chart-point-tools {
+  position: absolute;
+  top: 38px;
+  right: 10px;
+  z-index: 70;
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+}
+
+.chart-point-tool {
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 6px;
+  border-color: #cbd5e1;
+  background: #ffffff;
+  color: var(--heading);
+  box-shadow: none;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.chart-point-tool:hover:not(:disabled),
+.chart-point-tool.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
 }
 
 .composite-crosshair {

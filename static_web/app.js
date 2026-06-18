@@ -4,6 +4,10 @@ const state = {
   evaluateVoBundleJson: null,
   report: null,
   loadingStep: "",
+  activePointSelectionChartId: null,
+  focusedPointSelectionId: null,
+  pointSelectionSequence: 0,
+  pointSelections: [],
 };
 
 const PYODIDE_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
@@ -30,6 +34,9 @@ const els = {
   vlocChartList: document.getElementById("vlocChartList"),
   vlocChartSelectAll: document.getElementById("vlocChartSelectAll"),
   vlocChartClear: document.getElementById("vlocChartClear"),
+  pointSelectionOutputSection: document.getElementById("pointSelectionOutputSection"),
+  pointSelectionOutput: document.getElementById("pointSelectionOutput"),
+  clearAllPointSelections: document.getElementById("clearAllPointSelections"),
   downloadJson: document.getElementById("downloadJson"),
   downloadPoseCsv: document.getElementById("downloadPoseCsv"),
   downloadSegmentCsv: document.getElementById("downloadSegmentCsv"),
@@ -92,6 +99,19 @@ const VO_ONLY_CHART_IDS = new Set([
 
 const VLOC_VISIBLE_CHART_IDS = VLOC_CHART_OPTIONS.map((option) => option.id);
 const VO_VISIBLE_CHART_IDS = chartIds.filter((id) => !VLOC_ONLY_CHART_IDS.has(id));
+const PICKABLE_VLOC_CHART_IDS = VLOC_VISIBLE_CHART_IDS.filter((id) => id !== "trajectory3d");
+const POINT_SELECTION_COLORS = [
+  "#000000",
+  "#ff00ff",
+  "#ffd700",
+  "#00ffff",
+  "#ff1493",
+  "#7fff00",
+  "#8b4513",
+  "#ff69b4",
+  "#4b0082",
+  "#00ff7f",
+];
 
 state.vlocSelectedChartIds = new Set(VLOC_VISIBLE_CHART_IDS);
 
@@ -121,6 +141,8 @@ function wireEvents() {
   els.vlocChartList?.addEventListener("change", handleVlocChartDirectoryChange);
   els.vlocChartSelectAll?.addEventListener("click", selectAllVlocChartDirectory);
   els.vlocChartClear?.addEventListener("click", clearVlocChartDirectory);
+  els.clearAllPointSelections?.addEventListener("click", clearAllPointSelections);
+  document.addEventListener("keydown", handlePointSelectionKeydown);
   els.runButton.addEventListener("click", runEvaluation);
   els.downloadJson.addEventListener("click", () => downloadText("vo_evaluation_metrics.json", JSON.stringify(state.report, null, 2), "application/json"));
   els.downloadPoseCsv.addEventListener("click", () => downloadText("vo_per_pose_errors.csv", toCsv(state.report?.per_pose || []), "text/csv"));
@@ -480,6 +502,488 @@ function clearVlocChartDirectory() {
   setVlocChartDirectorySelection([]);
 }
 
+function chartTitleById(chartId) {
+  return VLOC_CHART_OPTIONS.find((option) => option.id === chartId)?.label || chartId;
+}
+
+function isPointSelectableChart(chartId) {
+  return Boolean(state.report) && reportEntryMode(state.report) === "vloc" && PICKABLE_VLOC_CHART_IDS.includes(chartId);
+}
+
+function pointColorMeta(sequence) {
+  const zeroIndex = Math.max(0, sequence - 1);
+  const colorIndex = zeroIndex % POINT_SELECTION_COLORS.length;
+  const cycle = Math.floor(zeroIndex / POINT_SELECTION_COLORS.length);
+  return {
+    color: POINT_SELECTION_COLORS[colorIndex],
+    text: cycle > 0 ? String(cycle) : "",
+  };
+}
+
+function nextPointSelectionColorSlot() {
+  const usedSlots = new Set(state.pointSelections.map((selection) => selection.colorSlot).filter(Number.isFinite));
+  let slot = 1;
+  while (usedSlots.has(slot)) {
+    slot += 1;
+  }
+  return slot;
+}
+
+function resetPointSelectionState() {
+  state.activePointSelectionChartId = null;
+  state.focusedPointSelectionId = null;
+  state.pointSelectionSequence = 0;
+  state.pointSelections = [];
+  renderPointSelectionOutput();
+  refreshAllPointSelectionTools();
+}
+
+function ensurePointSelectionTools(chartId) {
+  const chart = document.getElementById(chartId);
+  if (!chart) {
+    return;
+  }
+  if (!isPointSelectableChart(chartId)) {
+    removePointSelectionTools(chartId);
+    return;
+  }
+  let tools = chart.querySelector?.(".chart-point-tools");
+  if (!tools && typeof chart.appendChild === "function") {
+    tools = document.createElement("div");
+    tools.className = "chart-point-tools";
+    tools.innerHTML = `
+      <button type="button" class="chart-point-tool pick" title="选取当前图的点" aria-label="选取当前图的点">⌖</button>
+      <button type="button" class="chart-point-tool clear" title="清除当前图的点" aria-label="清除当前图的点">⌫</button>
+    `;
+    chart.appendChild(tools);
+    tools.querySelector(".pick")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      togglePointSelectionMode(chartId);
+    });
+    tools.querySelector(".clear")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      clearPointSelectionsForChart(chartId);
+    });
+  }
+  if (!chart._pointSelectionClickBound && typeof chart.on === "function") {
+    chart.on("plotly_click", (eventData) => handlePlotPointClick(chartId, eventData));
+    chart._pointSelectionClickBound = true;
+  }
+  if (!chart._pointSelectionHoverBound && typeof chart.on === "function") {
+    chart.on("plotly_hover", (eventData) => handlePlotPointHover(chartId, eventData));
+    chart._pointSelectionHoverBound = true;
+  }
+  refreshPointSelectionToolState(chartId);
+  refreshChartSelectionMarkers(chartId);
+}
+
+function removePointSelectionTools(chartId) {
+  const chart = document.getElementById(chartId);
+  const tools = chart?.querySelector?.(".chart-point-tools");
+  if (tools) {
+    tools.remove();
+  }
+  if (chart) {
+    chart.classList?.remove?.("point-selection-active");
+  }
+}
+
+function refreshPointSelectionToolState(chartId) {
+  const chart = document.getElementById(chartId);
+  if (!chart) {
+    return;
+  }
+  const active = state.activePointSelectionChartId === chartId;
+  chart.classList?.toggle?.("point-selection-active", active);
+  const pickButton = chart.querySelector?.(".chart-point-tool.pick");
+  if (pickButton) {
+    pickButton.classList?.toggle?.("active", active);
+  }
+}
+
+function refreshAllPointSelectionTools() {
+  for (const chartId of chartIds) {
+    if (isPointSelectableChart(chartId)) {
+      ensurePointSelectionTools(chartId);
+    } else {
+      removePointSelectionTools(chartId);
+    }
+  }
+}
+
+function togglePointSelectionMode(chartId) {
+  if (!isPointSelectableChart(chartId)) {
+    return;
+  }
+  state.activePointSelectionChartId = state.activePointSelectionChartId === chartId ? null : chartId;
+  refreshAllPointSelectionTools();
+}
+
+function isSelectionMarkerTrace(trace) {
+  return Boolean(trace?.meta?.pointSelectionMarker || trace?.meta?.pointSelectionHitTarget);
+}
+
+function pointTimestamp(point) {
+  const custom = Array.isArray(point?.data?.customdata) ? point.data.customdata[point.pointNumber] : undefined;
+  const customTimestamp = typeof custom === "object" && custom !== null ? custom.timestamp : custom;
+  const timestamp = Number(customTimestamp);
+  if (Number.isFinite(timestamp)) {
+    return timestamp;
+  }
+  const x = Number(point?.x);
+  return Number.isFinite(x) ? x : null;
+}
+
+function pointValueText(chartId, point) {
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  if (chartId === "trajectoryXY") {
+    return `north=${formatPointNumber(x)}, east=${formatPointNumber(y)}`;
+  }
+  return formatPointNumber(y);
+}
+
+function formatPointNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "N/A";
+  }
+  return number.toFixed(3);
+}
+
+function numbersNearlyEqual(left, right, tolerance = 1e-9) {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  return Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && Math.abs(leftNumber - rightNumber) <= tolerance;
+}
+
+function existingPointSelectionForPoint(chartId, point) {
+  const traceName = point?.data?.name || `trace ${Number(point?.curveNumber) + 1}`;
+  const timestamp = pointTimestamp(point);
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  return state.pointSelections.find((selection) => {
+    if (selection.chartId !== chartId) {
+      return false;
+    }
+    if (selection.traceName !== traceName) {
+      return false;
+    }
+    const sameVisiblePoint = numbersNearlyEqual(selection.x, x) && numbersNearlyEqual(selection.y, y);
+    if (Number.isFinite(timestamp) && Number.isFinite(selection.timestamp)) {
+      return numbersNearlyEqual(selection.timestamp, timestamp) && sameVisiblePoint;
+    }
+    return sameVisiblePoint;
+  });
+}
+
+function focusPointSelection(selection) {
+  if (!selection) {
+    return false;
+  }
+  if (state.focusedPointSelectionId === selection.id) {
+    return true;
+  }
+  state.focusedPointSelectionId = selection.id;
+  return true;
+}
+
+function selectionFromMarkerPoint(point) {
+  if (!isSelectionMarkerTrace(point?.data)) {
+    return null;
+  }
+  const markerData = Array.isArray(point.data.customdata) ? point.data.customdata[point.pointNumber] : null;
+  const selectionId = markerData?.selectionId || point.data?.meta?.selectionId;
+  return state.pointSelections.find((selection) => selection.id === selectionId) || null;
+}
+
+function eventPoints(eventData) {
+  return Array.isArray(eventData?.points) ? eventData.points.filter(Boolean) : [];
+}
+
+function pointSelectionFromEventPoints(chartId, eventData) {
+  const points = eventPoints(eventData);
+  for (const point of points) {
+    const selection = selectionFromMarkerPoint(point);
+    if (selection) {
+      return selection;
+    }
+  }
+  for (const point of points) {
+    const selection = existingPointSelectionForPoint(chartId, point);
+    if (selection) {
+      return selection;
+    }
+  }
+  return null;
+}
+
+function focusPointSelectionFromEvent(chartId, eventData) {
+  return focusPointSelection(pointSelectionFromEventPoints(chartId, eventData));
+}
+
+function firstSelectablePlotPoint(eventData) {
+  return eventPoints(eventData).find((point) => !isSelectionMarkerTrace(point.data)) || null;
+}
+
+function addPointSelectionFromEvent(chartId, eventData) {
+  const point = firstSelectablePlotPoint(eventData);
+  if (!point) {
+    return;
+  }
+  if (focusPointSelectionFromEvent(chartId, eventData)) {
+    return;
+  }
+  state.pointSelectionSequence += 1;
+  const sequence = state.pointSelectionSequence;
+  const colorSlot = nextPointSelectionColorSlot();
+  const colorMeta = pointColorMeta(colorSlot);
+  const selection = {
+    id: `picked-${Date.now()}-${sequence}`,
+    order: sequence,
+    colorSlot,
+    chartId,
+    chartTitle: chartTitleById(chartId),
+    traceName: point.data?.name || `trace ${Number(point.curveNumber) + 1}`,
+    markerColor: colorMeta.color,
+    markerText: colorMeta.text,
+    timestamp: pointTimestamp(point),
+    value: pointValueText(chartId, point),
+    x: Number(point.x),
+    y: Number(point.y),
+    xaxis: point.data?.xaxis || "x",
+    yaxis: point.data?.yaxis || "y",
+  };
+  state.pointSelections.push(selection);
+  state.focusedPointSelectionId = selection.id;
+  refreshChartSelectionMarkers(chartId);
+  renderPointSelectionOutput();
+}
+
+function handlePlotPointClick(chartId, eventData) {
+  if (!eventPoints(eventData).length) {
+    return;
+  }
+  if (focusPointSelectionFromEvent(chartId, eventData)) {
+    return;
+  }
+  if (state.activePointSelectionChartId !== chartId || !isPointSelectableChart(chartId)) {
+    return;
+  }
+  addPointSelectionFromEvent(chartId, eventData);
+}
+
+function handlePlotPointHover(chartId, eventData) {
+  if (!eventPoints(eventData).length || !isPointSelectableChart(chartId)) {
+    return;
+  }
+  focusPointSelectionFromEvent(chartId, eventData);
+}
+
+function selectionMarkerTrace(selection) {
+  return {
+    x: [selection.x],
+    y: [selection.y],
+    mode: selection.markerText ? "markers+text" : "markers",
+    type: "scatter",
+    name: `选点 ${selection.order}`,
+    showlegend: false,
+    hovertemplate: `${escapeHtml(selection.traceName)}<br>timestamp=%{customdata.timestamp:.3f}<br>value=${escapeHtml(selection.value)}<extra></extra>`,
+    marker: {
+      color: selection.markerColor,
+      size: 10,
+      symbol: "circle",
+      line: { width: 0 },
+    },
+    text: selection.markerText ? [selection.markerText] : [""],
+    textposition: "middle center",
+    textfont: { color: "#ffffff", size: 9, family: "Arial, sans-serif" },
+    customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }],
+    meta: { pointSelectionMarker: true, selectionId: selection.id },
+    xaxis: selection.xaxis,
+    yaxis: selection.yaxis,
+  };
+}
+
+function selectionHitTargetTrace(selection) {
+  return {
+    x: [selection.x],
+    y: [selection.y],
+    mode: "markers",
+    type: "scatter",
+    name: `选点命中 ${selection.order}`,
+    showlegend: false,
+    hoverinfo: "none",
+    marker: {
+      color: selection.markerColor,
+      size: 24,
+      opacity: 0.04,
+      symbol: "circle",
+      line: { width: 0 },
+    },
+    customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }],
+    meta: { pointSelectionHitTarget: true, selectionId: selection.id },
+    xaxis: selection.xaxis,
+    yaxis: selection.yaxis,
+  };
+}
+
+function selectionMarkerTraceIndices(chartId) {
+  const chart = document.getElementById(chartId);
+  const data = Array.isArray(chart?.data) ? chart.data : [];
+  return data
+    .map((trace, index) => (isSelectionMarkerTrace(trace) ? index : -1))
+    .filter((index) => index >= 0);
+}
+
+function removeSelectionMarkerTraces(chartId) {
+  const indices = selectionMarkerTraceIndices(chartId);
+  if (!indices.length || typeof Plotly === "undefined" || typeof Plotly.deleteTraces !== "function") {
+    return;
+  }
+  Plotly.deleteTraces(chartId, indices);
+}
+
+function refreshChartSelectionMarkers(chartId) {
+  if (!document.getElementById(chartId)) {
+    return;
+  }
+  removeSelectionMarkerTraces(chartId);
+  const selections = state.pointSelections.filter((selection) => selection.chartId === chartId);
+  if (!selections.length || typeof Plotly === "undefined" || typeof Plotly.addTraces !== "function") {
+    return;
+  }
+  Plotly.addTraces(chartId, selections.flatMap((selection) => [selectionHitTargetTrace(selection), selectionMarkerTrace(selection)]));
+}
+
+function refreshAllSelectionMarkers() {
+  for (const chartId of PICKABLE_VLOC_CHART_IDS) {
+    refreshChartSelectionMarkers(chartId);
+  }
+}
+
+function clearPointSelectionsForChart(chartId) {
+  state.pointSelections = state.pointSelections.filter((selection) => selection.chartId !== chartId);
+  if (state.activePointSelectionChartId === chartId) {
+    state.activePointSelectionChartId = null;
+  }
+  if (!state.pointSelections.some((selection) => selection.id === state.focusedPointSelectionId)) {
+    state.focusedPointSelectionId = null;
+  }
+  refreshChartSelectionMarkers(chartId);
+  refreshPointSelectionToolState(chartId);
+  renderPointSelectionOutput();
+}
+
+function clearAllPointSelections() {
+  state.pointSelections = [];
+  state.focusedPointSelectionId = null;
+  state.activePointSelectionChartId = null;
+  state.pointSelectionSequence = 0;
+  refreshAllSelectionMarkers();
+  refreshAllPointSelectionTools();
+  renderPointSelectionOutput();
+}
+
+function deleteFocusedPointSelection() {
+  if (!state.focusedPointSelectionId) {
+    return;
+  }
+  const target = state.pointSelections.find((selection) => selection.id === state.focusedPointSelectionId);
+  state.pointSelections = state.pointSelections.filter((selection) => selection.id !== state.focusedPointSelectionId);
+  state.focusedPointSelectionId = null;
+  if (target) {
+    refreshChartSelectionMarkers(target.chartId);
+  }
+  renderPointSelectionOutput();
+}
+
+function isTextEditingTarget(target) {
+  const tag = target?.tagName?.toLowerCase();
+  if (!tag) {
+    return false;
+  }
+  if (target?.isContentEditable) {
+    return true;
+  }
+  if (tag === "textarea" || tag === "select") {
+    return true;
+  }
+  if (tag !== "input") {
+    return false;
+  }
+  const type = String(target.type || "text").toLowerCase();
+  return !["button", "checkbox", "color", "file", "radio", "range", "reset", "submit"].includes(type);
+}
+
+function handlePointSelectionKeydown(event) {
+  if (event.key !== "Delete" && event.key !== "Backspace") {
+    return;
+  }
+  if (isTextEditingTarget(event.target)) {
+    return;
+  }
+  if (state.focusedPointSelectionId) {
+    event.preventDefault();
+    deleteFocusedPointSelection();
+  }
+}
+
+function groupedSelectionsForChart(selections) {
+  const groupOrder = new Map();
+  for (const selection of selections) {
+    if (!groupOrder.has(selection.traceName)) {
+      groupOrder.set(selection.traceName, groupOrder.size);
+    }
+  }
+  return [...selections].sort((left, right) => {
+    const groupDiff = groupOrder.get(left.traceName) - groupOrder.get(right.traceName);
+    return groupDiff || left.order - right.order;
+  });
+}
+
+function renderPointSelectionOutput() {
+  if (!els.pointSelectionOutputSection || !els.pointSelectionOutput) {
+    return;
+  }
+  const isVloc = reportEntryMode(state.report) === "vloc";
+  const selections = isVloc ? state.pointSelections : [];
+  els.pointSelectionOutputSection.hidden = selections.length === 0;
+  if (!selections.length) {
+    els.pointSelectionOutput.innerHTML = "";
+    return;
+  }
+  const chartOrder = [];
+  for (const selection of selections) {
+    if (!chartOrder.includes(selection.chartId)) {
+      chartOrder.push(selection.chartId);
+    }
+  }
+  els.pointSelectionOutput.innerHTML = chartOrder.map((chartId) => {
+    const chartSelections = groupedSelectionsForChart(selections.filter((selection) => selection.chartId === chartId));
+    const title = chartSelections[0]?.chartTitle || chartTitleById(chartId);
+    const rows = chartSelections.map((selection) => `
+      <tr data-selection-id="${escapeHtml(selection.id)}">
+        <td>${escapeHtml(selection.traceName)}</td>
+        <td><span class="selection-point-token" style="background:${escapeHtml(selection.markerColor)}">${escapeHtml(selection.markerText)}</span></td>
+        <td>${selection.timestamp === null ? "N/A" : formatPointNumber(selection.timestamp)}</td>
+        <td>${escapeHtml(selection.value)}</td>
+      </tr>
+    `).join("");
+    return `
+      <div class="point-selection-card">
+        <h3>${escapeHtml(title)}</h3>
+        <table class="point-selection-table">
+          <thead>
+            <tr><th>线</th><th>点</th><th>时间戳</th><th>值</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }).join("");
+}
+
 function applyEntryModeTitles(entryMode) {
   const isVloc = entryMode === "vloc";
   if (els.summaryKicker) {
@@ -509,10 +1013,13 @@ function applyEntryModeChartVisibility(entryMode) {
       Plotly.purge(id);
     }
   }
+  renderPointSelectionOutput();
+  refreshAllPointSelectionTools();
 }
 
 function resetRenderedReport() {
   state.report = null;
+  resetPointSelectionState();
   clearMessage();
   if (els.metrics) {
     const label = valueOf("entryMode") === "vloc" ? "VLOC" : "VO";
@@ -595,6 +1102,7 @@ function setBusy(isBusy) {
 function renderReport(report) {
   if (reportEntryMode(report) === "vloc") {
     resetVlocChartDirectorySelection();
+    resetPointSelectionState();
     renderVlocChartDirectory();
   }
   updateEntryModeUi();
@@ -857,12 +1365,13 @@ function renderVlocCharts(report) {
     }),
   ], layout("3D 轨迹", { scene: { xaxis: { title: "north m" }, yaxis: { title: "east m" }, zaxis: { title: "down m" } } }));
 
-  const [navN, navE] = segmentedValues(rows, ["nav_n_m", "nav_e_m"]);
-  const [vlocN, vlocE] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m"]);
+  const [navN, navE, navTime] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "timestamp"]);
+  const [vlocN, vlocE, vlocTime] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "timestamp"]);
   Plotly.newPlot("trajectoryXY", [
-    { x: navN, y: navE, mode: "lines", type: "scatter", name: "nav" },
-    { x: vlocN, y: vlocE, mode: "lines", type: "scatter", name: "vloc" },
+    { x: navN, y: navE, customdata: navTime, mode: "lines", type: "scatter", name: "nav" },
+    { x: vlocN, y: vlocE, customdata: vlocTime, mode: "lines", type: "scatter", name: "vloc" },
   ], layout("俯视 NE 轨迹", { xaxis: { title: "north m" }, yaxis: { title: "east m", scaleanchor: "x" } }));
+  ensurePointSelectionTools("trajectoryXY");
 
   renderMultiFieldTimeChart("errorDistance", rows, "误差随路程变化", [
     { field: "position_error_3d_m", name: "3D position error" },
@@ -976,8 +1485,8 @@ function renderPairCompositeChart(id, rows, spec) {
     const displayLeft = row.unwrap ? unwrapDegrees(leftValues) : leftValues;
     const displayRight = row.unwrap ? unwrapDegrees(rightValues) : rightValues;
     traces.push(
-      { x: tLeft, y: displayLeft, mode: "lines", type: "scatter", name: `${row.label} ${spec.leftName}`, legendgroup: `${row.label}-${spec.leftName}`, showlegend: true, hoverinfo: "none", line: { color: leftColor }, xaxis: traceXAxis, yaxis: traceYAxis },
-      { x: tRight, y: displayRight, mode: "lines", type: "scatter", name: `${row.label} ${spec.rightName}`, legendgroup: `${row.label}-${spec.rightName}`, showlegend: true, hoverinfo: "none", line: { color: rightColor }, xaxis: traceXAxis, yaxis: traceYAxis },
+      { x: tLeft, y: displayLeft, customdata: tLeft, mode: "lines", type: "scatter", name: `${row.label} ${spec.leftName}`, legendgroup: `${row.label}-${spec.leftName}`, showlegend: true, hoverinfo: "none", line: { color: leftColor }, xaxis: traceXAxis, yaxis: traceYAxis },
+      { x: tRight, y: displayRight, customdata: tRight, mode: "lines", type: "scatter", name: `${row.label} ${spec.rightName}`, legendgroup: `${row.label}-${spec.rightName}`, showlegend: true, hoverinfo: "none", line: { color: rightColor }, xaxis: traceXAxis, yaxis: traceYAxis },
     );
   });
   Plotly.newPlot(id, traces, layout(spec.title, {
@@ -1000,6 +1509,7 @@ function renderPairCompositeChart(id, rows, spec) {
     ...axisLayout,
   }));
   attachCompositeOverlay(id, rows, spec);
+  ensurePointSelectionTools(id);
 }
 
 function compositePairColors(index) {
@@ -1284,6 +1794,7 @@ function renderSingleCompositeChart(id, rows, spec) {
     traces.push({
       x: timestamps,
       y: displayValues,
+      customdata: timestamps,
       mode: "lines",
       type: "scatter",
       name: row.label,
@@ -1314,19 +1825,21 @@ function renderSingleCompositeChart(id, rows, spec) {
     ...axisLayout,
   }));
   attachCompositeOverlay(id, rows, spec);
+  ensurePointSelectionTools(id);
 }
 
 function renderMultiFieldTimeChart(id, rows, title, specs, options = {}) {
   const xField = options.xField || "timestamp";
   const traces = specs.map((spec) => {
-    const [xValues, yValues] = segmentedValues(rows, [xField, spec.field]);
+    const [xValues, yValues, timestamps] = segmentedValues(rows, [xField, spec.field, "timestamp"]);
     const displayY = spec.unwrap ? unwrapDegrees(yValues) : yValues;
-    return { x: xValues, y: displayY, mode: "lines", type: "scatter", name: spec.name || spec.field };
+    return { x: xValues, y: displayY, customdata: timestamps, mode: "lines", type: "scatter", name: spec.name || spec.field };
   });
   Plotly.newPlot(id, traces, layout(title, {
     xaxis: { title: options.xTitle || "timestamp s" },
     yaxis: { title: options.yTitle || "" },
   }));
+  ensurePointSelectionTools(id);
 }
 
 function renderRpeTimeChart(id, rows, spec) {
