@@ -128,11 +128,13 @@ def test_streamlit_composite_charts_share_hover_spikes_across_subplots():
         assert fig.layout.xaxis2.spikemode == "across"
 
 
-def test_streamlit_vloc_chart_directory_is_wired_to_vloc_visuals_only():
+def test_streamlit_chart_directory_is_wired_to_vloc_and_vo_visuals():
     source = Path("app.py").read_text()
     assert "VLOC_CHART_OPTIONS" in source
+    assert "VO_CHART_OPTIONS" in source
     assert "show_vloc_chart_directory()" in source
-    assert "show_visuals(report, entry_mode, selected_vloc_chart_ids)" in source
+    assert "show_chart_directory(\"vo\", VO_CHART_OPTIONS)" in source
+    assert "show_visuals(report, entry_mode, selected_vloc_chart_ids, selected_vo_chart_ids)" in source
     assert "show_vloc_visuals(report, selected_vloc_chart_ids)" in source
     assert "图表目录" in source
     for chart_id in [

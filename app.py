@@ -88,6 +88,23 @@ VLOC_CHART_OPTIONS = [
 
 VLOC_CHART_IDS = tuple(chart_id for chart_id, _label in VLOC_CHART_OPTIONS)
 
+VO_CHART_OPTIONS = [
+    ("trajectory3d", "3D 轨迹"),
+    ("trajectoryXY", "俯视 XY 轨迹"),
+    ("errorDistance", "误差随路程变化"),
+    ("segmentError", "按距离子轨迹误差"),
+    ("speedError", "速度分箱误差"),
+    ("sim3ScaleTime", "局部 Sim3 尺度"),
+    ("positionCompareComposite", "位置随时间变化"),
+    ("attitudeCompareComposite", "姿态随时间变化"),
+    ("positionErrorComposite", "位置误差随时间变化"),
+    ("attitudeErrorComposite", "姿态误差随时间变化"),
+    ("rpeTranslationTime", "RPE 平移误差"),
+    ("rpeRotationTime", "RPE 旋转误差"),
+]
+
+VO_CHART_IDS = tuple(chart_id for chart_id, _label in VO_CHART_OPTIONS)
+
 
 def main() -> None:
     """页面入口：选择 VLOC/VO 流程 -> 输入 data_dir/log_dir -> 调用 evaluator -> 展示 report。"""
@@ -159,8 +176,11 @@ def main() -> None:
             divergence_rel = st.number_input("发散相对阈值 % 路程", value=3.0, min_value=0.0, step=0.5)
 
         selected_vloc_chart_ids = set(VLOC_CHART_IDS)
+        selected_vo_chart_ids = set(VO_CHART_IDS)
         if entry_mode == "vloc":
             selected_vloc_chart_ids = show_vloc_chart_directory()
+        if entry_mode == "vo":
+            selected_vo_chart_ids = show_chart_directory("vo", VO_CHART_OPTIONS)
 
     st.subheader(entry_label)
 
@@ -231,7 +251,7 @@ def main() -> None:
         return
 
     show_summary(report, entry_mode)
-    show_visuals(report, entry_mode, selected_vloc_chart_ids)
+    show_visuals(report, entry_mode, selected_vloc_chart_ids, selected_vo_chart_ids)
     show_tables_and_downloads(report)
 
 
@@ -524,7 +544,12 @@ def divergence_summary_label(divergence: dict[str, Any]) -> str:
     )
 
 
-def show_visuals(report: dict[str, Any], entry_mode: str, selected_vloc_chart_ids: set[str] | None = None) -> None:
+def show_visuals(
+    report: dict[str, Any],
+    entry_mode: str,
+    selected_vloc_chart_ids: set[str] | None = None,
+    selected_vo_chart_ids: set[str] | None = None,
+) -> None:
     """可视化区域。
 
     图表与指标对应：
@@ -593,73 +618,93 @@ def show_visuals(report: dict[str, Any], entry_mode: str, selected_vloc_chart_id
         ],
     )
     rpe_time_figs = [
-        make_rpe_time_series(rpe_per_frame, "RPE 平移误差随时间变化", "rpe_translation_m", "m"),
-        make_rpe_time_series(rpe_per_frame, "RPE 旋转误差随时间变化", "rpe_rotation_deg", "deg"),
+        ("rpeTranslationTime", make_rpe_time_series(rpe_per_frame, "RPE 平移误差随时间变化", "rpe_translation_m", "m")),
+        ("rpeRotationTime", make_rpe_time_series(rpe_per_frame, "RPE 旋转误差随时间变化", "rpe_rotation_deg", "deg")),
     ]
 
+    selected = set(selected_vo_chart_ids) if selected_vo_chart_ids is not None else set(VO_CHART_IDS)
+
+    def plot_selected(figures: list[tuple[str, go.Figure]]) -> None:
+        for chart_id, fig in figures:
+            if chart_id in selected:
+                st.plotly_chart(fig, use_container_width=True)
+
     st.subheader("VO 可视化")
-    for fig in [
-        fig3d,
-        fig_xy,
-        fig_error,
-        fig_segment,
-        fig_speed,
-        fig_sim3_scale,
-        fig_position_compare,
-        fig_attitude_compare,
-        fig_position_error,
-        fig_attitude_error,
-    ]:
-        st.plotly_chart(fig, use_container_width=True)
+    trajectory_figs = [
+        ("trajectory3d", fig3d),
+        ("trajectoryXY", fig_xy),
+        ("errorDistance", fig_error),
+    ]
+    drift_figs = [
+        ("segmentError", fig_segment),
+        ("speedError", fig_speed),
+        ("sim3ScaleTime", fig_sim3_scale),
+    ]
+    comparison_figs = [
+        ("positionCompareComposite", fig_position_compare),
+        ("attitudeCompareComposite", fig_attitude_compare),
+        ("positionErrorComposite", fig_position_error),
+        ("attitudeErrorComposite", fig_attitude_error),
+    ]
+    plot_selected(trajectory_figs)
 
-    st.markdown("#### RPE 随时间变化")
-    for fig in rpe_time_figs:
-        st.plotly_chart(fig, use_container_width=True)
+    if selected.intersection(chart_id for chart_id, _fig in drift_figs):
+        st.markdown("#### 漂移与尺度")
+        plot_selected(drift_figs)
 
+    if selected.intersection(chart_id for chart_id, _fig in comparison_figs):
+        st.markdown("#### Nav / VO 随时间变化与误差")
+        plot_selected(comparison_figs)
+
+    if selected.intersection(chart_id for chart_id, _fig in rpe_time_figs):
+        st.markdown("#### RPE 随时间变化")
+        plot_selected(rpe_time_figs)
+
+    all_figs = [
+        *trajectory_figs,
+        *drift_figs,
+        *comparison_figs,
+        *rpe_time_figs,
+    ]
     if not segment_records.empty:
         with st.expander("按距离子轨迹原始记录"):
             st.dataframe(segment_records, use_container_width=True, hide_index=True)
 
-    html_figs = [
-        fig3d,
-        fig_xy,
-        fig_error,
-        fig_segment,
-        fig_speed,
-        fig_sim3_scale,
-        fig_position_compare,
-        fig_attitude_compare,
-        fig_position_error,
-        fig_attitude_error,
-        *rpe_time_figs,
-    ]
+    html_figs = [fig for chart_id, fig in all_figs if chart_id in selected]
     html = build_html_report(report, html_figs)
     st.download_button("下载 HTML 可视化报告", html, file_name="vo_evaluation_report.html", mime="text/html")
 
 
 def show_vloc_chart_directory() -> set[str]:
     """VLOC 图表目录：控制右侧 12 张 VLOC 图的显示/隐藏。"""
+    return show_chart_directory("vloc", VLOC_CHART_OPTIONS)
+
+
+def show_chart_directory(entry_mode: str, options: list[tuple[str, str]]) -> set[str]:
+    """通用图表目录：VLOC/VO 都用 3 列小方块控制右侧图表。"""
+    label = entry_mode.upper()
+    chart_ids = tuple(chart_id for chart_id, _label in options)
     st.header("图表目录")
-    st.caption("选择要在右侧展示的 VLOC 图表；评估完成后默认全部打开。")
-    for chart_id in VLOC_CHART_IDS:
-        key = f"vloc_chart_{chart_id}"
+    st.caption(f"选择要在右侧展示的 {label} 图表；评估完成后默认全部打开。")
+    for chart_id in chart_ids:
+        key = f"{entry_mode}_chart_{chart_id}"
         if key not in st.session_state:
             st.session_state[key] = True
 
     select_col, clear_col = st.columns(2)
-    if select_col.button("全选", key="vloc_chart_select_all"):
-        for chart_id in VLOC_CHART_IDS:
-            st.session_state[f"vloc_chart_{chart_id}"] = True
-    if clear_col.button("清除", key="vloc_chart_clear"):
-        for chart_id in VLOC_CHART_IDS:
-            st.session_state[f"vloc_chart_{chart_id}"] = False
+    if select_col.button("全选", key=f"{entry_mode}_chart_select_all"):
+        for chart_id in chart_ids:
+            st.session_state[f"{entry_mode}_chart_{chart_id}"] = True
+    if clear_col.button("清除", key=f"{entry_mode}_chart_clear"):
+        for chart_id in chart_ids:
+            st.session_state[f"{entry_mode}_chart_{chart_id}"] = False
 
     selected: set[str] = set()
-    for start in range(0, len(VLOC_CHART_OPTIONS), 3):
+    for start in range(0, len(options), 3):
         columns = st.columns(3)
-        for column, (chart_id, label) in zip(columns, VLOC_CHART_OPTIONS[start : start + 3]):
+        for column, (chart_id, chart_label) in zip(columns, options[start : start + 3]):
             with column:
-                if st.checkbox(label, key=f"vloc_chart_{chart_id}"):
+                if st.checkbox(chart_label, key=f"{entry_mode}_chart_{chart_id}"):
                     selected.add(chart_id)
     return selected
 

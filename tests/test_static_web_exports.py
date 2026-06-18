@@ -37,8 +37,18 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
     assert 'id="attitudeCompareComposite"' in html
     assert 'id="positionErrorComposite"' in html
     assert 'id="attitudeErrorComposite"' in html
+    assert 'id="voChartDirectorySection" data-entry-show="vo"' in html
+    assert 'id="voChartList"' in html
+    assert 'id="voChartSelectAll"' in html
+    assert 'id="voChartClear"' in html
     assert 'id="evaluationParametersSection" data-entry-hide="vloc"' in html
     assert 'id="seriesXTime"' not in html
+
+    source = Path("static_web/app.js").read_text()
+    assert "VO_CHART_OPTIONS" in source
+    assert "state.voSelectedChartIds" in source
+    assert "renderVoChartDirectory" in source
+    assert "selectedVoChartIds" in source
 
     css = Path("static_web/style.css").read_text()
     assert "[hidden]" in css
@@ -79,6 +89,10 @@ def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
     assert 'report = evaluator.evaluate_vo_bundle(bundle, cfg)' in source
     assert 'segment_policy_label = "按VO连续段逐段评估"' in source
     assert 'entry_mode == "vo" and st.selectbox("轨迹对齐"' not in source
+    assert "VO_CHART_OPTIONS" in source
+    assert "show_chart_directory(\"vo\", VO_CHART_OPTIONS)" in source
+    assert "selected_vo_chart_ids" in source
+    assert "show_visuals(report, entry_mode, selected_vloc_chart_ids, selected_vo_chart_ids)" in source
     assert 'segment_policy_label = "按VO时间戳统一评估（推荐）"' in source
     assert 'divergence_abs = st.number_input("发散绝对阈值 m", value=30.0' in source
     assert 'divergence_rel = st.number_input("发散相对阈值 % 路程", value=3.0' in source

@@ -34,6 +34,10 @@ const els = {
   vlocChartList: document.getElementById("vlocChartList"),
   vlocChartSelectAll: document.getElementById("vlocChartSelectAll"),
   vlocChartClear: document.getElementById("vlocChartClear"),
+  voChartDirectorySection: document.getElementById("voChartDirectorySection"),
+  voChartList: document.getElementById("voChartList"),
+  voChartSelectAll: document.getElementById("voChartSelectAll"),
+  voChartClear: document.getElementById("voChartClear"),
   pointSelectionOutputSection: document.getElementById("pointSelectionOutputSection"),
   pointSelectionOutput: document.getElementById("pointSelectionOutput"),
   clearAllPointSelections: document.getElementById("clearAllPointSelections"),
@@ -66,14 +70,6 @@ const chartIds = [
   "rpeRotationTime",
 ];
 
-const VLOC_ONLY_CHART_IDS = new Set([
-  "heightComparison",
-  "navStatusModes",
-  "navVelocity",
-  "navResetCounts",
-  "vlocStatus",
-]);
-
 const VLOC_CHART_OPTIONS = [
   { id: "trajectory3d", label: "3D 轨迹" },
   { id: "trajectoryXY", label: "俯视 NE 轨迹" },
@@ -89,16 +85,23 @@ const VLOC_CHART_OPTIONS = [
   { id: "attitudeErrorComposite", label: "YPR 误差随时间变化" },
 ];
 
-const VO_ONLY_CHART_IDS = new Set([
-  "segmentError",
-  "speedError",
-  "sim3ScaleTime",
-  "rpeTranslationTime",
-  "rpeRotationTime",
-]);
+const VO_CHART_OPTIONS = [
+  { id: "trajectory3d", label: "3D 轨迹" },
+  { id: "trajectoryXY", label: "俯视 XY 轨迹" },
+  { id: "errorDistance", label: "误差随路程变化" },
+  { id: "segmentError", label: "按距离子轨迹误差" },
+  { id: "speedError", label: "速度分箱误差" },
+  { id: "sim3ScaleTime", label: "局部 Sim3 尺度" },
+  { id: "positionCompareComposite", label: "位置随时间变化" },
+  { id: "attitudeCompareComposite", label: "姿态随时间变化" },
+  { id: "positionErrorComposite", label: "位置误差随时间变化" },
+  { id: "attitudeErrorComposite", label: "姿态误差随时间变化" },
+  { id: "rpeTranslationTime", label: "RPE 平移误差" },
+  { id: "rpeRotationTime", label: "RPE 旋转误差" },
+];
 
 const VLOC_VISIBLE_CHART_IDS = VLOC_CHART_OPTIONS.map((option) => option.id);
-const VO_VISIBLE_CHART_IDS = chartIds.filter((id) => !VLOC_ONLY_CHART_IDS.has(id));
+const VO_VISIBLE_CHART_IDS = VO_CHART_OPTIONS.map((option) => option.id);
 const PICKABLE_VLOC_CHART_IDS = VLOC_VISIBLE_CHART_IDS.filter((id) => id !== "trajectory3d");
 const POINT_SELECTION_COLORS = [
   "#000000",
@@ -114,6 +117,7 @@ const POINT_SELECTION_COLORS = [
 ];
 
 state.vlocSelectedChartIds = new Set(VLOC_VISIBLE_CHART_IDS);
+state.voSelectedChartIds = new Set(VO_VISIBLE_CHART_IDS);
 
 init();
 
@@ -141,6 +145,9 @@ function wireEvents() {
   els.vlocChartList?.addEventListener("change", handleVlocChartDirectoryChange);
   els.vlocChartSelectAll?.addEventListener("click", selectAllVlocChartDirectory);
   els.vlocChartClear?.addEventListener("click", clearVlocChartDirectory);
+  els.voChartList?.addEventListener("change", handleVoChartDirectoryChange);
+  els.voChartSelectAll?.addEventListener("click", selectAllVoChartDirectory);
+  els.voChartClear?.addEventListener("click", clearVoChartDirectory);
   els.clearAllPointSelections?.addEventListener("click", clearAllPointSelections);
   document.addEventListener("keydown", handlePointSelectionKeydown);
   els.runButton.addEventListener("click", runEvaluation);
@@ -157,6 +164,7 @@ function wireEvents() {
   els.downloadHtml.addEventListener("click", () => downloadText("vo_evaluation_report.html", buildHtmlReport(), "text/html"));
   updateEntryModeUi();
   renderVlocChartDirectory();
+  renderVoChartDirectory();
   updateDirectoryStatus("data");
   updateDirectoryStatus("log");
 }
@@ -458,21 +466,39 @@ function selectedVlocChartIds() {
   return state.vlocSelectedChartIds;
 }
 
+function selectedVoChartIds() {
+  if (!(state.voSelectedChartIds instanceof Set)) {
+    state.voSelectedChartIds = new Set(VO_VISIBLE_CHART_IDS);
+  }
+  return state.voSelectedChartIds;
+}
+
 function resetVlocChartDirectorySelection() {
   state.vlocSelectedChartIds = new Set(VLOC_VISIBLE_CHART_IDS);
 }
 
-function renderVlocChartDirectory() {
-  if (!els.vlocChartList) {
+function resetVoChartDirectorySelection() {
+  state.voSelectedChartIds = new Set(VO_VISIBLE_CHART_IDS);
+}
+
+function renderChartDirectory(listNode, options, selected) {
+  if (!listNode) {
     return;
   }
-  const selected = selectedVlocChartIds();
-  els.vlocChartList.innerHTML = VLOC_CHART_OPTIONS.map((option) => `
+  listNode.innerHTML = options.map((option) => `
     <label class="chart-directory-item">
       <input type="checkbox" data-chart-id="${escapeHtml(option.id)}" ${selected.has(option.id) ? "checked" : ""} />
       <span>${escapeHtml(option.label)}</span>
     </label>
   `).join("");
+}
+
+function renderVlocChartDirectory() {
+  renderChartDirectory(els.vlocChartList, VLOC_CHART_OPTIONS, selectedVlocChartIds());
+}
+
+function renderVoChartDirectory() {
+  renderChartDirectory(els.voChartList, VO_CHART_OPTIONS, selectedVoChartIds());
 }
 
 function handleVlocChartDirectoryChange(event) {
@@ -490,9 +516,30 @@ function handleVlocChartDirectoryChange(event) {
   applyEntryModeChartVisibility(reportEntryMode(state.report));
 }
 
+function handleVoChartDirectoryChange(event) {
+  const target = event.target;
+  const chartId = target?.dataset?.chartId;
+  if (!chartId || !VO_VISIBLE_CHART_IDS.includes(chartId)) {
+    return;
+  }
+  const selected = selectedVoChartIds();
+  if (target.checked) {
+    selected.add(chartId);
+  } else {
+    selected.delete(chartId);
+  }
+  applyEntryModeChartVisibility(reportEntryMode(state.report));
+}
+
 function setVlocChartDirectorySelection(chartIdsToShow) {
   state.vlocSelectedChartIds = new Set(chartIdsToShow);
   renderVlocChartDirectory();
+  applyEntryModeChartVisibility(reportEntryMode(state.report));
+}
+
+function setVoChartDirectorySelection(chartIdsToShow) {
+  state.voSelectedChartIds = new Set(chartIdsToShow);
+  renderVoChartDirectory();
   applyEntryModeChartVisibility(reportEntryMode(state.report));
 }
 
@@ -504,8 +551,16 @@ function clearVlocChartDirectory() {
   setVlocChartDirectorySelection([]);
 }
 
+function selectAllVoChartDirectory() {
+  setVoChartDirectorySelection(VO_VISIBLE_CHART_IDS);
+}
+
+function clearVoChartDirectory() {
+  setVoChartDirectorySelection([]);
+}
+
 function chartTitleById(chartId) {
-  return VLOC_CHART_OPTIONS.find((option) => option.id === chartId)?.label || chartId;
+  return [...VLOC_CHART_OPTIONS, ...VO_CHART_OPTIONS].find((option) => option.id === chartId)?.label || chartId;
 }
 
 function isPointSelectableChart(chartId) {
@@ -1004,12 +1059,16 @@ function applyEntryModeTitles(entryMode) {
 
 function applyEntryModeChartVisibility(entryMode) {
   const modeVisibleIds = new Set(visibleChartIdsForEntryMode(entryMode));
-  const selectedVlocIds = entryMode === "vloc" ? selectedVlocChartIds() : null;
+  const selectedChartIds = entryMode === "vloc"
+    ? selectedVlocChartIds()
+    : entryMode === "vo"
+      ? selectedVoChartIds()
+      : null;
   for (const id of chartIds) {
     const node = document.getElementById(id);
     if (!node) continue;
     const belongsToMode = modeVisibleIds.has(id);
-    const shouldShow = belongsToMode && (entryMode !== "vloc" || selectedVlocIds.has(id));
+    const shouldShow = belongsToMode && (!selectedChartIds || selectedChartIds.has(id));
     node.hidden = !shouldShow;
     if (!belongsToMode && typeof Plotly !== "undefined" && typeof Plotly.purge === "function") {
       Plotly.purge(id);
@@ -1058,6 +1117,7 @@ function updateEntryModeUi() {
   }
   applyEntryModeTitles(entryMode);
   renderVlocChartDirectory();
+  renderVoChartDirectory();
   applyEntryModeChartVisibility(entryMode);
   updateEntryModeHint();
   updateRunButton();
@@ -1113,6 +1173,10 @@ function renderReport(report) {
     resetVlocChartDirectorySelection();
     resetPointSelectionState();
     renderVlocChartDirectory();
+  } else if (reportEntryMode(report) === "vo") {
+    resetVoChartDirectorySelection();
+    resetPointSelectionState();
+    renderVoChartDirectory();
   }
   updateEntryModeUi();
   renderMetrics(report);
