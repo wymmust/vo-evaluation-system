@@ -42,6 +42,38 @@ def test_streamlit_dead_time_series_helpers_are_removed():
         assert f"def {name}" not in source
 
 
+def test_streamlit_html_report_cards_hide_removed_summary_metrics():
+    from app import build_report_metric_cards
+
+    report = {
+        "summary": {
+            "gt_path_length_m": 1000.0,
+            "duration_s": 50.0,
+            "matched_poses": 100,
+            "original_matched_poses": 100,
+            "gt_pose_coverage_ratio": 1.0,
+            "est_pose_coverage_ratio": 1.0,
+            "endpoint_error_m": 12.0,
+            "endpoint_error_percent_of_path": 1.2,
+            "raw_path_scale_ratio_est_over_gt": 1.0,
+        },
+        "ate_position_m": {"rmse": 1.0, "p95": 2.0},
+        "ate_vertical_m": {"rmse": 0.5, "p95": 1.0},
+        "rpe_frame_delta": {"translation_m": {"rmse": 0.2, "p95": 0.4}, "delta_unit": "frames", "delta_frames": 1},
+        "alignment": {"scale": 1.0},
+        "association": {"method": "interpolate_gt", "matches": 100},
+        "divergence": {"diverged": True, "first_divergence_distance_m": 10.0, "first_divergence_error_m": 5.0},
+        "discontinuities": {"all_matches": {"break_count": 0}, "selected_segment": {"policy": "vo_timestamps"}},
+        "orientation_correction": {"selected": "none"},
+    }
+
+    labels = [card["label"] for card in build_report_metric_cards(report)]
+
+    assert not any("终点漂移" in label for label in labels)
+    assert not any("发散状态" in label for label in labels)
+    assert not any("时间同步" in label for label in labels)
+
+
 def test_streamlit_composite_angle_time_series_unwraps_180_degree_boundary():
     from app import make_composite_pair_time_series
 
@@ -161,7 +193,7 @@ def test_streamlit_chart_directory_is_wired_to_vloc_and_vo_visuals():
         "navStatusModes",
         "navVelocity",
         "navResetCounts",
-        "vlocStatus",
+        "voStatus",
         "positionCompareComposite",
         "attitudeCompareComposite",
         "positionErrorComposite",

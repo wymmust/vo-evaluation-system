@@ -59,6 +59,7 @@ const chartIds = [
   "navVelocity",
   "navResetCounts",
   "vlocStatus",
+  "voStatus",
   "positionCompareComposite",
   "attitudeCompareComposite",
   "positionErrorComposite",
@@ -88,7 +89,7 @@ const VO_CHART_OPTIONS = [
   { id: "navStatusModes", label: "导航状态信息" },
   { id: "navVelocity", label: "导航速度信息" },
   { id: "navResetCounts", label: "导航 reset 计数" },
-  { id: "vlocStatus", label: "VO 状态信息" },
+  { id: "voStatus", label: "VO 状态信息" },
   { id: "positionCompareComposite", label: "位置随时间变化" },
   { id: "attitudeCompareComposite", label: "姿态随时间变化" },
   { id: "positionErrorComposite", label: "位置误差随时间变化" },
@@ -100,6 +101,7 @@ const VO_CHART_OPTIONS = [
 const VLOC_VISIBLE_CHART_IDS = VLOC_CHART_OPTIONS.map((option) => option.id);
 const VO_VISIBLE_CHART_IDS = VO_CHART_OPTIONS.map((option) => option.id);
 const PICKABLE_VLOC_CHART_IDS = VLOC_VISIBLE_CHART_IDS.filter((id) => id !== "trajectory3d");
+const PICKABLE_VO_CHART_IDS = VO_VISIBLE_CHART_IDS.filter((id) => id !== "trajectory3d");
 const POINT_SELECTION_COLORS = [
   "#000000",
   "#ff00ff",
@@ -543,12 +545,24 @@ function clearVoChartDirectory() {
   setVoChartDirectorySelection([]);
 }
 
-function chartTitleById(chartId) {
-  return [...VLOC_CHART_OPTIONS, ...VO_CHART_OPTIONS].find((option) => option.id === chartId)?.label || chartId;
+function chartTitleById(chartId, entryMode = reportEntryMode(state.report)) {
+  const primaryOptions = entryMode === "vo" ? VO_CHART_OPTIONS : VLOC_CHART_OPTIONS;
+  const fallbackOptions = entryMode === "vo" ? VLOC_CHART_OPTIONS : VO_CHART_OPTIONS;
+  return [...primaryOptions, ...fallbackOptions].find((option) => option.id === chartId)?.label || chartId;
 }
 
 function isPointSelectableChart(chartId) {
-  return Boolean(state.report) && reportEntryMode(state.report) === "vloc" && PICKABLE_VLOC_CHART_IDS.includes(chartId);
+  if (!state.report) {
+    return false;
+  }
+  const entryMode = reportEntryMode(state.report);
+  if (entryMode === "vloc") {
+    return PICKABLE_VLOC_CHART_IDS.includes(chartId);
+  }
+  if (entryMode === "vo") {
+    return PICKABLE_VO_CHART_IDS.includes(chartId);
+  }
+  return false;
 }
 
 function pointColorMeta(sequence) {
@@ -898,7 +912,7 @@ function refreshChartSelectionMarkers(chartId) {
 }
 
 function refreshAllSelectionMarkers() {
-  for (const chartId of PICKABLE_VLOC_CHART_IDS) {
+  for (const chartId of new Set([...PICKABLE_VLOC_CHART_IDS, ...PICKABLE_VO_CHART_IDS])) {
     refreshChartSelectionMarkers(chartId);
   }
 }
@@ -987,8 +1001,9 @@ function renderPointSelectionOutput() {
   if (!els.pointSelectionOutputSection || !els.pointSelectionOutput) {
     return;
   }
-  const isVloc = reportEntryMode(state.report) === "vloc";
-  const selections = isVloc ? state.pointSelections : [];
+  const entryMode = reportEntryMode(state.report);
+  const pickableIds = entryMode === "vo" ? PICKABLE_VO_CHART_IDS : entryMode === "vloc" ? PICKABLE_VLOC_CHART_IDS : [];
+  const selections = state.pointSelections.filter((selection) => pickableIds.includes(selection.chartId));
   els.pointSelectionOutputSection.hidden = selections.length === 0;
   if (!selections.length) {
     els.pointSelectionOutput.innerHTML = "";
@@ -1094,7 +1109,7 @@ function updateEntryModeUi() {
     node.hidden = entryModeMatchesRule(node.dataset.entryHide, entryMode);
   });
   document.querySelectorAll("[data-entry-show]").forEach((node) => {
-    node.hidden = node.dataset.entryShow !== entryMode;
+    node.hidden = !entryModeMatchesRule(node.dataset.entryShow, entryMode);
   });
   if (els.modeAndAlignmentSection) {
     els.modeAndAlignmentSection.hidden = entryMode === "vloc" || entryMode === "vo";
@@ -1341,7 +1356,7 @@ function renderCharts(report) {
     { field: "altitude_reset_count", name: "altitude_reset_count" },
     { field: "heading_reset_count", name: "heading_reset_count" },
   ], { yTitle: "count" });
-  renderSingleCompositeChart("vlocStatus", voStatus, {
+  renderSingleCompositeChart("voStatus", voStatus, {
     title: "VO 状态信息",
     rows: [
       { label: "num_inliers", field: "num_inliers", unit: "value" },

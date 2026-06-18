@@ -84,7 +84,7 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
         "navStatusModes",
         "navVelocity",
         "navResetCounts",
-        "vlocStatus",
+        "voStatus",
         "positionCompareComposite",
         "attitudeCompareComposite",
         "positionErrorComposite",
@@ -382,6 +382,7 @@ def test_static_vo_mode_hides_fixed_workflow_controls_and_uses_fixed_defaults():
         ];
         const shownNodes = [
           { dataset: { entryShow: "vo" }, hidden: true },
+          { dataset: { entryShow: "vloc,vo" }, hidden: true },
         ];
         const document = {
           body: { appendChild() {} },
@@ -440,7 +441,7 @@ def test_static_vo_mode_hides_fixed_workflow_controls_and_uses_fixed_defaults():
     assert payload["config"]["divergence_abs_m"] == 30
     assert payload["config"]["divergence_rel_percent"] == 3
     assert payload["hiddenStates"] == [True, False]
-    assert payload["shownStates"] == [False]
+    assert payload["shownStates"] == [False, False]
     assert payload["sectionHidden"] is True
 
 
@@ -673,7 +674,7 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
         "navStatusModes",
         "navVelocity",
         "navResetCounts",
-        "vlocStatus",
+        "voStatus",
         "positionCompareComposite",
         "attitudeCompareComposite",
         "positionErrorComposite",
@@ -785,7 +786,7 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
           voStartMarker: byId.trajectory3d.data.find((trace) => trace.name === "vo start").marker,
           voStartTextFont: byId.trajectory3d.data.find((trace) => trace.name === "vo start").textfont,
           navVelocityNames: byId.navVelocity.data.map((trace) => trace.name),
-          voStatusNames: byId.vlocStatus.data.map((trace) => trace.name),
+          voStatusNames: byId.voStatus.data.map((trace) => trace.name),
           positionCompareNames: byId.positionCompareComposite.data.map((trace) => trace.name),
           thirdRowColors: [
             byId.positionCompareComposite.data[4].line.color,
@@ -1330,7 +1331,7 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
         };
         [
           "trajectory3d", "trajectoryXY", "errorDistance",
-          "heightComparison", "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus",
+          "heightComparison", "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus", "voStatus",
           "positionCompareComposite", "attitudeCompareComposite",
           "positionErrorComposite", "attitudeErrorComposite",
           "rpeTranslationTime", "rpeRotationTime",
@@ -1381,11 +1382,11 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
         elements.entryMode.value = "vo";
         context.applyEntryModeChartVisibility("vo");
         const voStillVisible = [
-          "trajectory3d", "errorDistance", "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus",
+          "trajectory3d", "errorDistance", "navStatusModes", "navVelocity", "navResetCounts", "voStatus",
           "positionCompareComposite", "attitudeCompareComposite", "positionErrorComposite", "attitudeErrorComposite",
           "rpeTranslationTime", "rpeRotationTime",
         ].every((id) => elements[id].hidden === false);
-        const voDemandExcludedHidden = ["trajectoryXY", "heightComparison"].every((id) => elements[id].hidden === true);
+        const voDemandExcludedHidden = ["trajectoryXY", "heightComparison", "vlocStatus"].every((id) => elements[id].hidden === true);
 
         process.stdout.write(JSON.stringify({
           itemCount,
@@ -1671,6 +1672,144 @@ def test_static_vloc_point_selection_excludes_3d_and_records_points():
     assert payload["afterBlackOneDelete"] == 10
     assert payload["afterClear"] == 0
     assert payload["outputHiddenAfterClear"] is True
+
+
+def test_static_vo_point_selection_excludes_3d_and_records_points():
+    html = Path("static_web/index.html").read_text()
+    assert 'id="pointSelectionOutputSection" data-entry-show="vloc,vo"' in html
+
+    source = Path("static_web/app.js").read_text()
+    assert 'PICKABLE_VO_CHART_IDS = VO_VISIBLE_CHART_IDS.filter((id) => id !== "trajectory3d")' in source
+
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const makeElement = (value = "") => ({
+          value,
+          files: [],
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          style: {},
+          dataset: {},
+          data: [],
+          classList: { add() {}, remove() {}, toggle() {} },
+          addEventListener() {},
+          appendChild() {},
+          querySelector() { return null; },
+        });
+        const elements = {
+          runtimeStatus: makeElement(),
+          message: makeElement(),
+          runButton: makeElement(),
+          entryMode: makeElement("vo"),
+          entryModeHint: makeElement(),
+          dataDirFiles: makeElement(),
+          logDirFiles: makeElement(),
+          dataDirButton: makeElement(),
+          logDirButton: makeElement(),
+          dataDirStatus: makeElement(),
+          logDirStatus: makeElement(),
+          modeAndAlignmentSection: makeElement(),
+          voChartDirectorySection: makeElement(),
+          voChartList: makeElement(),
+          voChartSelectAll: makeElement(),
+          voChartClear: makeElement(),
+          pointSelectionOutputSection: makeElement(),
+          pointSelectionOutput: makeElement(),
+          clearAllPointSelections: makeElement(),
+          downloadJson: makeElement(),
+          downloadPoseCsv: makeElement(),
+          downloadSegmentCsv: makeElement(),
+          downloadWorstCsv: makeElement(),
+          downloadConfigJson: makeElement(),
+          downloadTrajectoryExcel: makeElement(),
+          downloadHtml: makeElement(),
+          metrics: makeElement(),
+          summaryKicker: makeElement(),
+          summaryTitle: makeElement(),
+          visualKicker: makeElement(),
+          visualTitle: makeElement(),
+        };
+        [
+          "trajectory3d", "trajectoryXY", "errorDistance",
+          "heightComparison", "navStatusModes", "navVelocity", "navResetCounts", "vlocStatus", "voStatus",
+          "positionCompareComposite", "attitudeCompareComposite",
+          "positionErrorComposite", "attitudeErrorComposite",
+          "rpeTranslationTime", "rpeRotationTime",
+        ].forEach((id) => { elements[id] = makeElement(); });
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || makeElement(); },
+          createElement() { return makeElement(); },
+          addEventListener() {},
+          querySelectorAll() { return []; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: {
+            addTraces(id, traces) { elements[id].data.push(...traces); },
+            deleteTraces(id, indices) { elements[id].data = elements[id].data.filter((_trace, index) => !indices.includes(index)); },
+            purge(id) { elements[id].data = []; },
+          },
+          elements,
+          process,
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(`${code}
+          state.report = { inputs: { entry_mode: "vo" } };
+          state.activePointSelectionChartId = "trajectory3d";
+          handlePlotPointClick("trajectory3d", { points: [{ x: 1, y: 2, curveNumber: 0, pointNumber: 0, data: { name: "VO aligned", customdata: [188.5] } }] });
+          const after3d = state.pointSelections.length;
+          state.activePointSelectionChartId = "positionCompareComposite";
+          handlePlotPointClick("positionCompareComposite", { points: [{ x: 188.5, y: 20, curveNumber: 1, pointNumber: 0, data: { name: "X VO aligned", customdata: [188.5], xaxis: "x", yaxis: "y" } }] });
+          const afterPosition = state.pointSelections.length;
+          const outputVisible = elements.pointSelectionOutputSection.hidden === false;
+          const outputHtml = elements.pointSelectionOutput.innerHTML;
+          const markerCount = elements.positionCompareComposite.data.filter((trace) => trace.meta && trace.meta.pointSelectionMarker).length;
+          state.focusedPointSelectionId = null;
+          const marker = elements.positionCompareComposite.data.find((trace) => trace.meta && trace.meta.pointSelectionMarker);
+          handlePlotPointHover("positionCompareComposite", { points: [{ x: 188.5, y: 20, pointNumber: 0, data: marker }] });
+          const focusedBeforeDelete = state.focusedPointSelectionId;
+          handlePointSelectionKeydown({ key: "Delete", target: { tagName: "DIV" }, preventDefault() {} });
+          const afterDelete = state.pointSelections.length;
+          process.stdout.write(JSON.stringify({
+            pickableHas3d: PICKABLE_VO_CHART_IDS.includes("trajectory3d"),
+            pickableHasPosition: PICKABLE_VO_CHART_IDS.includes("positionCompareComposite"),
+            after3d,
+            afterPosition,
+            outputVisible,
+            outputHtml,
+            markerCount,
+            focusedBeforeDelete,
+            afterDelete,
+          }));
+        `, context);
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload["pickableHas3d"] is False
+    assert payload["pickableHasPosition"] is True
+    assert payload["after3d"] == 0
+    assert payload["afterPosition"] == 1
+    assert payload["outputVisible"] is True
+    assert "位置随时间变化" in payload["outputHtml"]
+    assert "X VO aligned" in payload["outputHtml"]
+    assert "188.500" in payload["outputHtml"]
+    assert payload["markerCount"] == 1
+    assert payload["focusedBeforeDelete"]
+    assert payload["afterDelete"] == 0
 
 
 def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
