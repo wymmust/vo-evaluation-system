@@ -1,28 +1,35 @@
-"""VO evaluation core.
+"""VO/VLOC evaluation core.
 
 这份文件负责所有“算法层”的工作，页面只是调用这里的函数。
 
+当前公开入口：
+1. sf_vloc: data_dir/imu.txt + log_dir/vloc.txt + home_point.txt + calib_raw.yaml。
+2. sf_vo: data_dir/imu.txt + log_dir/vo.txt + home_point.txt + calib_raw.yaml。
+3. tum: 标准 TUM 双轨迹文本，主要保留给离线/回归测试。
+
 代码分层：
-1. 输入解析：把 TUM/KITTI/CSV/EuRoC/注释表头等轨迹文件读成 Trajectory。
-2. 时间同步：默认把 GT 插值到 VO 时间戳；也保留 TUM greedy timestamp association。
-3. 轨迹对齐：SE3、Sim3、首帧对齐或不对齐，把 VO 坐标系映射到 GT 坐标系。
-4. 指标计算：ATE、RPE、长距离子轨迹误差、尺度漂移、覆盖率、发散、速度分箱、runtime。
-5. 报告输出：把指标、每帧误差表、子轨迹表组织成 report dict，供 app.py 展示和导出。
+1. 固定格式解析：目录入口只按需求文档固定列读取，不再做旧版自动表头识别。
+2. 坐标预处理：VLOC 统一到 body/NED；VO 从 camera 通过外参转到 body。
+3. 时间同步：固定把 GT/reference 插值到 estimate 时间戳；超过 1.0 s GT 插值间隔的帧会被丢弃。
+4. 有效段处理：VLOC 先过滤 vloc_mode <= 1；VO 按 reset_count 分段并过滤短段。
+5. 轨迹评估：VLOC 固定不做 Sim3/SE3 对齐；VO 固定按有效连续段分别做 Sim3。
+6. 指标与导出：生成页面指标、可视化明细、逐帧 ATE/RPE/尺度表和 Excel 中间结果。
 
 指标与代码字段对应：
-- 时间同步质量：prepare_evaluation_trajectories()/associate_trajectories() -> report["association"]。
-- 轨迹对齐尺度：compute_alignment()/aggregate_alignment() -> report["alignment"]。
+- 时间同步质量：prepare_evaluation_trajectories()/interpolate_reference_to_estimate() -> report["association"]。
+- 轨迹对齐尺度：compute_alignment()/aggregate_alignment() -> report["alignment"]；VLOC 固定 none，VO 固定分段 Sim3。
 - ATE 三维位置误差：pos_error_m -> report["ate_position_m"]。
 - ATE 水平误差：horizontal_error_m -> report["ate_horizontal_m"]。
 - ATE 垂直/高度误差：vertical_error_m -> report["ate_vertical_m"]。
-- VO 姿态修正：select_orientation_correction()/apply_orientation_correction() -> report["orientation_correction"]。
+- 姿态修正：select_orientation_correction()/apply_orientation_correction() -> report["orientation_correction"]；
+  当前 sf_vloc/sf_vo 固定 none，旧的 auto/手动修正只保留给通用评估入口。
 - 姿态/yaw 误差：rotation_errors()/yaw_from_rot() -> ate_orientation_deg / ate_yaw_deg。
 - RPE 帧数/距离间隔误差：rpe_frame_dataframe()/relative_error() -> report["rpe_frame_delta"] 和 rpe_per_frame。
 - KITTI/rpg 风格子轨迹误差：segment_errors() -> report["segment_errors"] 和 segment_records。
 - 速度分箱误差：summarize_by_speed_bins() -> report["speed_bins"]。
-- 终点漂移、覆盖率、路程、耗时、原始尺度比：summary dict。
-- 发散检测：detect_divergence() -> report["divergence"]。
-- VO 重置/大跳变诊断：detect_associated_discontinuities() -> report["discontinuities"]。
+- 覆盖率、路程、耗时、原始尺度比等汇总量：summary dict。
+- 发散检测：detect_divergence() -> report["divergence"]，目前主要作为导出/诊断字段，页面已弱化。
+- reset/gap/大跳变诊断：detect_associated_discontinuities() -> report["discontinuities"]。
 - runtime/资源统计：summarize_runtime() -> report["runtime"]。
 
 论文出处标注：
@@ -38,7 +45,7 @@
   直接来源：按传感器可观性选择 SE3/Sim3/首帧等对齐方式，ATE 与相对误差的统一解释。
 
 每个输出指标对应的论文方法：
-- report["association"]：Sturm12 的 TUM greedy timestamp association；interpolate_gt 是本系统为“GT 高频、VO 低频或错位”
+- report["association"]：Sturm12 的 TUM greedy timestamp association；interpolate_gt 是本系统为“GT 高频、estimate 低频或错位”
   增加的工程扩展，动机来自 Schubert18 的高频同步 GT 和 Zhang18 对时间关联问题的强调。
 - report["alignment"]：Sturm12 ATE 需要先对齐轨迹；Zhang18 明确按单目/双目/VIO 选择 Sim3、SE3 或其他变换。
 - report["ate_position_m"]：Sturm12 的 Absolute Trajectory Error；Zhang18 也把 ATE 作为常用全局误差。
@@ -53,15 +60,15 @@
 - report["segment_errors"]：Geiger12/KITTI odometry 的固定长度子轨迹平移百分比和旋转 deg/m；
   Zhang18/rpg 轨迹评估也使用相对误差和尺度漂移思想。
 - report["speed_bins"]：Geiger12/KITTI 的 error-vs-speed 图表思想；本系统把它泛化到无人机速度分箱。
-- report["summary"]["endpoint_error_m"]：工程扩展，论文中不是标准排行榜指标；用于物流无人机终点/降落点偏差分析。
+- report["summary"]["endpoint_error_m"]：工程扩展，论文中不是标准排行榜指标；目前保留在 report 中供导出/诊断使用。
 - report["summary"]["gt_coverage_ratio"] 和 report["summary"]["est_coverage_ratio"]：工程扩展，动机来自 Schubert18/Delmerico18
   对长序列 VIO 跟踪成功率、鲁棒性和飞行可用性的关注。
-- report["summary"]["raw_path_scale_ratio"]：Zhang18 的尺度可观性和 Sim3/SE3 对齐讨论；用于判断单目 VO 是否无尺度或尺度不稳。
+- report["summary"]["raw_path_scale_ratio"]：Zhang18 的尺度可观性和 Sim3/SE3 对齐讨论；用于判断估计轨迹是否无尺度或尺度不稳。
 - report["summary"]["duration_s"]、["gt_path_m"]、["est_path_m"]：工程基础量，用于把 Geiger12 的长度/速度误差、
   Delmerico18 的运行时间约束和无人机长航程需求放到同一报告。
 - report["divergence"]：工程扩展，论文中没有统一阈值公式；用于把 Schubert18/Delmerico18 的长序列鲁棒性需求落到可报警字段。
-- report["discontinuities"]：工程扩展，处理 VO 重定位/重置/丢跟踪后的大跳变，避免跨断点污染 Geiger12 式子轨迹统计。
-- report["runtime"]：Delmerico18 直接关注每帧处理时间、CPU 和内存负载；本系统从 VO 输出 extras 字段中统计这些量。
+- report["discontinuities"]：工程扩展，处理 estimate 重定位/重置/丢跟踪后的大跳变，避免跨断点污染 Geiger12 式子轨迹统计。
+- report["runtime"]：Delmerico18 直接关注每帧处理时间、CPU 和内存负载；本系统从 estimate extras 字段中统计这些量。
 """
 
 from __future__ import annotations
@@ -163,7 +170,7 @@ def get_evaluation_format_spec(fmt: str) -> EvaluationFormatSpec:
 # 维护规则：只要 report 新增/改名指标，就同步更新本表和 README，避免页面、文档、代码三处口径分叉。
 METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
     {
-        "metric": "时间同步 / GT 插值到 VO",
+        "metric": "时间同步 / GT 插值到 estimate",
         "report_field": 'report["association"]',
         "code": "prepare_evaluation_trajectories(); build_associated_trajectories(); interpolate_reference_to_estimate(); associate_trajectories()",
     },
@@ -173,7 +180,7 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "code": "compute_alignment(); umeyama_alignment(); aggregate_alignment(); apply_alignment()",
     },
     {
-        "metric": "VO 姿态修正",
+        "metric": "estimate 姿态修正",
         "report_field": 'report["orientation_correction"]',
         "code": "select_orientation_correction(); score_orientation_correction_candidate(); apply_orientation_correction()",
     },
@@ -233,7 +240,7 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "code": "build_worst_segments()",
     },
     {
-        "metric": "断点 / VO 重置 / 大跳变",
+        "metric": "断点 / reset / 大跳变",
         "report_field": 'report["discontinuities"]',
         "code": "detect_associated_discontinuities(); select_evaluation_segments(); summarize_continuity()",
     },
@@ -243,7 +250,7 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "code": "detect_divergence(); classify_tracking_failure(); classify_scale_divergence()",
     },
     {
-        "metric": "航程 / 耗时 / 匹配数量 / 覆盖率 / 终点漂移 / 原始尺度比",
+        "metric": "航程 / 耗时 / 匹配数量 / 覆盖率 / 原始尺度比",
         "report_field": 'report["summary"]',
         "code": "evaluate_trajectories(): summary dict; path_distance(); _gt_coverage_ratio()",
     },
@@ -272,7 +279,7 @@ class Trajectory:
     stamps: 秒级时间戳。所有 ns/us/ms 输入都会先归一化到秒。
     positions: N x 3 的位置，单位默认按输入理解为米。
     rotations: 可选 N x 3 x 3 旋转矩阵；没有姿态时仍可计算位置类指标。
-    extras: runtime 或资源字段，例如 process_time_ms、fps、memory_mb。
+    extras: 与轨迹等长的附加字段，例如状态位、速度、reset_count、经纬高、runtime 或 source_index。
     """
 
     name: str
@@ -288,7 +295,7 @@ class Trajectory:
         代码意义：
         - 所有输入格式最终都会走到 Trajectory，因此这里统一做 shape 校验、类型转换和时间排序。
         - 时间排序很重要：后续 path_distance()、插值、RPE、子轨迹搜索都默认轨迹按时间递增。
-        - extras 会跟随相同排序同步重排，确保 runtime 字段仍然和 VO 位姿一一对应。
+        - extras 会跟随相同排序同步重排，确保状态、reset_count、runtime 等字段仍然和位姿一一对应。
 
         指标影响：
         - 如果这里不排序，summary.duration_s、speed_bins、RPE 和断点检测都会被乱序时间污染。
@@ -399,21 +406,27 @@ WGS84_E2 = WGS84_F * (2.0 - WGS84_F)
 
 @dataclass
 class EvaluationConfig:
-    """评估配置，基本都由 app.py/静态网页侧边栏控件传入。
+    """评估配置。
+
+    当前前端只暴露少量必要参数：
+    - sf_vloc: 页面不暴露对齐/时间同步/RPE 配置，evaluate_vloc_bundle() 会强制使用固定规则。
+    - sf_vo: 页面只保留 RPE 统计间隔和尺度图间隔；其余对齐、时间同步和分段规则由 normalized_vo_evaluation_config() 固化。
+
+    其余字段仍保留，是为了：
+    - 支持通用 evaluate_trajectories()、TUM 回归测试和后端自动化调用。
+    - 让 VO/VLOC 固定入口可以通过 replace() 明确写出“哪些参数被强制固定”。
 
     配置与指标/流程的对应关系：
-    - alignment: 决定 compute_alignment() 的 SE3/Sim3/首帧/不对齐方式，影响所有 ATE/RPE/子轨迹误差。
-    - orientation_correction: 对 VO 姿态做坐标系/外参修正，或自动选择最优修正，
-      对应 report["orientation_correction"]，会影响姿态 ATE、RPE 和带姿态的子轨迹误差。
-    - association_mode/max_time_diff_s/max_interpolation_gap_s/time_offset_s/allow_extrapolation:
-      决定 prepare_evaluation_trajectories() 如何把 GT 和 VO 放到同一时间轴，影响匹配位姿、覆盖率和所有后续误差。
-    - rpe_delta_value/rpe_delta_unit: 控制 RPE 按帧数或按 GT 距离统计，对应 report["rpe_frame_delta"] 和 rpe_per_frame。
-      rpe_delta_frames 保留为旧配置兼容字段；rpe_delta_seconds 仍输出固定时间 RPE 参考值。
+    - alignment: 通用对齐方式；sf_vloc 固定 none，sf_vo 固定 sim3 并按 segment 逐段对齐。
+    - orientation_correction: 通用姿态修正；当前 sf_vloc/sf_vo 固定 none。
+    - association_mode/max_interpolation_gap_s/time_offset_s/allow_extrapolation:
+      控制 GT/reference 如何插值到 estimate 时间戳；当前 sf_vloc/sf_vo 固定 interpolate_gt、1.0 s、0、False。
+    - rpe_delta_value/rpe_delta_unit: 控制 VO 页面 RPE 按帧数或按 GT 距离统计，对应 report["rpe_frame_delta"] 和 rpe_per_frame。
+    - scale_delta_value/scale_delta_unit: 控制 VO 页面局部尺度图按帧数或按 GT 距离取窗口，对应 report["scale_frame_delta"] 和 scale_per_frame。
     - segment_lengths_m/segment_step_frames/max_segments_per_length/max_segment_length_diff_ratio:
-      控制 segment_errors() 的长航程子轨迹抽样，对应 report["segment_errors"] 和 report["segment_records"]。
-    - continuous_segment_policy/discontinuity_*: 控制断点诊断和跨重置轨迹如何纳入评估，对应 report["discontinuities"]。
-    - divergence_*: 控制 detect_divergence() 的发散阈值，对应 report["divergence"]。
-    - speed_bins_mps: 控制 summarize_by_speed_bins() 的速度分箱，对应 report["speed_bins"]。
+      控制 Geiger/KITTI 风格长航程子轨迹抽样，对应 report["segment_errors"] 和 report["segment_records"]。
+    - continuous_segment_policy/discontinuity_*: 控制断点诊断和跨 reset 轨迹如何纳入评估，对应 report["discontinuities"]。
+    - divergence_* 和 speed_bins_mps: 仍作为导出/诊断字段保留，当前页面主指标已弱化。
     """
 
     profile: str = "monocular_long_range_uav"
@@ -1463,7 +1476,12 @@ def evaluate_trajectories(
     est: Trajectory,
     config: EvaluationConfig | None = None,
 ) -> dict[str, Any]:
-    """评估入口：输入 GT 和 VO 轨迹，输出完整 report。
+    """通用轨迹评估入口：输入 GT/reference 和 estimate，输出完整 report。
+
+    这里是 VLOC 和 VO 都会复用的核心计算层：
+    - VLOC 入口会先把 nav/vloc 都转成 body/NED，再固定不对齐地调用这里。
+    - VO 入口会先把 camera pose 转成 body pose、按 reset_count 筛掉短段，再用分段 Sim3 调用这里。
+    - TUM/测试入口也可以直接传两条 Trajectory 进来。
 
     流程对应页面上的“运行结果、可视化、明细与导出”：
     1. 时间同步 -> association / coverage。
@@ -1480,8 +1498,8 @@ def evaluate_trajectories(
     """
     cfg = config or EvaluationConfig()
 
-    # 1. 时间同步：默认以 VO 时间戳为评估基准，把 GT/IMU 插值到 VO 时刻。
-    #    这样 GT=0.1/0.3/0.5、VO=0.2/0.4/0.6 的相位错开数据不会被错误丢弃。
+    # 1. 时间同步：默认以 estimate 时间戳为评估基准，把 GT/reference 插值到 estimate 时刻。
+    #    这样 GT=0.1/0.3/0.5、estimate=0.2/0.4/0.6 的相位错开数据不会被错误丢弃。
     #    如果选择 nearest，则退回 TUM RGB-D benchmark 的 greedy timestamp association。
     original_gt = gt
     original_est = est
@@ -1489,8 +1507,9 @@ def evaluate_trajectories(
     if len(gt_idx) < 2:
         raise ValueError("Need at least two associated poses to evaluate a trajectory")
 
-    # 2. 先在原始匹配序列上诊断断点/跳变。默认策略 vo_timestamps 不丢点，
-    #    断点只用于提示 VO 可能发生了重置或局部坐标系切换。
+    # 2. 先在同步后的原始匹配序列上诊断断点/跳变。
+    #    sf_vo 会把 reset_count 分段结果写入 evaluation_segment_id，因此 reset 边界也会被标为断点；
+    #    sf_vloc 没有 VO reset 分段时，则主要看 GT/estimate 步长和时间 gap。
     original_match_count = int(len(gt_idx))
     original_gt_pos = gt.positions[gt_idx]
     original_est_pos = est.positions[est_idx]
@@ -1512,8 +1531,8 @@ def evaluate_trajectories(
     if not eval_ranges:
         raise ValueError("No continuous segment contains at least two matched poses")
 
-    # 3. 根据 GT/VO 姿态和评估段选择 VO 姿态修正。auto 会试多个坐标系/外参候选，
-    #    手动模式则直接应用用户选定的修正；ignore 会退化成 position-only RPE/子轨迹误差。
+    # 3. 根据 GT/estimate 姿态和评估段选择姿态修正。
+    #    当前 sf_vloc/sf_vo 固定 none；auto/手动/ignore 只保留给通用评估和历史回归。
     orientation_selection = select_orientation_correction(gt, est, gt_idx, est_idx, eval_ranges, cfg)
 
     # 这些列表会收集每个连续段的结果，最后统一 concat/describe。
@@ -1545,7 +1564,8 @@ def evaluate_trajectories(
     distance_offset = 0.0
 
     for seg_id, seg in enumerate(eval_ranges):
-        # 4. 根据连续段策略切片；默认是一整段 VO 时间戳，segments 模式会分段评估。
+        # 4. 根据连续段策略切片。
+        #    sf_vloc 固定基本是一整段有效 vloc 时间戳；sf_vo 固定按 reset_count 连续段分别评估。
         start = int(seg["start"])
         end = int(seg["end"])
         cur_gt_idx = gt_idx[start:end]
@@ -1563,7 +1583,9 @@ def evaluate_trajectories(
             est_rot = None
         stamps = gt.stamps[cur_gt_idx]
 
-        # 5. 对齐 VO 到 GT 坐标系。alignment.scale 是页面“对齐尺度”。
+        # 5. 对齐 estimate 到 GT 坐标系。
+        #    sf_vloc 固定 alignment=none，位置误差就是 nav-vloc 原始坐标差；
+        #    sf_vo 固定 alignment=sim3，位置误差基于每段 Sim3 后的 aligned VO。
         alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode=cfg.alignment)
         alignment["segment_id"] = int(seg_id)
         alignment["start_match_index"] = start
@@ -1573,8 +1595,9 @@ def evaluate_trajectories(
         est_pos_aligned = apply_alignment(est_pos, alignment)
         est_rot_aligned = apply_rotation_alignment(est_rot, alignment) if est_rot is not None else None
 
-        # Excel 导出需要固定给出 Sim3 结果。这里独立计算 Sim3，不受页面当前 alignment 选项影响；
-        # 这样即使用户临时选择 SE3/首帧对齐，导出的 sim3_vo_tum 仍然是标准 Sim3 对齐输出。
+        # Excel 导出固定保留一份 Sim3 中间轨迹。
+        # 对 VO，这就是需求文档中的分段 Sim3 输出；对 VLOC，虽然主评估不使用 Sim3，
+        # 这个 sheet 仍可作为诊断中间结果，且不会影响 VLOC 页面指标。
         sim3_alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode="sim3")
         sim3_est_pos = apply_alignment(est_pos, sim3_alignment)
         sim3_est_rot = apply_rotation_alignment(est_rot, sim3_alignment) if est_rot is not None else None
@@ -1745,7 +1768,7 @@ def evaluate_trajectories(
         used_est_indices.append(cur_est_idx)
         used_match_indices.append(np.arange(start, end, dtype=int))
 
-        # 11. summary 所需的总路程、raw VO 路程、对齐后 VO 路程、耗时等。
+        # 11. summary 所需的总路程、raw estimate 路程、对齐后 estimate 路程、耗时等。
         #     来源：路程/速度支撑 Geiger12 风格统计；duration/runtime 支撑 Delmerico18 实时性分析；
         #     raw_path_scale_ratio 支撑 Zhang18 的尺度可观性判断。
         seg_gt_path = float(local_distance_m[-1])
@@ -1782,7 +1805,7 @@ def evaluate_trajectories(
         per_pose["visual_segment_id"] = visual_segment_ids[used_match_idx]
     else:
         per_pose["visual_segment_id"] = per_pose["segment_id"].to_numpy(dtype=int)
-    # 13. runtime 只统计 VO 输出里存在的资源字段；没有字段则返回 None。
+    # 13. runtime 只统计 estimate extras 里存在的资源字段；没有字段则返回 None。
     runtime = summarize_runtime(est, used_est_idx)
     alignment = aggregate_alignment(alignments, cfg.alignment)
     global_sim3_ate = compute_global_ate(gt, est, used_gt_idx, used_est_idx, orientation_selection["selected"], mode="sim3")
@@ -1923,11 +1946,11 @@ def prepare_evaluation_trajectories(
     est: Trajectory,
     cfg: EvaluationConfig,
 ) -> tuple[Trajectory, Trajectory, np.ndarray, np.ndarray, dict[str, Any]]:
-    """把 GT 和 VO 准备成同一时间轴上的评估序列。
+    """把 GT/reference 和 estimate 准备成同一时间轴上的评估序列。
 
     代码意义：
-    - 默认 interpolate_gt: 以 VO 时间戳为基准，把 GT 插值到 VO 时刻。
-      这适合物流无人机/IMU GT 长时间记录场景，VO 只有算法运行段也不会引入无关 GT。
+    - 默认 interpolate_gt: 以 estimate 时间戳为基准，把 GT/reference 插值到 estimate 时刻。
+      这适合物流无人机/IMU GT 长时间记录场景，算法输出只有运行段也不会引入无关 GT。
     - nearest: 保留 TUM RGB-D benchmark 的最近邻贪心匹配口径，用于复现论文/开源工具。
     - index: 忽略时间戳，按行号配对，用于已经离线同步好的文件。
 
@@ -1939,7 +1962,7 @@ def prepare_evaluation_trajectories(
     来源对应：
     - nearest 模式直接对应 Sturm12/TUM 工具的时间戳匹配。
     - interpolate_gt 是工程扩展：Schubert18/TUM VI 提供高频同步 GT 的评估语境；
-      对物流无人机这种“GT 全程跑、VO 只在算法段输出”的数据，按 VO 时间戳插 GT 更合理。
+      对物流无人机这种“GT 全程跑、estimate 只在算法段输出”的数据，按 estimate 时间戳插 GT 更合理。
     """
     gt_eval, est_eval, assoc = build_associated_trajectories(gt, est, cfg)
     idx = np.arange(len(gt_eval.positions), dtype=int)
@@ -1951,10 +1974,10 @@ def build_associated_trajectories(
     est: Trajectory,
     cfg: EvaluationConfig,
 ) -> tuple[Trajectory, Trajectory, dict[str, Any]]:
-    """按配置构造同一时间轴上的 GT/VO 评估轨迹。
+    """按配置构造同一时间轴上的 GT/reference 和 estimate 评估轨迹。
 
     代码意义：
-    - interpolate_gt: 默认模式，以 VO 时间戳为基准，把 GT position 线性插值、GT rotation 用 SLERP 插值到 VO 时刻。
+    - interpolate_gt: 默认模式，以 estimate 时间戳为基准，把 GT position 线性插值、GT rotation 用 SLERP 插值到 estimate 时刻。
     - nearest/tum_greedy_timestamp: 保留 TUM-style greedy timestamp association，不做插值。
     - index: 不看时间戳，显式按行号对齐，主要用于已经离线同步好的调试数据。
 
@@ -1993,18 +2016,18 @@ def interpolate_gt_to_est_timestamps(
     est: Trajectory,
     cfg: EvaluationConfig,
 ) -> tuple[Trajectory, Trajectory, dict[str, Any]]:
-    """将 GT 插值到 VO 时间戳。
+    """将 GT/reference 插值到 estimate 时间戳。
 
     代码意义：
-    - 先把 VO 时间戳加上 time_offset_s，解决 GT/VO 两套时钟固定偏移。
-    - 只保留落在 GT 时间范围内的 VO 点，避免拿没有 GT 的 VO 段做统计。
+    - 先把 estimate 时间戳加上 time_offset_s，解决 GT/reference 与 estimate 两套时钟固定偏移。
+    - 只保留落在 GT 时间范围内的 estimate 点，避免拿没有 GT 的算法输出段做统计。
     - max_interpolation_gap_s 用来阻止跨很长 GT 缺口插值，避免虚假的平滑 GT。
     - 位置用线性插值；姿态如果存在，后续 interpolate_rotations_from_brackets() 使用 SLERP。
 
     指标对应：
-    - report["association"]["matches"]: 最终参与评估的 VO 时间戳数量。
-    - report["association"]["dropped_est_outside_gt_range"]: 因超出 GT 时间范围丢弃的 VO 点。
-    - report["association"]["dropped_est_large_gt_gap"]: 因 GT 插值间隔过大丢弃的 VO 点。
+    - report["association"]["matches"]: 最终参与评估的 estimate 时间戳数量。
+    - report["association"]["dropped_est_outside_gt_range"]: 因超出 GT 时间范围丢弃的 estimate 点。
+    - report["association"]["dropped_est_large_gt_gap"]: 因 GT 插值间隔过大丢弃的 estimate 点。
     - report["association"]["max_interpolation_gap_s"]: 实际使用样本中的最大 GT 插值间隔。
 
     来源对应：
@@ -2034,11 +2057,13 @@ def interpolate_reference_to_estimate(
     interpolation_position_method: str = "linear",
     interpolation_rotation_method: str = "slerp",
 ) -> tuple[Trajectory, Trajectory, dict[str, Any]]:
-    """Interpolate reference trajectory to estimate timestamps.
+    """把 reference 轨迹插值到 estimate 时间戳。
 
-    返回的 ref_interp 和 est_matched 等长，且都使用原始 estimate 时间戳。
-    reference 的查询时刻是 estimate.stamps + time_offset_s；这个 target_stamp
-    会保存在 extras 中，方便排查固定时间偏移。
+    这是当前 sf_vloc/sf_vo 的固定时间同步方法：
+    - estimate 自己的时间戳作为评估行；
+    - reference 的查询时刻是 estimate.stamps + time_offset_s；
+    - 超出 reference 时间范围、时间戳非法或左右 reference 样本间隔超过 max_interpolation_gap_s 的 estimate 帧会被丢弃；
+    - 返回的 ref_interp 和 est_matched 等长，且都使用原始 estimate 时间戳，target_stamp 会保存在 extras 中方便排查固定时间偏移。
     """
     position_method = interpolation_position_method.lower()
     rotation_method = interpolation_rotation_method.lower()
@@ -2169,11 +2194,11 @@ def interpolate_reference_to_estimate(
     elif ref_unique.rotations is None:
         info["rotation_interpolation_note"] = "rotation interpolation skipped: no reference rotation"
     if info["coverage_estimate_ratio"] < 0.8:
-        info["warning"] = "low interpolate_gt coverage; check timestamp units, GT/VO time ranges, time_offset_s, and max_interpolation_gap_s"
+        info["warning"] = "low interpolate_gt coverage; check timestamp units, GT/estimate time ranges, time_offset_s, and max_interpolation_gap_s"
     if not len(est_indices):
-        info["warning"] = "no VO timestamp remains after interpolation filtering"
+        info["warning"] = "no estimate timestamp remains after interpolation filtering"
     elif len(est_indices) < 2:
-        info["warning"] = "fewer than two VO timestamps remain after interpolation filtering"
+        info["warning"] = "fewer than two estimate timestamps remain after interpolation filtering"
     return ref_interp, est_matched, info
 
 
@@ -2352,7 +2377,7 @@ def associate_trajectories(
     指标对应：
     - report["association"]["matches"]：成功匹配数量。
     - max_time_diff_s / mean_time_diff_s：时间关联质量。
-    - summary 里的 GT/VO 覆盖率由这里返回的索引数量计算。
+    - summary 里的 GT/estimate 覆盖率由这里返回的索引数量计算。
 
     来源对应：
     - 直接对应 Sturm12 提供的 TUM RGB-D benchmark association 工具口径。
@@ -2426,16 +2451,16 @@ def compute_alignment(
     est_rot: np.ndarray | None = None,
     mode: str = "se3",
 ) -> dict[str, Any]:
-    """计算 VO 到 GT 的轨迹对齐变换。
+    """计算 estimate 到 GT 的轨迹对齐变换。
 
     指标对应：
     - SE3: 尺度固定为 1，适合双目/VIO/尺度已知。
-    - Sim3: 同时估计尺度，适合单目 VO/尺度未知。
+    - Sim3: 同时估计尺度，适合单目 VO 或其他尺度未知 estimate。
     - first_pose: 只把首帧对齐，用于观察误差随航程增长。
     - alignment["scale"] 最终显示为页面“对齐尺度”。
 
     实现细节：
-    - 位置对齐用 Umeyama SVD。输入 src=VO，dst=GT，输出 scale/rotation/translation。
+    - 位置对齐用 Umeyama SVD。输入 src=estimate，dst=GT，输出 scale/rotation/translation。
     - 姿态只在 first_pose 模式中用于首帧旋转对齐；SE3/Sim3 的旋转主要由位置轨迹估计。
     - 所有 ATE、RPE、segment_errors 都基于对齐后的 est_pos_aligned 计算。
 
@@ -2446,7 +2471,7 @@ def compute_alignment(
     """
     mode = mode.lower()
     if mode in {"none", "identity"}:
-        # 不对齐模式用于调试原始坐标系；如果 GT/VO 不在同一坐标系，误差会很大。
+        # 不对齐模式用于调试原始坐标系；如果 GT/estimate 不在同一坐标系，误差会很大。
         return _alignment_dict(mode, 1.0, np.eye(3), np.zeros(3))
     if mode in {"first_pose", "first", "origin"}:
         # 首帧对齐只消除起点坐标差，不用全局最小二乘消除后续漂移；
@@ -2459,12 +2484,12 @@ def compute_alignment(
         trans = gt_pos[0] - scale * (rot @ est_pos[0])
         return _alignment_dict("first_pose", scale, rot, trans)
     if mode in {"se3", "rigid"}:
-        # SE3 固定 scale=1。双目、VIO、带尺度传感器的 VO 应优先用它，
+        # SE3 固定 scale=1。双目、VIO、带尺度传感器的 estimate 应优先用它，
         # 因为它不会替算法隐藏尺度错误。
         scale, rot, trans = umeyama_alignment(est_pos, gt_pos, with_scale=False)
         return _alignment_dict("se3", scale, rot, trans)
     if mode in {"sim3", "similarity"}:
-        # Sim3 允许估计全局尺度。单目无尺度 VO 用它可以评估“轨迹形状”，
+        # Sim3 允许估计全局尺度。单目无尺度 VO 或其他无尺度 estimate 用它可以评估“轨迹形状”，
         # 但不能证明原始输出已经具备真实米制尺度。
         scale, rot, trans = umeyama_alignment(est_pos, gt_pos, with_scale=True)
         return _alignment_dict("sim3", scale, rot, trans)
@@ -2474,10 +2499,10 @@ def compute_alignment(
 def umeyama_alignment(src: np.ndarray, dst: np.ndarray, with_scale: bool) -> tuple[float, np.ndarray, np.ndarray]:
     """Umeyama SVD 对齐。
 
-    src 是 VO，dst 是 GT。with_scale=False 得到 SE3；with_scale=True 得到 Sim3。
+    src 是 estimate，dst 是 GT。with_scale=False 得到 SE3；with_scale=True 得到 Sim3。
 
     代码意义：
-    - 通过最小二乘求 R/t/s，使 s * R * VO + t 尽量贴近 GT。
+    - 通过最小二乘求 R/t/s，使 s * R * estimate + t 尽量贴近 GT。
     - 这是 evo、rpg_trajectory_evaluation、KITTI 类评估中常见的轨迹对齐口径。
     - det 修正用于避免 SVD 给出反射矩阵；轨迹对齐必须是合法旋转。
 
@@ -2502,7 +2527,7 @@ def umeyama_alignment(src: np.ndarray, dst: np.ndarray, with_scale: bool) -> tup
     src_centered = src - mu_src
     dst_centered = dst - mu_dst
 
-    # 2. 交叉协方差描述 VO 与 GT 的主方向关系，SVD 从中恢复最优旋转。
+    # 2. 交叉协方差描述 estimate 与 GT 的主方向关系，SVD 从中恢复最优旋转。
     cov = (dst_centered.T @ src_centered) / len(src)
     u, singular_values, vt = np.linalg.svd(cov)
     sign = np.ones(3)
@@ -2524,9 +2549,9 @@ def umeyama_alignment(src: np.ndarray, dst: np.ndarray, with_scale: bool) -> tup
 
 
 def apply_alignment(positions: np.ndarray, alignment: dict[str, Any]) -> np.ndarray:
-    """把 VO 位置应用到 GT 坐标系。
+    """把 estimate 位置应用到 GT 坐标系。
 
-    公式：p_aligned = scale * R * p_vo + t。
+    公式：p_aligned = scale * R * p_est + t。
     之后所有位置误差字段都基于这个结果：
     - per_pose.error_m / horizontal_error_m / vertical_error_m
     - ate_position_m / ate_horizontal_m / ate_vertical_m
@@ -2540,7 +2565,7 @@ def apply_alignment(positions: np.ndarray, alignment: dict[str, Any]) -> np.ndar
 
 
 def apply_rotation_alignment(rotations: np.ndarray | None, alignment: dict[str, Any]) -> np.ndarray | None:
-    """把 VO 姿态应用同一个对齐旋转。
+    """把 estimate 姿态应用同一个对齐旋转。
 
     只应用 rotation，不应用 scale/translation，因为姿态没有尺度和平移。
     结果用于姿态 ATE、yaw 误差、RPE 旋转误差和子轨迹旋转误差。
@@ -2580,7 +2605,7 @@ def aggregate_alignment(alignments: list[dict[str, Any]], mode: str) -> dict[str
     """聚合每个连续段的对齐信息。
 
     代码意义：
-    - 默认系统可以按 VO 时间戳统一评估，也可以按连续段分别对齐/评估。
+    - 默认系统可以按 estimate 时间戳统一评估，也可以按连续段分别对齐/评估。
     - 多段时每段都有自己的 scale/rotation/translation，这里把 scale 做 min/max/mean 汇总。
 
     指标对应：
@@ -2615,13 +2640,17 @@ def select_orientation_correction(
     eval_ranges: list[dict[str, int]],
     cfg: EvaluationConfig,
 ) -> dict[str, Any]:
-    """选择 VO 姿态修正方式。
+    """选择 estimate 姿态修正方式。
 
     指标对应：
-    - report["orientation_correction"]["selected"] 是最终应用到 VO 姿态上的修正。
+    - report["orientation_correction"]["selected"] 是最终应用到 estimate 姿态上的修正。
     - requested="auto" 时，系统会在 AUTO_ORIENTATION_CORRECTION_CANDIDATES 中逐个试算，
       根据姿态 RMSE、yaw RMSE、RPE 平移和 RPE 旋转组成的 score 选最优候选。
     - requested="ignore" 时，后续 RPE/子轨迹误差退化为 position-only 口径。
+
+    当前固定入口说明：
+    - sf_vloc 和 sf_vo 都会把 orientation_correction 固定成 none。
+    - 这段 auto/手动修正逻辑保留给 TUM/通用入口和历史数据复查，页面主流程不再暴露这个选项。
 
     来源对应：
     - 不是 5 篇论文里的标准指标，是为 ENU/NED、camera-to-body、旋转矩阵方向不一致增加的工程扩展。
@@ -2640,7 +2669,7 @@ def select_orientation_correction(
         # 但 rotation RPE、rotation_error_deg_per_m、ate_orientation_deg 会缺失或退化。
         return {**base, "uses_rotations": False, "note": "orientation fields ignored; RPE/segment errors use position-only relative motion"}
     if gt.rotations is None or est.rotations is None:
-        # 有些 VO 只输出 xyz，没有姿态。此时不能强行计算旋转误差，
+        # 有些 estimate 只输出 xyz，没有姿态。此时不能强行计算旋转误差，
         # 否则报告会给出没有物理意义的角度指标。
         return {**base, "selected": "none", "uses_rotations": False, "note": "GT or VO has no orientation; correction skipped"}
     if requested != "auto":
@@ -2825,7 +2854,7 @@ def validate_orientation_correction(mode: str) -> None:
 
 
 def apply_orientation_correction(rotations: np.ndarray | None, mode: str) -> np.ndarray | None:
-    """把 VO 姿态从其输出约定修正到评估使用的姿态约定。
+    """把 estimate 姿态从其输出约定修正到评估使用的姿态约定。
 
     left 表示 M @ R，常用于世界坐标轴转换；right 表示 R @ M，常用于相机系到机体系外参；
     both 表示 M @ R @ M.T，常用于同一个旋转矩阵两侧坐标基变换。
@@ -3286,12 +3315,12 @@ def summarize_by_speed_bins(records: pd.DataFrame, bins: Iterable[float]) -> lis
 def summarize_runtime(est: Trajectory, est_idx: np.ndarray) -> dict[str, Any] | None:
     """运行资源统计。
 
-    如果 VO 输出 CSV 中包含 process_time_ms、fps、cpu_percent、memory_mb 等字段，
-    这里会按匹配到的 VO 帧做 describe() 汇总，对应 report["runtime"]。
+    如果 estimate extras 中包含 process_time_ms、fps、cpu_percent、memory_mb 等字段，
+    这里会按实际参与评估的 estimate 帧做 describe() 汇总，对应 report["runtime"]。
 
     代码意义：
     - runtime 字段不是轨迹格式必需字段，因此只在 extras 中存在时才统计。
-    - est_idx 只取实际参与评估的 VO 帧，避免把未匹配的开机/落地前后日志纳入运行统计。
+    - est_idx 只取实际参与评估的 estimate 帧，避免把未匹配的开机/落地前后日志纳入运行统计。
 
     指标解释：
     - process_time_ms / latency_ms 高：算法可能无法实时运行。
@@ -3455,22 +3484,23 @@ def detect_associated_discontinuities(
 ) -> dict[str, Any]:
     """断点/重置诊断。
 
-    根据 GT 步长、VO 步长、时间间隔判断是否存在大跳变。
+    根据 GT 步长、estimate 步长、时间间隔判断是否存在大跳变。
     如果传入 forced_segment_ids，则相邻样本的分段 id 变化也会被当作断点，
-    这用于 VO reset_count 切段后的强制分段评估。
+    这用于 sf_vo reset_count 切段后的强制分段评估。
     默认评估策略不会丢弃这些点，只把信息放入 report["discontinuities"] 供诊断。
 
     断点来源：
     - gt_step: GT 自己相邻点跳得很远，可能是 GT 数据中断或坐标跳变。
-    - est_step: VO 相邻点跳得很远，可能是 VO 重置、丢跟踪后重新初始化。
+    - est_step: estimate 相邻点跳得很远，可能是 VO/VLOC 重置、丢跟踪后重新初始化或坐标系切换。
+    - evaluation_segment_id: sf_vo 的 reset_count 过滤后，不同 reset 段边界会被强制标成断点。
     - time_gap: 相邻评估时间差很大，可能是日志中断或算法停顿。
 
     指标/页面影响：
-    - break_count > 0 会触发“检测到 VO 重置或大跳变”提示。
+    - break_count > 0 会触发“检测到 reset/gap/大跳变”提示。
     - segment_ids 会写入 per_pose，让可视化在断点处断开，不错误连线。
 
     来源对应：
-    - 这是工程扩展，5 篇论文没有把“VO 重置断点”定义成标准数值指标。
+    - 这是工程扩展，5 篇论文没有把“reset 断点”定义成标准数值指标。
     - 目的在于保护 Geiger12/KITTI 风格的子轨迹统计，避免跨重定位/重置段计算相对误差。
     """
     n = len(stamps)
@@ -3620,8 +3650,8 @@ def select_evaluation_segments(segments: list[dict[str, int]], policy: str, tota
     """根据断点策略选择实际参与误差计算的连续段。
 
     三种策略：
-    - vo_timestamps/all: 默认策略。保留所有 VO 时间戳统一评估，断点只作为诊断提示。
-    - segments: 按检测出的连续段逐段评估，每段单独对齐，适合 VO 重置后局部坐标系变化的情况。
+    - vo_timestamps/all: 历史命名，表示保留所有 estimate 时间戳统一评估，断点只作为诊断提示。
+    - segments: 按检测出的连续段逐段评估，每段单独对齐，适合 sf_vo reset 后局部坐标系变化的情况。
     - longest: 只评估最长连续段，适合想排除重置前后不连续影响的情况。
 
     指标影响：
@@ -3706,7 +3736,7 @@ def relative_pose(r_i: np.ndarray, p_i: np.ndarray, r_j: np.ndarray, p_j: np.nda
     """计算从第 i 帧到第 j 帧的相对位姿。
 
     r_rel = R_i^T R_j，p_rel = R_i^T (p_j - p_i)。
-    这个局部坐标系表达会被 relative_error() 用来比较 GT 和 VO 的相对运动。
+    这个局部坐标系表达会被 relative_error() 用来比较 GT 和 estimate 的相对运动。
     """
     r_rel = r_i.T @ r_j
     p_rel = r_i.T @ (p_j - p_i)
@@ -3830,7 +3860,7 @@ def euler_yaw_pitch_roll_to_matrix(yaw: np.ndarray, pitch: np.ndarray, roll: np.
     """yaw-pitch-roll 欧拉角转旋转矩阵，使用 ZYX 顺序。
 
     代码意义：
-    - 用户的 imu.txt/vo.txt 可能只给 yaw/pitch/roll，而不是四元数。
+    - 当前 SF 固定格式的 imu.txt、vloc.txt、vo.txt 都给 yaw/pitch/roll，而不是四元数。
     - 调用方必须先把输入角度统一成弧度；固定格式 parser 会在进入这里之前完成这一步。
 
     注意：
@@ -3949,14 +3979,14 @@ def tum_dataframe_from_arrays(
 def trajectory_to_tum_dataframe(traj: Trajectory, extra: dict[str, Any] | None = None) -> pd.DataFrame:
     """把 Trajectory 转成 TUM 表格。
 
-    原始输入、插值后 GT、筛选后 VO 和 Sim3 输出都通过这个函数统一导出，
+    原始输入、插值后 GT、筛选后 estimate 和 Sim3 输出都通过这个函数统一导出，
     避免不同 sheet 的列顺序或四元数顺序不一致。
     """
     return tum_dataframe_from_arrays(traj.stamps, traj.positions, traj.rotations, extra=extra)
 
 
 def raw_numeric_table(traj: Trajectory) -> np.ndarray | None:
-    """取解析阶段保留的原始数字表，用于检测 VO 倒数第四列跳变。"""
+    """取解析阶段保留的原始数字表，用于导出时复查原始 estimate 列。"""
     table = traj.extras.get("raw_numeric_table")
     if table is None:
         return None
@@ -3971,13 +4001,15 @@ def jump_export_columns_from_source(
     source_indices: np.ndarray | None,
     prefix: str,
 ) -> dict[str, Any]:
-    """根据原始 VO 倒数第四列的 +1 变化生成导出分段列。
+    """根据原始 estimate 倒数第四列的 +1 变化生成导出分段列。
 
-    用户要求：如果 VO 输出文件倒数第四列出现 0->1、1->2 这类 +1 跳变，
+    历史需求：如果 estimate 输出文件倒数第四列出现 0->1、1->2 这类 +1 跳变，
     就把跳变后的数据视为新的 TUM 文件，例如 vo_tum_01、vo_tum_02。
+    当前固定 sf_vo 中倒数第四列正好是 reset_count；sf_vloc 也会保留该诊断列，
+    但主评估的 VLOC/VO 分段逻辑仍以各自固定流程为准，不依赖这里额外切 sheet。
 
-    Excel 只有 6 个固定 sheet，因此这里不额外创建无限多个 sheet，而是在相关 sheet 中写入：
-    - tum_file: 逻辑文件名，如 vo_tum_01。
+    Excel 当前是 9 个固定 sheet，因此这里不额外创建无限多个 sheet，而是在相关 sheet 中写入：
+    - tum_file: 逻辑文件名，如 vo_tum_01；这里的 vo_tum 是历史命名，实际代表 estimate_tum。
     - jump_segment_id: 从 0 开始的分段编号。
     - jump_source_value: 原始倒数第四列的值，方便复查跳变点。
     """
@@ -4275,8 +4307,8 @@ def scale_frame_dataframe(
     - local_sim3_scale = GT_window_length / VO_raw_window_length。
     - local_scale_drift_percent = (local_scale_ratio_est_over_gt - 1) * 100。
 
-    注意这里使用未对齐的 VO 位置 est_pos_raw。否则 Sim3 对齐后的轨迹已经被整体缩放，
-    会掩盖原始 VO 的局部尺度变化。
+    注意这里使用未对齐的 estimate 位置 est_pos_raw。否则 Sim3 对齐后的轨迹已经被整体缩放，
+    会掩盖原始 estimate 的局部尺度变化。
     """
     stamps = np.asarray(stamps, dtype=float)
     match_indices = np.asarray(match_indices, dtype=int)
@@ -4382,11 +4414,12 @@ def build_trajectory_export_sheets(
 
     Sheet 设计：
     1. input_gt_tum: 原始 GT 转 TUM。
-    2. input_vo_tum: 原始 VO 转 TUM，并按倒数第四列 +1 跳变标记 vo_tum_XX。
-    3. filtered_vo_tum: 时间同步后保留下来的 VO。
-    4. interpolated_gt_tum: 插值到 VO 时间戳后的 GT。
+    2. input_vo_tum: 原始 estimate 转 TUM，并按倒数第四列 +1 跳变标记 vo_tum_XX。
+       这里保留 vo_tum 作为历史 sheet 名称；在 VLOC 模式下它代表 vloc estimate。
+    3. filtered_vo_tum: 时间同步后保留下来的 estimate。
+    4. interpolated_gt_tum: 插值到 estimate 时间戳后的 GT。
     5. sim3_gt_tum: Sim3 评估时使用的 GT。
-    6. sim3_vo_tum: Sim3 对齐后的 VO。
+    6. sim3_vo_tum: Sim3 对齐后的 estimate；VO 用于诊断/评估，VLOC 仅作为导出中间结果。
     7. ate_per_frame: 每个评估时间戳的 ATE 明细。
     8. rpe_per_frame: 每个评估时间戳起算的固定帧/距离 RPE 明细。
     9. scale_per_frame: 每个评估时间戳起算的局部尺度比例/尺度漂移明细。

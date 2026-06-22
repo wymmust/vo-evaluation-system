@@ -594,7 +594,7 @@ def test_static_scale_interval_controls_are_wired_into_config():
     assert config["scale_distance_tolerance_ratio"] == 0.05
 
 
-def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets():
+def test_static_html_export_keeps_only_light_rpe_export_and_xlsx_has_sheets():
     script = textwrap.dedent(
         r"""
         const fs = require("fs");
@@ -654,7 +654,13 @@ def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets(
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     payload = json.loads(result.stdout)
 
-    assert "trajectory_exports" not in payload["sanitized"]
+    assert payload["sanitized"]["trajectory_exports"] == {
+        "rpe_per_frame": [{"timestamp": 1, "rpe_translation_m": 0.2, "rpe_available": True}]
+    }
+    assert "input_gt_tum" not in payload["sanitized"]["trajectory_exports"]
+    assert "sim3_vo_tum" not in payload["sanitized"]["trajectory_exports"]
+    assert "ate_per_frame" not in payload["sanitized"]["trajectory_exports"]
+    assert "scale_per_frame" not in payload["sanitized"]["trajectory_exports"]
     assert "per_pose" not in payload["sanitized"]
     assert "segment_records" not in payload["sanitized"]
     assert payload["sanitized"]["summary"]["matched_poses"] == 2
@@ -677,6 +683,238 @@ def test_static_html_export_excludes_trajectory_exports_and_xlsx_has_six_sheets(
     assert workbook["ate_per_frame"]["B1"].value == "ate_position_m"
     assert workbook["rpe_per_frame"]["B1"].value == "rpe_translation_m"
     assert workbook["scale_per_frame"]["B1"].value == "local_sim3_scale"
+
+
+def test_static_html_export_is_visualization_snapshot_with_point_selection():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const element = {
+          addEventListener() {},
+          classList: { add() {}, remove() {} },
+          style: {},
+          files: [],
+          value: "vloc",
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+        };
+        const document = {
+          body: { appendChild() {} },
+          getElementById() { return element; },
+          createElement() { return { ...element, click() {}, remove() {} }; },
+          querySelectorAll() { return []; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+
+        const report = {
+          inputs: { entry_mode: "vloc" },
+          summary: { matched_poses: 2, gt_path_length_m: 10, duration_s: 1, est_pose_coverage_ratio: 1, gt_pose_coverage_ratio: 1 },
+          ate_position_m: { rmse: 0.2 },
+          ate_vertical_m: { rmse: 0.1 },
+          discontinuities: { all_matches: { break_count: 0 }, selected_segment: { policy: "vo_timestamps" } },
+          vloc_details: {
+            summary: { mean_error_pos_xy: 0.1, mean_error_pos_z: 0.2, mean_error_euler: 0.3, max_error_pos_xy: 0.4, max_error_pos_z: 0.5, max_error_euler: 0.6 },
+            comparison: [
+              { timestamp: 1, distance_m: 0, visual_segment_id: 0, nav_n_m: 0, nav_e_m: 0, nav_d_m: 0, vloc_n_m: 0.1, vloc_e_m: 0.1, vloc_d_m: 0.1, nav_height_m: 5, vloc_height_m: 4.9, position_error_3d_m: 0.2, horizontal_position_error_m: 0.1, vertical_position_error_abs_m: 0.1, position_error_n_m: 0.1, position_error_e_m: 0.1, position_error_d_m: 0.1, nav_yaw_deg: 0, vloc_yaw_deg: 0.1, nav_pitch_deg: 0, vloc_pitch_deg: 0.2, nav_roll_deg: 0, vloc_roll_deg: 0.3, attitude_error_yaw_deg: 0.1, attitude_error_pitch_deg: 0.2, attitude_error_roll_deg: 0.3 },
+              { timestamp: 2, distance_m: 1, visual_segment_id: 0, nav_n_m: 1, nav_e_m: 1, nav_d_m: 0, vloc_n_m: 1.1, vloc_e_m: 1.1, vloc_d_m: 0.1, nav_height_m: 6, vloc_height_m: 5.9, position_error_3d_m: 0.2, horizontal_position_error_m: 0.1, vertical_position_error_abs_m: 0.1, position_error_n_m: 0.1, position_error_e_m: 0.1, position_error_d_m: 0.1, nav_yaw_deg: 1, vloc_yaw_deg: 1.1, nav_pitch_deg: 1, vloc_pitch_deg: 1.2, nav_roll_deg: 1, vloc_roll_deg: 1.3, attitude_error_yaw_deg: 0.1, attitude_error_pitch_deg: 0.2, attitude_error_roll_deg: 0.3 },
+            ],
+            nav_status: [{ timestamp: 1, flight_mode: 3, navi_mode: 5, rtk_yaw: 1, rtk_alti: 0, vx: 1, vy: 2, vz: 3, velocity_norm: 3.7, position_reset_count: 0, altitude_reset_count: 0, heading_reset_count: 0 }],
+            vloc_status: [{ timestamp: 1, vloc_mode: 2, num_inliers: 40, reset_count: 0 }],
+          },
+        };
+        process.stdout.write(context.buildHtmlReport(report));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    html = result.stdout
+
+    assert "VLOC 评估结果" in html
+    assert "离线可视化快照" in html
+    assert "图表目录" in html
+    assert "pointSelectionOutput" in html
+    assert "togglePointMode" in html
+    assert "recordPointSelection" in html
+    assert "composite-crosshair" in html
+    assert "attachExportCompositeOverlay" in html
+    assert 'node.on("plotly_hover"' in html
+    assert "exportAllHoverChips" in html
+    assert "nearestExportTracePoint" in html
+    assert "focusExportPointSelectionFromEvent" in html
+    assert "deleteFocusedExportPointSelection" in html
+    assert "point.pointNumber" in html
+    assert "removeExportSelectionMarkerTraces" in html
+    assert "refreshExportChartSelectionMarkers" in html
+    assert "keydown" in html
+    assert "trajectory3d" in html
+    assert "positionCompareComposite" in html
+    assert "调参结论摘要" not in html
+    assert "高级详情 / 完整指标" not in html
+    assert "原始 JSON 指标" not in html
+
+    behavior_script = textwrap.dedent(
+        f"""
+        const vm = require("vm");
+        const html = {json.dumps(html)};
+        const scriptStart = html.lastIndexOf("<script>");
+        const scriptEnd = html.lastIndexOf("</script>");
+        const inline = html.slice(scriptStart + "<script>".length, scriptEnd).replace(/\\ninitExportPage\\(\\);\\n/, "\\n");
+        const chartId = "positionCompareComposite";
+        const chart = {{
+          id: chartId,
+          data: [{{ type: "scatter", name: "N nav", x: [1], y: [2] }}],
+          style: {{}},
+          classList: {{ toggle() {{}} }},
+          dataset: {{ chartId }},
+        }};
+        const pointSelectionOutputSection = {{ hidden: true }};
+        const pointSelectionOutput = {{ innerHTML: "" }};
+        const document = {{
+          getElementById(id) {{
+            if (id === chartId) return chart;
+            if (id === "pointSelectionOutputSection") return pointSelectionOutputSection;
+            if (id === "pointSelectionOutput") return pointSelectionOutput;
+            return null;
+          }},
+          querySelector() {{ return null; }},
+          querySelectorAll() {{ return []; }},
+        }};
+        const Plotly = {{
+          addTraces(id, traces) {{
+            if (id !== chartId) throw new Error("unexpected addTraces chart " + id);
+            chart.data.push(...traces);
+          }},
+          deleteTraces(id, indices) {{
+            if (id !== chartId) throw new Error("unexpected deleteTraces chart " + id);
+            [...indices].sort((left, right) => right - left).forEach((index) => chart.data.splice(index, 1));
+          }},
+        }};
+        const context = {{ document, window: {{}}, Plotly, console, Number, String, Array, Math, Set, Date }};
+        context.globalThis = context;
+        vm.runInNewContext(inline, context);
+        const selection = {{
+          id: "s1",
+          order: 1,
+          colorSlot: 1,
+          chartId,
+          chartTitle: "NED 随时间变化",
+          traceName: "N nav",
+          timestamp: 1,
+          value: "2.000",
+          color: "#ef4444",
+          markerText: "",
+          x: 1,
+          y: 2,
+          xaxis: "x",
+          yaxis: "y",
+        }};
+        context.window.__VO_EXPORT_SELECTIONS__ = [selection];
+        context.window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = "s1";
+        context.refreshExportChartSelectionMarkers(chartId);
+        const afterAdd = chart.data.length;
+        context.deleteFocusedExportPointSelection();
+        const afterDelete = chart.data.length;
+        context.window.__VO_EXPORT_SELECTIONS__ = [selection];
+        context.refreshExportChartSelectionMarkers(chartId);
+        const afterReadd = chart.data.length;
+        context.clearChartSelections(chartId);
+        const afterClear = chart.data.length;
+        process.stdout.write(JSON.stringify({{
+          afterAdd,
+          afterDelete,
+          afterReadd,
+          afterClear,
+          selections: context.window.__VO_EXPORT_SELECTIONS__.length,
+        }}));
+        """
+    )
+    behavior_result = subprocess.run(["node", "-e", behavior_script], check=True, capture_output=True, text=True)
+    behavior = json.loads(behavior_result.stdout)
+    assert behavior == {"afterAdd": 3, "afterDelete": 1, "afterReadd": 3, "afterClear": 1, "selections": 0}
+
+
+def test_static_html_export_uses_vo_chart_set_for_vo_reports():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const element = {
+          addEventListener() {},
+          classList: { add() {}, remove() {} },
+          style: {},
+          files: [],
+          value: "vo",
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+        };
+        const document = {
+          body: { appendChild() {} },
+          getElementById() { return element; },
+          createElement() { return { ...element, click() {}, remove() {} }; },
+          querySelectorAll() { return []; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+
+        const report = {
+          inputs: { entry_mode: "vo" },
+          summary: { matched_poses: 2, gt_path_length_m: 10, duration_s: 1, est_pose_coverage_ratio: 1, gt_pose_coverage_ratio: 1 },
+          ate_position_m: { rmse: 0.2 },
+          ate_vertical_m: { rmse: 0.1 },
+          rpe_frame_delta: { delta_unit: "frames", delta_frames: 1, translation_m: { rmse: 0.3 } },
+          discontinuities: { all_matches: { break_count: 0 }, selected_segment: { policy: "vo_timestamps" } },
+          alignment: { scale: 1 },
+          vo_details: {
+            comparison: [
+              { timestamp: 1, distance_m: 0, visual_segment_id: 0, nav_x_m: 0, nav_y_m: 0, nav_z_m: 0, vo_x_aligned_m: 0.1, vo_y_aligned_m: 0.1, vo_z_aligned_m: 0.1, position_error_3d_m: 0.2, horizontal_position_error_m: 0.1, position_error_x_m: 0.1, position_error_y_m: 0.1, position_error_z_m: 0.1, nav_yaw_deg: 0, vo_yaw_aligned_deg: 0.1, nav_pitch_deg: 0, vo_pitch_aligned_deg: 0.2, nav_roll_deg: 0, vo_roll_aligned_deg: 0.3, attitude_error_yaw_deg: 0.1, attitude_error_pitch_deg: 0.2, attitude_error_roll_deg: 0.3 },
+              { timestamp: 2, distance_m: 1, visual_segment_id: 0, nav_x_m: 1, nav_y_m: 1, nav_z_m: 0, vo_x_aligned_m: 1.1, vo_y_aligned_m: 1.1, vo_z_aligned_m: 0.1, position_error_3d_m: 0.2, horizontal_position_error_m: 0.1, position_error_x_m: 0.1, position_error_y_m: 0.1, position_error_z_m: 0.1, nav_yaw_deg: 1, vo_yaw_aligned_deg: 1.1, nav_pitch_deg: 1, vo_pitch_aligned_deg: 1.2, nav_roll_deg: 1, vo_roll_aligned_deg: 1.3, attitude_error_yaw_deg: 0.1, attitude_error_pitch_deg: 0.2, attitude_error_roll_deg: 0.3 },
+            ],
+            nav_status: [{ timestamp: 1, flight_mode: 3, navi_mode: 5, rtk_yaw: 1, rtk_alti: 0, vx: 1, vy: 2, vz: 3, velocity_norm: 3.7, position_reset_count: 0, altitude_reset_count: 0, heading_reset_count: 0 }],
+            vo_status: [{ timestamp: 1, num_inliers: 40, is_keyframe: 1, time_cost: 3, reset_count: 0 }],
+          },
+          trajectory_exports: {
+            rpe_per_frame: [{ timestamp: 1, rpe_translation_m: 0.3, rpe_rotation_deg: 0.4, rpe_available: true }],
+          },
+        };
+        process.stdout.write(context.buildHtmlReport(report));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    html = result.stdout
+
+    assert "VO 评估结果" in html
+    assert "voStatus" in html
+    assert "rpeTranslationTime" in html
+    assert "rpeRotationTime" in html
+    assert "vlocStatus" not in html
+    assert "VLOC 评估结果" not in html
 
 
 def test_static_visualization_renders_time_series_and_rpe_charts():
