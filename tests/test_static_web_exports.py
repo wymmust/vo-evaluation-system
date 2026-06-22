@@ -95,6 +95,7 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
         "attitudeErrorComposite",
         "rpeTranslationTime",
         "rpeRotationTime",
+        "scaleFrameTime",
     ]:
         assert f'id: "{chart_id}"' in source.split("const VO_CHART_OPTIONS = [", 1)[1].split("];", 1)[0]
 
@@ -503,6 +504,39 @@ cam0:
     assert vo_report["summary"]["matched_poses"] == 201
     assert vo_report["association"]["valid_est_after_segment_filter"] == 201
 
+    vloc_light_report = json.loads(
+        module.evaluate_vloc_bundle_json_light(
+            imu_text,
+            vloc_text,
+            home_text,
+            calib_text,
+            config_json,
+            "imu.txt",
+            "vloc.txt",
+            "home_point.txt",
+            "calib_raw.yaml",
+        )
+    )
+    assert "scale_per_frame" not in vloc_light_report.get("trajectory_exports", {})
+
+    vo_light_report = json.loads(
+        module.evaluate_vo_bundle_json_light(
+            imu_text,
+            vo_text,
+            home_text,
+            calib_text,
+            config_json,
+            "imu.txt",
+            "vo.txt",
+            "home_point.txt",
+            "calib_raw.yaml",
+        )
+    )
+    assert "per_pose" not in vo_light_report
+    assert "segment_records" not in vo_light_report
+    assert "scale_per_frame" in vo_light_report["trajectory_exports"]
+    assert vo_light_report["trajectory_exports"]["scale_per_frame"][0]["scale_available"] is True
+
 
 def test_static_python_sources_are_fetched_without_browser_cache():
     worker_js = Path("static_web/worker.js").read_text()
@@ -594,7 +628,7 @@ def test_static_scale_interval_controls_are_wired_into_config():
     assert config["scale_distance_tolerance_ratio"] == 0.05
 
 
-def test_static_html_export_keeps_only_light_rpe_export_and_xlsx_has_sheets():
+def test_static_html_export_keeps_light_chart_exports_and_xlsx_has_sheets():
     script = textwrap.dedent(
         r"""
         const fs = require("fs");
@@ -629,6 +663,7 @@ def test_static_html_export_keeps_only_light_rpe_export_and_xlsx_has_sheets():
         vm.runInNewContext(code, context);
 
         const report = {
+          inputs: { entry_mode: "vo" },
           summary: { matched_poses: 2 },
           per_pose: [{ timestamp: 1, error_m: 0.1 }],
             trajectory_exports: {
@@ -643,24 +678,33 @@ def test_static_html_export_keeps_only_light_rpe_export_and_xlsx_has_sheets():
               scale_per_frame: [{ timestamp: 1, local_sim3_scale: 2, scale_available: true }],
             },
           };
-        const sanitized = context.reportForHtmlExport(report);
-        const workbook = context.buildTrajectoryWorkbook(report.trajectory_exports);
-        process.stdout.write(JSON.stringify({
-          sanitized,
-          workbookBase64: Buffer.from(workbook).toString("base64"),
-        }));
+            const sanitized = context.reportForHtmlExport(report);
+        const vlocSanitized = context.reportForHtmlExport({
+          inputs: { entry_mode: "vloc" },
+          trajectory_exports: {
+            rpe_per_frame: [{ timestamp: 1, rpe_translation_m: 0.2, rpe_available: true }],
+            scale_per_frame: [{ timestamp: 1, local_sim3_scale: 2, scale_available: true }],
+          },
+        });
+            const workbook = context.buildTrajectoryWorkbook(report.trajectory_exports);
+            process.stdout.write(JSON.stringify({
+              sanitized,
+          vlocSanitized,
+              workbookBase64: Buffer.from(workbook).toString("base64"),
+            }));
         """
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     payload = json.loads(result.stdout)
 
     assert payload["sanitized"]["trajectory_exports"] == {
-        "rpe_per_frame": [{"timestamp": 1, "rpe_translation_m": 0.2, "rpe_available": True}]
+        "rpe_per_frame": [{"timestamp": 1, "rpe_translation_m": 0.2, "rpe_available": True}],
+        "scale_per_frame": [{"timestamp": 1, "local_sim3_scale": 2, "scale_available": True}],
     }
+    assert "scale_per_frame" not in payload["vlocSanitized"].get("trajectory_exports", {})
     assert "input_gt_tum" not in payload["sanitized"]["trajectory_exports"]
     assert "sim3_vo_tum" not in payload["sanitized"]["trajectory_exports"]
     assert "ate_per_frame" not in payload["sanitized"]["trajectory_exports"]
-    assert "scale_per_frame" not in payload["sanitized"]["trajectory_exports"]
     assert "per_pose" not in payload["sanitized"]
     assert "segment_records" not in payload["sanitized"]
     assert payload["sanitized"]["summary"]["matched_poses"] == 2
@@ -901,6 +945,7 @@ def test_static_html_export_uses_vo_chart_set_for_vo_reports():
           },
           trajectory_exports: {
             rpe_per_frame: [{ timestamp: 1, rpe_translation_m: 0.3, rpe_rotation_deg: 0.4, rpe_available: true }],
+            scale_per_frame: [{ timestamp: 1, local_sim3_scale: 2, scale_available: true }],
           },
         };
         process.stdout.write(context.buildHtmlReport(report));
@@ -913,6 +958,8 @@ def test_static_html_export_uses_vo_chart_set_for_vo_reports():
     assert "voStatus" in html
     assert "rpeTranslationTime" in html
     assert "rpeRotationTime" in html
+    assert "scaleFrameTime" in html
+    assert "局部 Sim3 尺度随时间变化" in html
     assert "vlocStatus" not in html
     assert "VLOC 评估结果" not in html
 
@@ -932,6 +979,7 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
         "attitudeErrorComposite",
         "rpeTranslationTime",
         "rpeRotationTime",
+        "scaleFrameTime",
     ]
     for chart_id in expected_ids:
         assert f'id="{chart_id}"' in html
@@ -1043,6 +1091,8 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
             byId.positionCompareComposite.data[4].line.color,
             byId.positionCompareComposite.data[5].line.color,
           ],
+          scaleNames: byId.scaleFrameTime.data.map((trace) => trace.name),
+          scaleValues: byId.scaleFrameTime.data[0].y,
         }));
         """
     )
@@ -1064,6 +1114,8 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
     assert {"num_inliers", "is_keyframe", "time_cost", "reset_count"}.issubset(set(payload["voStatusNames"]))
     assert {"X Ground truth", "X VO aligned", "Y Ground truth", "Y VO aligned", "Z Ground truth", "Z VO aligned"} == set(payload["positionCompareNames"])
     assert payload["thirdRowColors"] == ["#dc2626", "#0891b2"]
+    assert payload["scaleNames"] == ["local_sim3_scale"]
+    assert payload["scaleValues"] == [2, 2]
 
 
 def test_static_composite_angle_time_series_unwraps_180_degree_boundary():
@@ -1466,6 +1518,7 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
           errorDistance: makeElement(),
           rpeTranslationTime: makeElement(),
           rpeRotationTime: makeElement(),
+          scaleFrameTime: makeElement(),
           summaryKicker: makeElement(),
           summaryTitle: makeElement(),
           visualKicker: makeElement(),
@@ -1496,6 +1549,7 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
         context.updateEntryModeUi();
         const vlocState = {
           rpeTranslationHidden: elements.rpeTranslationTime.hidden,
+          scaleFrameHidden: elements.scaleFrameTime.hidden,
           trajectory3dHidden: elements.trajectory3d.hidden,
           summaryTitle: elements.summaryTitle.textContent,
           visualTitle: elements.visualTitle.textContent,
@@ -1505,6 +1559,7 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
         context.updateEntryModeUi();
         const voState = {
           rpeTranslationHidden: elements.rpeTranslationTime.hidden,
+          scaleFrameHidden: elements.scaleFrameTime.hidden,
           trajectory3dHidden: elements.trajectory3d.hidden,
           summaryTitle: elements.summaryTitle.textContent,
           visualTitle: elements.visualTitle.textContent,
@@ -1516,10 +1571,12 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     payload = json.loads(result.stdout)
     assert payload["vlocState"]["rpeTranslationHidden"] is True
+    assert payload["vlocState"]["scaleFrameHidden"] is True
     assert payload["vlocState"]["trajectory3dHidden"] is False
     assert "VLOC" in payload["vlocState"]["summaryTitle"]
     assert "VLOC" in payload["vlocState"]["visualTitle"]
     assert payload["voState"]["rpeTranslationHidden"] is False
+    assert payload["voState"]["scaleFrameHidden"] is False
     assert payload["voState"]["trajectory3dHidden"] is False
     assert "VO" in payload["voState"]["summaryTitle"]
     assert "VO" in payload["voState"]["visualTitle"]

@@ -55,6 +55,7 @@ def _light_report(report: dict) -> dict:
     The first render still keeps all data required by the visible charts:
     - vloc_details.comparison / vo_details.comparison for trajectory and error plots.
     - trajectory_exports.rpe_per_frame for the two RPE plots.
+    - trajectory_exports.scale_per_frame for the VO local Sim3 scale plot.
 
     Large tables used only for download are fetched on demand via get_report_slice_json().
     This avoids serializing per_pose, segment_records and the full Excel sheet payload
@@ -62,10 +63,14 @@ def _light_report(report: dict) -> dict:
     """
     skip_keys = {"per_pose", "segment_records", "trajectory_exports"}
     light = {key: value for key, value in report.items() if key not in skip_keys}
+    entry_mode = (report.get("inputs") or {}).get("entry_mode")
     trajectory_exports = report.get("trajectory_exports") or {}
     rpe_per_frame = trajectory_exports.get("rpe_per_frame")
+    scale_per_frame = trajectory_exports.get("scale_per_frame")
     if rpe_per_frame is not None:
-        light["trajectory_exports"] = {"rpe_per_frame": rpe_per_frame}
+        light.setdefault("trajectory_exports", {})["rpe_per_frame"] = rpe_per_frame
+    if entry_mode == "vo" and scale_per_frame is not None:
+        light.setdefault("trajectory_exports", {})["scale_per_frame"] = scale_per_frame
     light["report_layers"] = {
         "initial_payload": "light",
         "omitted": sorted(skip_keys),

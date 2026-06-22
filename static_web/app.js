@@ -67,6 +67,7 @@ const chartIds = [
   "attitudeErrorComposite",
   "rpeTranslationTime",
   "rpeRotationTime",
+  "scaleFrameTime",
 ];
 
 const VLOC_CHART_OPTIONS = [
@@ -97,6 +98,7 @@ const VO_CHART_OPTIONS = [
   { id: "attitudeErrorComposite", label: "姿态误差随时间变化" },
   { id: "rpeTranslationTime", label: "RPE 平移误差" },
   { id: "rpeRotationTime", label: "RPE 旋转误差" },
+  { id: "scaleFrameTime", label: "局部 Sim3 尺度" },
 ];
 
 const VLOC_VISIBLE_CHART_IDS = VLOC_CHART_OPTIONS.map((option) => option.id);
@@ -1352,6 +1354,7 @@ function renderCharts(report, onlyChartId = null) {
   const navStatus = details.nav_status || [];
   const voStatus = details.vo_status || [];
   const rpeRows = report.trajectory_exports?.rpe_per_frame || [];
+  const scaleRows = report.trajectory_exports?.scale_per_frame || [];
   const navPositionFields = isComparisonRows ? ["nav_x_m", "nav_y_m", "nav_z_m"] : ["gt_x_m", "gt_y_m", "gt_z_m"];
   const voPositionFields = isComparisonRows ? ["vo_x_aligned_m", "vo_y_aligned_m", "vo_z_aligned_m"] : ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"];
   const positionErrorFields = isComparisonRows ? ["position_error_x_m", "position_error_y_m", "position_error_z_m"] : ["x_error_m", "y_error_m", "z_error_m"];
@@ -1482,6 +1485,9 @@ function renderCharts(report, onlyChartId = null) {
       unit: "deg",
       name: "rpe_rotation_deg",
     });
+  }
+  if (shouldRenderChart("scaleFrameTime", onlyChartId, selectedIds)) {
+    renderScaleTimeChart("scaleFrameTime", scaleRows);
   }
 }
 
@@ -2015,6 +2021,14 @@ function renderRpeTimeChart(id, rows, spec) {
   Plotly.newPlot(id, [
     { x: timestamps, y: values, mode: "lines+markers", type: "scatter", name: spec.name },
   ], layout(spec.title, { xaxis: { title: "timestamp s" }, yaxis: { title: spec.unit } }));
+}
+
+function renderScaleTimeChart(id, rows) {
+  const cleanRows = rows.filter((row) => row.scale_available !== false && Number.isFinite(Number(row.local_sim3_scale)));
+  const [timestamps, values] = segmentedValues(cleanRows, ["timestamp", "local_sim3_scale"]);
+  Plotly.newPlot(id, [
+    { x: timestamps, y: values, mode: "lines+markers", type: "scatter", name: "local_sim3_scale" },
+  ], layout("局部 Sim3 尺度随时间变化", { xaxis: { title: "timestamp s" }, yaxis: { title: "scale" } }));
 }
 
 function segmentEndpointTraces3d(rows, columns, prefix, style) {
@@ -2795,6 +2809,7 @@ initExportPage();
 }
 
 function reportForHtmlExport(report) {
+  const isVo = reportEntryMode(report || {}) === "vo";
   const {
     trajectory_exports: trajectoryExports,
     per_pose: _perPose,
@@ -2802,7 +2817,10 @@ function reportForHtmlExport(report) {
     ...htmlReport
   } = report || {};
   if (trajectoryExports?.rpe_per_frame) {
-    htmlReport.trajectory_exports = { rpe_per_frame: trajectoryExports.rpe_per_frame };
+    htmlReport.trajectory_exports = { ...htmlReport.trajectory_exports, rpe_per_frame: trajectoryExports.rpe_per_frame };
+  }
+  if (isVo && trajectoryExports?.scale_per_frame) {
+    htmlReport.trajectory_exports = { ...htmlReport.trajectory_exports, scale_per_frame: trajectoryExports.scale_per_frame };
   }
   return htmlReport;
 }
@@ -2975,6 +2993,7 @@ function buildVoVisualizationExportFigureSpecs(report) {
   const navStatus = details.nav_status || [];
   const voStatus = details.vo_status || [];
   const rpeRows = report.trajectory_exports?.rpe_per_frame || [];
+  const scaleRows = report.trajectory_exports?.scale_per_frame || [];
   const navPositionFields = isComparisonRows ? ["nav_x_m", "nav_y_m", "nav_z_m"] : ["gt_x_m", "gt_y_m", "gt_z_m"];
   const voPositionFields = isComparisonRows ? ["vo_x_aligned_m", "vo_y_aligned_m", "vo_z_aligned_m"] : ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"];
   const positionErrorFields = isComparisonRows ? ["position_error_x_m", "position_error_y_m", "position_error_z_m"] : ["x_error_m", "y_error_m", "z_error_m"];
@@ -3077,6 +3096,7 @@ function buildVoVisualizationExportFigureSpecs(report) {
     unit: "deg",
     name: "rpe_rotation_deg",
   }));
+  figures.push(exportScaleTimeFigure("scaleFrameTime", "局部 Sim3 尺度随时间变化", scaleRows));
   return figures;
 }
 
@@ -3100,6 +3120,14 @@ function exportRpeTimeFigure(id, title, rows, spec) {
   return exportFigureSpec(id, title, [
     { x: timestamps, y: values, customdata: timestamps, mode: "lines+markers", type: "scatter", name: spec.name },
   ], layout(title, { height: 560, xaxis: { title: "timestamp s" }, yaxis: { title: spec.unit } }));
+}
+
+function exportScaleTimeFigure(id, title, rows) {
+  const cleanRows = rows.filter((row) => row.scale_available !== false && Number.isFinite(Number(row.local_sim3_scale)));
+  const [timestamps, values] = segmentedValues(cleanRows, ["timestamp", "local_sim3_scale"]);
+  return exportFigureSpec(id, title, [
+    { x: timestamps, y: values, customdata: timestamps, mode: "lines+markers", type: "scatter", name: "local_sim3_scale" },
+  ], layout(title, { height: 560, xaxis: { title: "timestamp s" }, yaxis: { title: "scale" } }));
 }
 
 function exportPairCompositeFigure(id, label, rows, spec) {

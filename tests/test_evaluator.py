@@ -200,6 +200,7 @@ def test_streamlit_chart_directory_is_wired_to_vloc_and_vo_visuals():
         "attitudeErrorComposite",
         "rpeTranslationTime",
         "rpeRotationTime",
+        "scaleFrameTime",
     ]:
         assert f'("{chart_id}",' in vo_options_source
 

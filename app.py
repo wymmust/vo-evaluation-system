@@ -65,6 +65,7 @@ VO_CHART_OPTIONS = [
     ("attitudeErrorComposite", "姿态误差随时间变化"),
     ("rpeTranslationTime", "RPE 平移误差"),
     ("rpeRotationTime", "RPE 旋转误差"),
+    ("scaleFrameTime", "局部 Sim3 尺度"),
 ]
 
 VO_CHART_IDS = tuple(chart_id for chart_id, _label in VO_CHART_OPTIONS)
@@ -481,6 +482,7 @@ def show_visuals(
     nav_status = pd.DataFrame(details.get("nav_status", []))
     vo_status = pd.DataFrame(details.get("vo_status", []))
     rpe_per_frame = pd.DataFrame(trajectory_exports.get("rpe_per_frame", pd.DataFrame()))
+    scale_per_frame = pd.DataFrame(trajectory_exports.get("scale_per_frame", pd.DataFrame()))
 
     fig3d = make_trajectory_3d(per_pose)
     fig_error = make_error_distance(per_pose)
@@ -564,6 +566,9 @@ def show_visuals(
         ("rpeTranslationTime", make_rpe_time_series(rpe_per_frame, "RPE 平移误差随时间变化", "rpe_translation_m", "m")),
         ("rpeRotationTime", make_rpe_time_series(rpe_per_frame, "RPE 旋转误差随时间变化", "rpe_rotation_deg", "deg")),
     ]
+    scale_time_figs = [
+        ("scaleFrameTime", make_scale_time_series(scale_per_frame)),
+    ]
 
     selected = set(selected_vo_chart_ids) if selected_vo_chart_ids is not None else set(VO_CHART_IDS)
 
@@ -603,11 +608,16 @@ def show_visuals(
         st.markdown("#### RPE 随时间变化")
         plot_selected(rpe_time_figs)
 
+    if selected.intersection(chart_id for chart_id, _fig in scale_time_figs):
+        st.markdown("#### 尺度随时间变化")
+        plot_selected(scale_time_figs)
+
     all_figs = [
         *trajectory_figs,
         *status_figs,
         *comparison_figs,
         *rpe_time_figs,
+        *scale_time_figs,
     ]
     if not segment_records.empty:
         with st.expander("按距离子轨迹原始记录"):
@@ -1188,6 +1198,19 @@ def make_rpe_time_series(df: pd.DataFrame, title: str, error_col: str, unit: str
             timestamps, values = segmented_values(clean, ["timestamp", error_col])
             fig.add_trace(go.Scatter(x=timestamps, y=values, mode="lines+markers", name=error_col))
     fig.update_layout(title=title, xaxis_title="timestamp s", yaxis_title=unit, height=360)
+    return fig
+
+
+def make_scale_time_series(df: pd.DataFrame) -> go.Figure:
+    """当前尺度图帧数/距离配置下，每个起点时间戳对应的局部 Sim3 尺度。"""
+    fig = go.Figure()
+    if {"timestamp", "local_sim3_scale", "scale_available"}.issubset(df.columns):
+        clean = df[df["scale_available"].astype(bool)].copy()
+        clean = clean[pd.to_numeric(clean["local_sim3_scale"], errors="coerce").notna()]
+        if not clean.empty:
+            timestamps, values = segmented_values(clean, ["timestamp", "local_sim3_scale"])
+            fig.add_trace(go.Scatter(x=timestamps, y=values, mode="lines+markers", name="local_sim3_scale"))
+    fig.update_layout(title="局部 Sim3 尺度随时间变化", xaxis_title="timestamp s", yaxis_title="scale", height=360)
     return fig
 
 
