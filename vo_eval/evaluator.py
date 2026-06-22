@@ -647,6 +647,8 @@ def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None =
     report["vloc_details"] = build_vloc_detail_report(nav_ned_body, vloc_valid, cfg, visual_segment_ids=visual_segment_ids)
     report["inputs"]["entry_mode"] = "vloc"
     report["inputs"]["workflow"] = "sf_vloc"
+    report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
+    report["inputs"]["log_dir_name"] = bundle.log_dir.name or "log_dir"
     report["inputs"]["fixed_rules"] = {
         "alignment": "none",
         "orientation_correction": "none",
@@ -658,6 +660,8 @@ def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None =
     report["association"]["dropped_est_invalid_mode"] = dropped_invalid_mode
     report["association"]["valid_est_after_mode_filter"] = int(len(vloc_valid.positions))
     report["summary"]["raw_est_poses"] = int(len(bundle.vloc.positions))
+    for sheet_name in ("sim3_gt_tum", "sim3_vo_tum"):
+        report["trajectory_exports"].pop(sheet_name, None)
     return report
 
 
@@ -694,6 +698,8 @@ def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = Non
     report["vo_details"] = build_vo_detail_report(nav_body, vo_valid, cfg, report, visual_segment_ids=visual_segment_ids)
     report["inputs"]["entry_mode"] = "vo"
     report["inputs"]["workflow"] = "sf_vo"
+    report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
+    report["inputs"]["log_dir_name"] = bundle.log_dir.name or "log_dir"
     report["inputs"]["fixed_rules"] = {
         "alignment": "sim3",
         "orientation_correction": "none",
@@ -4418,8 +4424,8 @@ def build_trajectory_export_sheets(
        这里保留 vo_tum 作为历史 sheet 名称；在 VLOC 模式下它代表 vloc estimate。
     3. filtered_vo_tum: 时间同步后保留下来的 estimate。
     4. interpolated_gt_tum: 插值到 estimate 时间戳后的 GT。
-    5. sim3_gt_tum: Sim3 评估时使用的 GT。
-    6. sim3_vo_tum: Sim3 对齐后的 estimate；VO 用于诊断/评估，VLOC 仅作为导出中间结果。
+    5. sim3_gt_tum: Sim3 评估时使用的 GT，VLOC 入口会移除这张表。
+    6. sim3_vo_tum: Sim3 对齐后的 estimate，VLOC 入口会移除这张表。
     7. ate_per_frame: 每个评估时间戳的 ATE 明细。
     8. rpe_per_frame: 每个评估时间戳起算的固定帧/距离 RPE 明细。
     9. scale_per_frame: 每个评估时间戳起算的局部尺度比例/尺度漂移明细。

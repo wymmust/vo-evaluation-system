@@ -89,6 +89,8 @@ function evaluateBundle(payload) {
     payload.estimateName,
     payload.homePointName,
     payload.calibRawName,
+    payload.dataDirName,
+    payload.logDirName,
   );
 }
 

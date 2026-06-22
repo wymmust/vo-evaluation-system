@@ -729,6 +729,133 @@ def test_static_html_export_keeps_light_chart_exports_and_xlsx_has_sheets():
     assert workbook["scale_per_frame"]["B1"].value == "local_sim3_scale"
 
 
+def test_static_trajectory_workbook_omits_missing_vloc_sim3_sheets():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const element = {
+          addEventListener() {},
+          classList: { add() {}, remove() {} },
+          style: {},
+          files: [],
+          value: "",
+          disabled: false,
+          hidden: false,
+          textContent: "",
+        };
+        const document = {
+          body: { appendChild() {} },
+          getElementById() { return element; },
+          createElement() { return { ...element, click() {}, remove() {} }; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+
+        const workbook = context.buildTrajectoryWorkbook({
+          input_gt_tum: [{ timestamp: 1, tx: 0 }],
+          input_vo_tum: [{ timestamp: 1, tx: 1 }],
+          filtered_vo_tum: [{ timestamp: 1, tx: 1 }],
+          interpolated_gt_tum: [{ timestamp: 1, tx: 0 }],
+          ate_per_frame: [{ timestamp: 1, ate_position_m: 0.1 }],
+          rpe_per_frame: [{ timestamp: 1, rpe_translation_m: 0.2 }],
+        });
+        process.stdout.write(Buffer.from(workbook).toString("base64"));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    workbook = load_workbook(io.BytesIO(base64.b64decode(result.stdout)), read_only=True)
+    assert workbook.sheetnames == [
+        "input_gt_tum",
+        "input_vo_tum",
+        "filtered_vo_tum",
+        "interpolated_gt_tum",
+        "ate_per_frame",
+        "rpe_per_frame",
+    ]
+
+
+def test_static_export_filenames_include_directory_name_and_entry_mode():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const element = {
+          addEventListener() {},
+          classList: { add() {}, remove() {} },
+          style: {},
+          files: [],
+          value: "vloc",
+          disabled: false,
+          hidden: false,
+          textContent: "",
+        };
+        const document = {
+          body: { appendChild() {} },
+          getElementById() { return element; },
+          createElement() { return { ...element, click() {}, remove() {} }; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+
+        const vlocReport = {
+          inputs: {
+            entry_mode: "vloc",
+            data_dir_name: "2839_traj",
+            log_dir_name: "2839_traj",
+          },
+        };
+        const vlocHtml = context.evaluationExportFilename("evaluation_report", "html", vlocReport);
+        const vlocXlsx = context.evaluationExportFilename("trajectory_exports", "xlsx", vlocReport);
+        const voReport = {
+          inputs: {
+            entry_mode: "vo",
+            data_dir_name: "flight:data",
+            log_dir_name: "log/vo*run",
+          },
+        };
+        const voHtml = context.evaluationExportFilename("evaluation_report", "html", voReport);
+        const defaultDirReport = {
+          inputs: {
+            entry_mode: "vloc",
+            data_dir_name: "data_dir",
+            log_dir_name: "log_dir",
+          },
+        };
+        const defaultDirHtml = context.evaluationExportFilename("evaluation_report", "html", defaultDirReport);
+        process.stdout.write(JSON.stringify({ vlocHtml, vlocXlsx, voHtml, defaultDirHtml }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload["vlocHtml"] == "2839_traj_vloc_evaluation_report.html"
+    assert payload["vlocXlsx"] == "2839_traj_vloc_trajectory_exports.xlsx"
+    assert payload["voHtml"] == "flight_data__log_vo_run_vo_evaluation_report.html"
+    assert payload["defaultDirHtml"] == "vloc_evaluation_report.html"
+
+
 def test_static_html_export_is_visualization_snapshot_with_point_selection():
     script = textwrap.dedent(
         r"""

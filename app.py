@@ -206,6 +206,41 @@ def latest_evaluator():
     return importlib.reload(vo_evaluator)
 
 
+def evaluation_export_filename(report: dict[str, Any], kind: str, extension: str) -> str:
+    """生成导出文件名：数据目录 + 入口模式 + 导出类型。
+
+    例如 2839_traj_vloc_evaluation_report.html。
+    如果 data_dir 和 log_dir 名不同，文件名保留两者，避免离线文件混淆。
+    """
+    inputs = report.get("inputs") or {}
+    entry_mode = sanitize_filename_part(inputs.get("entry_mode") or "vloc") or "vloc"
+    data_name = meaningful_directory_name(inputs.get("data_dir_name"))
+    log_name = meaningful_directory_name(inputs.get("log_dir_name"))
+    if data_name and log_name and data_name != log_name:
+        dataset = f"{data_name}__{log_name}"
+    else:
+        dataset = log_name or data_name
+    prefix = f"{dataset}_{entry_mode}" if dataset else entry_mode
+    return f"{prefix}_{sanitize_filename_part(kind)}.{sanitize_filename_part(extension)}"
+
+
+def meaningful_directory_name(value: Any) -> str:
+    """忽略 data_dir/log_dir 这种固定目录名，只保留真实数据集名。"""
+    name = sanitize_filename_part(value)
+    if name.lower() in {"data_dir", "log_dir"}:
+        return ""
+    return name
+
+
+def sanitize_filename_part(value: Any) -> str:
+    """清理单个文件名片段，避免浏览器/系统不接受的字符。"""
+    text = str(value or "").strip()
+    text = re.sub(r'[\\/:*?"<>|]+', "_", text)
+    text = re.sub(r"\s+", "_", text)
+    text = re.sub(r"_+", "_", text)
+    return text.strip("_")
+
+
 def parse_float_list(text: str) -> list[float]:
     values: list[float] = []
     for item in text.replace(";", ",").split(","):
@@ -625,7 +660,12 @@ def show_visuals(
 
     html_figs = [fig for chart_id, fig in all_figs if chart_id in selected]
     html = build_html_report(report, html_figs)
-    st.download_button("下载 HTML 可视化报告", html, file_name="vo_evaluation_report.html", mime="text/html")
+    st.download_button(
+        "下载 HTML 可视化报告",
+        html,
+        file_name=evaluation_export_filename(report, "evaluation_report", "html"),
+        mime="text/html",
+    )
 
 
 def show_vloc_chart_directory() -> set[str]:
@@ -802,7 +842,12 @@ def show_vloc_visuals(report: dict[str, Any], selected_chart_ids: set[str] | Non
 
     html_figs = [fig for chart_id, fig in [*trajectory_figs, *status_figs, *comparison_figs] if chart_id in selected]
     html = build_html_report(report, html_figs)
-    st.download_button("下载 HTML 可视化报告", html, file_name="vo_evaluation_report.html", mime="text/html")
+    st.download_button(
+        "下载 HTML 可视化报告",
+        html,
+        file_name=evaluation_export_filename(report, "evaluation_report", "html"),
+        mime="text/html",
+    )
 
 
 def show_tables_and_downloads(report: dict[str, Any]) -> None:
@@ -839,7 +884,7 @@ def show_tables_and_downloads(report: dict[str, Any]) -> None:
     col4.download_button(
         "下载轨迹 Excel",
         vo_evaluator.report_to_excel(report),
-        file_name="vo_trajectory_exports.xlsx",
+        file_name=evaluation_export_filename(report, "trajectory_exports", "xlsx"),
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         disabled=not bool(report.get("trajectory_exports")),
     )

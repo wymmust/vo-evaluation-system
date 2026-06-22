@@ -109,6 +109,8 @@ def evaluate_vloc_bundle_json(
     vloc_name: str = "vloc.txt",
     home_point_name: str = "home_point.txt",
     calib_raw_name: str = "calib_raw.yaml",
+    data_dir_name: str = "data_dir",
+    log_dir_name: str = "log_dir",
 ) -> str:
     config = _config_from_json(config_json)
     nav = parse_imu_fixed(imu_text, name=imu_name)
@@ -120,8 +122,8 @@ def evaluate_vloc_bundle_json(
         vloc=est,
         home_point=home_point,
         calibration=calibration,
-        data_dir=Path("/data_dir"),
-        log_dir=Path("/log_dir"),
+        data_dir=Path("/") / (data_dir_name or "data_dir"),
+        log_dir=Path("/") / (log_dir_name or "log_dir"),
         files={},
     )
     report = evaluate_vloc_bundle(bundle, config)
@@ -138,6 +140,8 @@ def evaluate_vloc_bundle_json_light(
     vloc_name: str = "vloc.txt",
     home_point_name: str = "home_point.txt",
     calib_raw_name: str = "calib_raw.yaml",
+    data_dir_name: str = "data_dir",
+    log_dir_name: str = "log_dir",
 ) -> str:
     config = _config_from_json(config_json)
     nav = parse_imu_fixed(imu_text, name=imu_name)
@@ -149,8 +153,8 @@ def evaluate_vloc_bundle_json_light(
         vloc=est,
         home_point=home_point,
         calibration=calibration,
-        data_dir=Path("/data_dir"),
-        log_dir=Path("/log_dir"),
+        data_dir=Path("/") / (data_dir_name or "data_dir"),
+        log_dir=Path("/") / (log_dir_name or "log_dir"),
         files={},
     )
     return report_to_json(_light_report(_remember_report(evaluate_vloc_bundle(bundle, config))))
@@ -166,6 +170,8 @@ def evaluate_vo_bundle_json(
     vo_name: str = "vo.txt",
     home_point_name: str = "home_point.txt",
     calib_raw_name: str = "calib_raw.yaml",
+    data_dir_name: str = "data_dir",
+    log_dir_name: str = "log_dir",
 ) -> str:
     config = _config_from_json(config_json)
     nav = parse_imu_fixed(imu_text, name=imu_name)
@@ -177,8 +183,8 @@ def evaluate_vo_bundle_json(
         vo=est,
         home_point=home_point,
         calibration=calibration,
-        data_dir=Path("/data_dir"),
-        log_dir=Path("/log_dir"),
+        data_dir=Path("/") / (data_dir_name or "data_dir"),
+        log_dir=Path("/") / (log_dir_name or "log_dir"),
         files={},
     )
     report = evaluate_vo_bundle(bundle, config)
@@ -195,6 +201,8 @@ def evaluate_vo_bundle_json_light(
     vo_name: str = "vo.txt",
     home_point_name: str = "home_point.txt",
     calib_raw_name: str = "calib_raw.yaml",
+    data_dir_name: str = "data_dir",
+    log_dir_name: str = "log_dir",
 ) -> str:
     config = _config_from_json(config_json)
     nav = parse_imu_fixed(imu_text, name=imu_name)
@@ -206,8 +214,8 @@ def evaluate_vo_bundle_json_light(
         vo=est,
         home_point=home_point,
         calibration=calibration,
-        data_dir=Path("/data_dir"),
-        log_dir=Path("/log_dir"),
+        data_dir=Path("/") / (data_dir_name or "data_dir"),
+        log_dir=Path("/") / (log_dir_name or "log_dir"),
         files={},
     )
     return report_to_json(_light_report(_remember_report(evaluate_vo_bundle(bundle, config))))

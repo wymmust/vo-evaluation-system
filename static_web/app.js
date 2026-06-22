@@ -261,6 +261,8 @@ async function runEvaluation() {
       estimateName: payload.estimateName,
       homePointName: payload.homePointName,
       calibRawName: payload.calibRawName,
+      dataDirName: payload.dataDirName,
+      logDirName: payload.logDirName,
     });
     state.report = JSON.parse(String(reportJson));
     renderReport(state.report);
@@ -408,6 +410,8 @@ async function buildBundlePayload(entryMode) {
     estimateText,
     homePointText,
     calibRawText,
+    dataDirName: directoryNameFromFiles(selectedFiles(els.dataDirFiles)) || "data_dir",
+    logDirName: directoryNameFromFiles(selectedFiles(els.logDirFiles)) || "log_dir",
     imuName: imuFile.name,
     estimateName: estimateFile.name,
     homePointName: homePointFile.name,
@@ -2214,7 +2218,7 @@ async function downloadTrajectoryExcel() {
   try {
     const trajectoryExports = await fetchReportSlice("trajectory_exports");
     downloadBytes(
-      "vo_trajectory_exports.xlsx",
+      evaluationExportFilename("trajectory_exports", "xlsx"),
       buildTrajectoryWorkbook(trajectoryExports || {}),
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
@@ -2225,11 +2229,45 @@ async function downloadTrajectoryExcel() {
 
 async function downloadHtmlReport() {
   try {
-    const entryMode = reportEntryMode(state.report);
-    downloadText(`${entryMode}_evaluation_report.html`, buildHtmlReport(state.report || {}), "text/html");
+    downloadText(evaluationExportFilename("evaluation_report", "html"), buildHtmlReport(state.report || {}), "text/html");
   } catch (error) {
     showMessage(`导出 HTML 失败：${error.message}`, "error");
   }
+}
+
+function evaluationExportFilename(kind, extension, report = state.report) {
+  const entryMode = sanitizeFilenamePart(reportEntryMode(report)) || "vloc";
+  const dataset = exportDatasetName(report);
+  const prefix = dataset ? `${dataset}_${entryMode}` : entryMode;
+  return `${prefix}_${sanitizeFilenamePart(kind)}.${sanitizeFilenamePart(extension)}`;
+}
+
+function exportDatasetName(report = state.report) {
+  const inputs = report?.inputs || {};
+  const dataName = meaningfulDirectoryName(inputs.data_dir_name || directoryNameFromFiles(selectedFiles(els.dataDirFiles)));
+  const logName = meaningfulDirectoryName(inputs.log_dir_name || directoryNameFromFiles(selectedFiles(els.logDirFiles)));
+  if (dataName && logName && dataName !== logName) {
+    return `${dataName}__${logName}`;
+  }
+  return logName || dataName || "";
+}
+
+function meaningfulDirectoryName(value) {
+  const name = sanitizeFilenamePart(value);
+  const lower = name.toLowerCase();
+  if (lower === "data_dir" || lower === "log_dir") {
+    return "";
+  }
+  return name;
+}
+
+function sanitizeFilenamePart(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 async function fetchReportSlice(sliceName) {
@@ -4658,7 +4696,7 @@ function buildTrajectoryWorkbook(sheets) {
     "rpe_per_frame",
     "scale_per_frame",
   ];
-  const entries = orderedNames.map((name) => ({
+  const entries = orderedNames.filter((name) => Object.prototype.hasOwnProperty.call(sheets || {}, name)).map((name) => ({
     name,
     rows: Array.isArray(sheets?.[name]) ? sheets[name] : [],
   }));

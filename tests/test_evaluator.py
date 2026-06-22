@@ -205,6 +205,25 @@ def test_streamlit_chart_directory_is_wired_to_vloc_and_vo_visuals():
         assert f'("{chart_id}",' in vo_options_source
 
 
+def test_streamlit_download_filenames_include_directory_and_entry_mode():
+    source = Path("app.py").read_text()
+    assert "def evaluation_export_filename(" in source
+    assert 'evaluation_export_filename(report, "evaluation_report", "html")' in source
+    assert 'evaluation_export_filename(report, "trajectory_exports", "xlsx")' in source
+    assert 'file_name="vo_evaluation_report.html"' not in source
+    assert 'file_name="vo_trajectory_exports.xlsx"' not in source
+
+
+def test_streamlit_download_filename_ignores_generic_data_and_log_dir_names():
+    from app import evaluation_export_filename
+
+    report = {"inputs": {"entry_mode": "vloc", "data_dir_name": "data_dir", "log_dir_name": "log_dir"}}
+    assert evaluation_export_filename(report, "evaluation_report", "html") == "vloc_evaluation_report.html"
+
+    report = {"inputs": {"entry_mode": "vo", "data_dir_name": "2839_traj", "log_dir_name": "2839_traj"}}
+    assert evaluation_export_filename(report, "trajectory_exports", "xlsx") == "2839_traj_vo_trajectory_exports.xlsx"
+
+
 def test_streamlit_trajectory_3d_marks_each_segment_start_and_end():
     from app import make_trajectory_3d
 
@@ -651,6 +670,28 @@ def test_vloc_report_contains_nav_vloc_specific_detail_tables():
     assert {"position_error_n_m", "position_error_e_m", "position_error_d_m"}.issubset(comparison.columns)
     assert np.allclose(comparison["position_error_n_m"].to_numpy(), 1.0, atol=0.02)
     assert np.allclose(comparison["position_error_e_m"].to_numpy(), 0.0, atol=1e-6)
+
+
+def test_vloc_excel_export_omits_sim3_sheets_because_vloc_has_metric_scale():
+    bundle = sample_vloc_bundle_with_large_nav_gap()
+    report = evaluate_vloc_bundle(bundle, EvaluationConfig())
+
+    sheets = report["trajectory_exports"]
+    assert "sim3_gt_tum" not in sheets
+    assert "sim3_vo_tum" not in sheets
+
+    workbook = report_to_excel(report)
+    xlsx = pd.ExcelFile(io.BytesIO(workbook))
+    assert "sim3_gt_tum" not in xlsx.sheet_names
+    assert "sim3_vo_tum" not in xlsx.sheet_names
+    assert {
+        "input_gt_tum",
+        "input_vo_tum",
+        "filtered_vo_tum",
+        "interpolated_gt_tum",
+        "ate_per_frame",
+        "rpe_per_frame",
+    }.issubset(set(xlsx.sheet_names))
 
 
 def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
