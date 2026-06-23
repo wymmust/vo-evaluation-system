@@ -550,12 +550,22 @@ def test_static_runtime_uses_worker_and_layered_report_slices():
     worker_js = Path("static_web/worker.js").read_text()
     runner = Path("static_web/py/browser_runner.py").read_text()
     html = Path("static_web/index.html").read_text()
+    headers = Path("static_web/_headers").read_text()
 
     assert 'new Worker("./worker.js")' in app_js
     assert 'workerRequest("evaluate"' in app_js
     assert 'workerRequest("slice"' in app_js
     assert "loadPyodide" not in app_js
     assert "pyodide.js" not in html
+    assert 'src="./vendor/plotly/plotly-2.35.2.min.js"' in html
+    assert 'const PYODIDE_INDEX_URL = "./vendor/pyodide/v0.26.4/full/";' in app_js
+    assert 'const PLOTLY_SCRIPT_URL = "./vendor/plotly/plotly-2.35.2.min.js";' in app_js
+    assert "cdn.plot.ly" not in html
+    assert "cdn.plot.ly" not in app_js
+    assert "cdn.plot.ly" not in headers
+    assert "cdn.jsdelivr.net" not in html
+    assert "cdn.jsdelivr.net" not in app_js
+    assert "cdn.jsdelivr.net" not in headers
     assert "evaluate_vloc_bundle_json_light" in worker_js
     assert "evaluate_vo_bundle_json_light" in worker_js
     assert "get_report_slice_json" in worker_js

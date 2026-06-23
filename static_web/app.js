@@ -12,7 +12,8 @@ const state = {
   pointSelections: [],
 };
 
-const PYODIDE_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
+const PYODIDE_INDEX_URL = "./vendor/pyodide/v0.26.4/full/";
+const PLOTLY_SCRIPT_URL = "./vendor/plotly/plotly-2.35.2.min.js";
 
 const els = {
   status: document.getElementById("runtimeStatus"),
@@ -222,17 +223,17 @@ function describeRuntimeError(error) {
   }
   if (message.startsWith("local_fetch_failed:")) {
     const [, url] = message.split(":");
-    return `无法读取静态资源 ${url}。如果你打开的是 localhost，请确认静态服务器还在运行；如果是公网部署，请确认 static_web/py 目录也一起上传了。`;
+    return `无法读取静态资源 ${url}。如果你打开的是 localhost，请确认静态服务器还在运行；如果是公网部署，请确认 static_web/py 和 static_web/vendor 目录也一起上传了。`;
   }
   if (message.startsWith("local_fetch_status:")) {
     const [, url, status] = message.split(":");
-    return `无法读取静态资源 ${url}，HTTP 状态码 ${status}。请确认 static_web/py 目录已经和 index.html 一起部署。`;
+    return `无法读取静态资源 ${url}，HTTP 状态码 ${status}。请确认 static_web/py 和 static_web/vendor 目录已经和 index.html 一起部署。`;
   }
   if (message.includes("Failed to fetch") && state.loadingStep === "packages") {
-    return "无法下载 numpy/pandas 运行包。请检查当前网络是否能访问 Pyodide CDN，或部署时使用可访问的镜像资源。";
+    return "无法读取本地 Pyodide/numpy/pandas 运行包。请确认 static_web/vendor/pyodide 已经和页面一起部署。";
   }
   if (message.includes("Failed to fetch")) {
-    return "浏览器无法获取运行资源。请确认页面是通过 http/https 打开的、静态服务器没有停止，并且 CDN 网络可访问。";
+    return "浏览器无法获取运行资源。请确认页面是通过 http/https 打开的、静态服务器没有停止，并且 static_web/vendor 目录已经一起部署。";
   }
   return message;
 }
@@ -2229,10 +2230,24 @@ async function downloadTrajectoryExcel() {
 
 async function downloadHtmlReport() {
   try {
-    downloadText(evaluationExportFilename("evaluation_report", "html"), buildHtmlReport(state.report || {}), "text/html");
+    const plotlySource = await fetchLocalText(PLOTLY_SCRIPT_URL);
+    downloadText(evaluationExportFilename("evaluation_report", "html"), buildHtmlReport(state.report || {}, { plotlySource }), "text/html");
   } catch (error) {
     showMessage(`导出 HTML 失败：${error.message}`, "error");
   }
+}
+
+async function fetchLocalText(url) {
+  let response;
+  try {
+    response = await fetch(url, { cache: "no-store" });
+  } catch (error) {
+    throw new Error(`无法读取本地资源 ${url}：${error.message || error}`);
+  }
+  if (!response.ok) {
+    throw new Error(`无法读取本地资源 ${url}，HTTP 状态码 ${response.status}`);
+  }
+  return response.text();
 }
 
 function evaluationExportFilename(kind, extension, report = state.report) {
@@ -2303,7 +2318,7 @@ function csvCell(value) {
   return text;
 }
 
-function buildHtmlReport(sourceReport = state.report || {}) {
+function buildHtmlReport(sourceReport = state.report || {}, options = {}) {
   const report = reportForHtmlExport(sourceReport || {});
   const entryMode = reportEntryMode(report);
   const isVloc = entryMode === "vloc";
@@ -2311,6 +2326,9 @@ function buildHtmlReport(sourceReport = state.report || {}) {
   const kicker = isVloc ? "VLOC Offline Visualization" : "VO Offline Visualization";
   const metrics = exportMetricItems(report);
   const figures = buildVisualizationExportFigureSpecs(report);
+  const plotlyScript = options.plotlySource
+    ? `<script>${options.plotlySource.replaceAll("</script", "<\\/script")}<\/script>`
+    : `<script src="${escapeHtml(PLOTLY_SCRIPT_URL)}"><\/script>`;
   const chartOptions = isVloc ? VLOC_CHART_OPTIONS : VO_CHART_OPTIONS;
   const selectedIds = new Set(figures.map((figure) => figure.id));
   const chartDirectory = chartOptions
@@ -2335,7 +2353,7 @@ function buildHtmlReport(sourceReport = state.report || {}) {
   `).join("");
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"><\/script>
+${plotlyScript}
 <style>
 :root{--text:#1f2937;--heading:#0f172a;--muted:#64748b;--line:#d8e2ef;--bg:#f4f7fb;--card:#fff;--blue:#2563eb;--good:#15803d;--warn:#b45309;--bad:#b42318;--shadow:0 16px 38px rgba(15,23,42,.08)}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,Arial,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.5}.topbar{background:#fff;border-bottom:1px solid var(--line);padding:28px 36px}.topbar h1{margin:0;color:var(--heading);font-size:42px;line-height:1.05}.topbar p{margin:10px 0 0;color:var(--muted);font-weight:700}.page{display:grid;grid-template-columns:360px minmax(0,1fr);gap:24px;max-width:1680px;margin:0 auto;padding:24px}.sidebar{display:flex;flex-direction:column;gap:18px}.panel,.chart-card{background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}.panel{padding:18px}.section-title{display:flex;align-items:center;gap:10px;margin:0 0 14px;color:var(--heading);font-size:20px}.section-title:before{content:"";display:block;width:8px;height:28px;border-radius:999px;background:var(--blue)}.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}.metric{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px;position:relative;overflow:hidden}.metric:before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:var(--blue)}.metric.rank-high:before{background:var(--bad)}.metric.rank-warning:before{background:var(--warn)}.metric.rank-good:before{background:var(--good)}.metric-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.metric .label{font-size:12px;color:var(--muted);font-weight:900}.metric-rank{border:1px solid #bfdbfe;background:#eff6ff;color:#2563eb;border-radius:999px;padding:2px 8px;font-size:12px;font-weight:900}.metric .value{margin-top:14px;color:var(--heading);font-size:28px;font-weight:900}.metric-note{margin-top:8px;color:var(--muted);font-size:12px;font-weight:700}.chart-directory-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.chart-directory-item{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff;font-weight:900;font-size:13px}.chart-directory-item input{width:16px;height:16px;accent-color:var(--blue)}.chart-directory-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.chart-directory-actions button,.chart-tools button,.clear-point-selections{border:0;background:var(--blue);color:#fff;border-radius:8px;padding:8px 10px;font-weight:900;cursor:pointer}.point-selection-output{display:flex;flex-direction:column;gap:10px}.point-selection-card{border:1px solid var(--line);border-radius:8px;overflow:hidden}.point-selection-card h3{margin:0;padding:10px 12px;background:#f8fafc;font-size:14px}.point-selection-table{width:100%;border-collapse:collapse;font-size:12px}.point-selection-table th,.point-selection-table td{border-top:1px solid var(--line);padding:7px;text-align:left}.selection-point-token{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;border-radius:999px;color:#fff;font-size:10px;font-weight:900}.chart-card{margin-bottom:22px;padding:16px}.chart-header{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:10px}.chart-header h2{margin:0;color:var(--heading);font-size:22px}.chart-kicker{text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-size:11px;font-weight:900}.chart-tools{display:flex;gap:8px}.chart-card.point-selection-active{outline:2px solid var(--blue);outline-offset:2px}.plotly-graph-div{background:#fff;border:1px solid var(--line);border-radius:8px}.content{min-width:0}.empty{color:var(--muted);font-weight:800}.mode-pill{display:inline-flex;margin-top:10px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:999px;padding:6px 10px;font-weight:900}
