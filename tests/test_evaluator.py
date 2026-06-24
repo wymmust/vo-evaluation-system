@@ -583,13 +583,18 @@ def test_fixed_sf_parsers_use_documented_column_order_without_header_adaptation(
     assert home.altitude_msl == 51.0
 
 
-def test_vo_fixed_rejects_legacy_11_column_format():
+def test_vo_fixed_accepts_legacy_11_column_format():
     legacy_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
 10.0 50 21 22 23 90 2 -1 1 12.5 0
 """
 
-    with pytest.raises(ValueError, match="expects 14 columns"):
-        parse_vo_fixed(legacy_text, name="vo.txt")
+    vo = parse_vo_fixed(legacy_text, name="vo.txt")
+
+    assert vo.source_format == "sf_vo"
+    assert np.allclose(vo.positions[0], [21, 22, 23])
+    assert np.allclose(vo.extras["time_cost"], [12.5])
+    assert vo.extras["raw_numeric_table"].shape == (1, 14)
+    assert np.allclose(vo.extras["raw_numeric_table"][0, 11:14], [0, 0, 0])
 
 
 def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):

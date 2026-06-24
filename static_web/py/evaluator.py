@@ -1074,9 +1074,10 @@ def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
 
     不根据表头猜列名；yaw/pitch/roll 固定为角度。
     最后三列 depth_mean/depth_min/depth_max 只用于固定格式校验，不参与评估指标。
+    兼容旧版 11 列 VO：缺失的 depth 三列会补 0。
     """
 
-    data = _read_fixed_numeric_table(text, len(VO_FIXED_COLUMNS), name, "VO")
+    data = _read_vo_fixed_numeric_table(text, name)
     _require_finite_numeric_table(data, name)
     extras = {
         "raw_numeric_table": data,
@@ -1095,6 +1096,20 @@ def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
         extras=extras,
         source_format="sf_vo",
     )
+
+
+def _read_vo_fixed_numeric_table(text: str, name: str) -> np.ndarray:
+    """读取 VO 固定数字表，兼容旧版 11 列输出。"""
+
+    data = _read_fixed_numeric_table_variants(
+        text,
+        expected_cols=len(VO_FIXED_COLUMNS),
+        legacy_cols=11,
+        legacy_padding=(0.0, 0.0, 0.0),
+        name=name,
+        fmt_name="VO",
+    )
+    return data
 
 
 def parse_home_point_fixed(text: str, name: str = "home_point.txt") -> HomePoint:
@@ -1430,6 +1445,42 @@ def _read_fixed_numeric_table(text: str, expected_cols: int, name: str, fmt_name
             raise ValueError(f"{name}: {fmt_name} line {line_no} contains non-numeric values after data started")
         if len(values) != expected_cols:
             raise ValueError(f"{name}: {fmt_name} format expects {expected_cols} columns, got {len(values)} on line {line_no}")
+        rows.append(values)
+    if not rows:
+        raise ValueError(f"{name}: {fmt_name} file contains no numeric data rows")
+    return np.asarray(rows, dtype=float)
+
+
+def _read_fixed_numeric_table_variants(
+    text: str,
+    *,
+    expected_cols: int,
+    legacy_cols: int,
+    legacy_padding: tuple[float, ...],
+    name: str,
+    fmt_name: str,
+) -> np.ndarray:
+    """读取固定列数字表，同时兼容一种旧列数。"""
+
+    rows: list[list[float]] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = [token for token in re.split(r"[\s,;]+", line) if token]
+        try:
+            values = [float(token) for token in tokens]
+        except ValueError:
+            if not rows:
+                continue
+            raise ValueError(f"{name}: {fmt_name} line {line_no} contains non-numeric values after data started")
+        if len(values) == legacy_cols:
+            values = values + list(legacy_padding)
+        elif len(values) != expected_cols:
+            raise ValueError(
+                f"{name}: {fmt_name} format expects {expected_cols} columns "
+                f"(or legacy {legacy_cols}), got {len(values)} on line {line_no}"
+            )
         rows.append(values)
     if not rows:
         raise ValueError(f"{name}: {fmt_name} file contains no numeric data rows")
