@@ -2,6 +2,10 @@
 
 一个用于视觉里程计（VO/VIO/SLAM trajectory）结果评估的本地 Python 工具。目标流程是：把 ground truth 和 VO 输出轨迹拖进页面，得到指标表、轨迹可视化、误差曲线、子轨迹漂移统计，并导出 HTML/JSON/CSV 报告。
 
+## 当前主版本说明
+
+`refactor-supported-formats` 分支已经整理为新的主版本，完整说明见 [docs/refactor_supported_formats_version_notes.md](docs/refactor_supported_formats_version_notes.md)。该版本把评估入口拆成 VLOC 和 VO 两套固定格式流程，移除了旧版自动识别和冗余调参，并补齐静态网页、导出报告、选点对比、离线 vendor 资源和安全部署说明。
+
 ## 运行
 
 ```bash
