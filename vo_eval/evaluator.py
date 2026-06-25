@@ -1191,11 +1191,17 @@ def sf_nav_to_body_trajectory(nav: Trajectory) -> Trajectory:
 
 
 def sf_nav_to_body_ned_trajectory(nav: Trajectory, home_point: HomePoint) -> Trajectory:
-    """把 nav GT 转成以 home_point 为原点的 body/NED 轨迹。"""
+    """把 nav GT 转成以 home_point 为原点的 body/NED 轨迹。
+
+    水平 N/E 使用经纬度转 NED；垂直分量按原 MATLAB VLOC 口径处理：
+    nav 使用 altitude_msl，VLOC 使用 raw z，因此后续误差等价于
+    abs(nav_altitude_msl + vloc_body_z)。
+    """
     latitude = _required_extra(nav, "latitude")
     longitude = _required_extra(nav, "longitude")
     altitude_msl = _required_extra(nav, "altitude_msl")
     ned = geodetic_to_ned(latitude, longitude, altitude_msl, home_point)
+    ned[:, 2] = -np.asarray(altitude_msl, dtype=float)
     extras = dict(nav.extras)
     extras["body_x_m"] = nav.positions[:, 0]
     extras["body_y_m"] = nav.positions[:, 1]
@@ -1219,6 +1225,7 @@ def sf_vloc_to_body_ned_trajectory(vloc: Trajectory, home_point: HomePoint, cali
     longitude = _required_extra(vloc, "longitude")
     altitude_msl = np.asarray(vloc.extras.get("altitude_msl", vloc.positions[:, 2]), dtype=float)
     imu_ned = geodetic_to_ned(latitude, longitude, altitude_msl, home_point)
+    imu_ned[:, 2] = np.asarray(vloc.positions[:, 2], dtype=float)
 
     rotations = vloc.rotations
     body_ned = imu_ned

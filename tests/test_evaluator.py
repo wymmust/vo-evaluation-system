@@ -424,7 +424,7 @@ def sample_vloc_bundle_with_large_nav_gap() -> SfVlocBundle:
     vloc_stamps = np.asarray([0.25, 0.75, 2.0, 3.75, 3.9], dtype=float)
     vloc_north = np.asarray([2.5, 7.5, 20.0, 37.5, 39.0], dtype=float)
     vloc_lat = np.asarray([_latitude_from_north_offset(home.latitude, value) for value in vloc_north], dtype=float)
-    vloc_positions = np.column_stack([vloc_north, np.zeros(len(vloc_stamps)), np.full(len(vloc_stamps), home.altitude_msl, dtype=float)])
+    vloc_positions = np.column_stack([vloc_north, np.zeros(len(vloc_stamps)), np.full(len(vloc_stamps), -home.altitude_msl, dtype=float)])
     vloc_rot = euler_yaw_pitch_roll_to_matrix(np.zeros(len(vloc_stamps)), np.zeros(len(vloc_stamps)), np.zeros(len(vloc_stamps)))
     vloc = Trajectory(
         "vloc.txt",
