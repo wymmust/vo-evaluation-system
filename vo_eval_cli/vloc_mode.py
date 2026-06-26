@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .evo_compat import RpeDelta, _failure_row, _load_vo_evaluator, _stat, _sse, parse_id_list
+from .evo_compat import RpeDelta, _failure_row, _load_vo_evaluator, parse_id_list
 
 
 @dataclass(frozen=True)
@@ -67,10 +67,7 @@ def evaluate_vloc_task(task: VlocTask, settings: VlocEvalSettings) -> dict[str, 
         row: dict[str, Any] = {
             "log_id": task.log_id,
             "nav_path": str(task.data_dir),
-            "_frame_count": int(report.get("summary", {}).get("raw_est_poses", len(bundle.vloc.positions))),
         }
-        _add_ate_metrics(row, report)
-        _add_vloc_rpe_metrics(row, report, settings)
         _add_vloc_summary(row, report)
         row["status"] = "OK"
         row["message"] = ""
@@ -103,58 +100,16 @@ def _make_vloc_config(evaluator, settings: VlocEvalSettings):
     return evaluator.EvaluationConfig(**kwargs)
 
 
-def _add_ate_metrics(row: dict[str, Any], report: dict[str, Any]) -> None:
-    ate = report.get("ate_position_m") or {}
-    row["ate_trans_rmse"] = _stat(ate, "rmse")
-    row["ate_trans_mean"] = _stat(ate, "mean")
-    row["ate_trans_median"] = _stat(ate, "median")
-    row["ate_trans_min"] = _stat(ate, "min")
-    row["ate_trans_max"] = _stat(ate, "max")
-    row["ate_trans_sse"] = _sse(ate)
-    row["ate_trans_std"] = _stat(ate, "std")
-
-    h = report.get("ate_horizontal_m") or {}
-    z = report.get("ate_vertical_m") or {}
-    row["mean_xy"] = _stat(h, "mean")
-    row["max_xy"] = _stat(h, "max")
-    row["mean_z"] = _stat(z, "mean")
-    row["max_z"] = _stat(z, "max")
-
-
-def _add_vloc_rpe_metrics(row: dict[str, Any], report: dict[str, Any], settings: VlocEvalSettings) -> None:
-    label = settings.rpe_delta.label if settings.rpe_delta is not None else "1f"
-    trans = ((report.get("rpe_frame_delta") or {}).get("translation_m") or {})
-    prefix = f"rpe_{label}_trans"
-    row[f"{prefix}_rmse"] = _stat(trans, "rmse")
-    row[f"{prefix}_max"] = _stat(trans, "max")
-    row[f"{prefix}_mean"] = _stat(trans, "mean")
-    row[f"{prefix}_median"] = _stat(trans, "median")
-    row[f"{prefix}_min"] = _stat(trans, "min")
-    row[f"{prefix}_sse"] = _sse(trans)
-    row[f"{prefix}_std"] = _stat(trans, "std")
-
 
 def _add_vloc_summary(row: dict[str, Any], report: dict[str, Any]) -> None:
-    summary = report.get("summary") or {}
-    assoc = report.get("association") or {}
-    alignment = report.get("alignment") or {}
     detail_summary = ((report.get("vloc_details") or {}).get("summary") or {})
 
-    row["trajectory_length_m"] = detail_summary.get("trajectory_length_m", summary.get("gt_path_length_m", "-"))
-    row["mean_xy"] = detail_summary.get("mean_error_pos_xy", row.get("mean_xy", "-"))
-    row["max_xy"] = detail_summary.get("max_error_pos_xy", row.get("max_xy", "-"))
-    row["mean_z"] = detail_summary.get("mean_error_pos_z", row.get("mean_z", "-"))
-    row["max_z"] = detail_summary.get("max_error_pos_z", row.get("max_z", "-"))
+    row["mean_error_pos_xy"] = detail_summary.get("mean_error_pos_xy", "-")
+    row["mean_error_pos_z"] = detail_summary.get("mean_error_pos_z", "-")
     row["mean_error_euler"] = detail_summary.get("mean_error_euler", "-")
+    row["max_error_pos_xy"] = detail_summary.get("max_error_pos_xy", "-")
+    row["max_error_pos_z"] = detail_summary.get("max_error_pos_z", "-")
     row["max_error_euler"] = detail_summary.get("max_error_euler", "-")
-
-    row["matched_poses"] = summary.get("matched_poses", "-")
-    row["gt_coverage"] = summary.get("gt_pose_coverage_ratio", "-")
-    row["est_coverage"] = summary.get("est_pose_coverage_ratio", "-")
-    row["duration_s"] = summary.get("duration_s", "-")
-    row["alignment_scale"] = alignment.get("scale", "-")
-    row["valid_est_after_mode_filter"] = assoc.get("valid_est_after_mode_filter", "-")
-    row["dropped_est_invalid_mode"] = assoc.get("dropped_est_invalid_mode", "-")
 
 
 def default_vloc_output_dir(data_root: Path) -> Path:

@@ -85,13 +85,15 @@ def main(argv: list[str] | None = None) -> int:
                 max_interpolation_gap_s=None if args.max_interpolation_gap_s < 0 else args.max_interpolation_gap_s,
                 continuous_segment_policy=args.vo_segment_policy,
                 rpe_delta=rpe_delta,
+                rpe_deltas=tuple(deltas),
                 scale_delta=rpe_delta,
                 rpe_distance_tolerance_ratio=args.rpe_distance_tolerance_ratio,
             )
             tasks, failure_rows = discover_vo_tasks(Path(args.data_root), ids=vo_ids)
             rows.extend(failure_rows)
             output_base = default_vo_output_dir(Path(args.data_root))
-            mode_primary_key = "mean_xy"
+            primary_delta = next((delta for delta in deltas if delta.unit == "meters"), deltas[0] if deltas else None)
+            mode_primary_key = f"rpe_{primary_delta.label}_trans_rmse" if primary_delta else "mean_xy"
             total = len(tasks)
             for index, task in enumerate(tasks, 1):
                 print(f"[{index}/{total}] {task.log_id}: {task.data_dir}")
@@ -112,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             tasks, failure_rows = discover_vloc_tasks(Path(args.data_root), ids=vloc_ids)
             rows.extend(failure_rows)
             output_base = default_vloc_output_dir(Path(args.data_root))
-            mode_primary_key = "mean_xy"
+            mode_primary_key = "max_error_pos_xy"
             total = len(tasks)
             for index, task in enumerate(tasks, 1):
                 print(f"[{index}/{total}] {task.log_id}: {task.data_dir}")
@@ -183,15 +185,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vo-segment-policy", default="segments", choices=["all", "vo_timestamps", "segments", "longest"], help="How VO reset/discontinuity segments affect --mode vo evaluation.")
     parser.add_argument("--rpe-distance-tolerance-ratio", type=float, default=0.05, help="Tolerance for meter-based RPE endpoint lookup.")
 
-    parser.add_argument("--primary-key", default="", help="Metric used for progress/Excel classification. Defaults to rpe_100m_trans_rmse for tum and mean_xy for vo/vloc.")
+    parser.add_argument("--primary-key", default="", help="Metric used for progress/Excel classification. Defaults to rpe_100m_trans_rmse for tum/vo and max_error_pos_xy for vloc.")
     parser.add_argument("--compat-only", action="store_true", help="Only write evo-style metric columns; omit coverage/duration extras.")
 
     parser.add_argument("--xy-warn", type=float, default=20.0)
     parser.add_argument("--xy-fail", type=float, default=50.0)
     parser.add_argument("--z-warn", type=float, default=20.0)
     parser.add_argument("--z-fail", type=float, default=50.0)
-    parser.add_argument("--rpe-trans-warn", type=float, default=0.05)
-    parser.add_argument("--rpe-trans-fail", type=float, default=0.10)
+    parser.add_argument("--rpe-trans-warn", type=float, default=5.0)
+    parser.add_argument("--rpe-trans-fail", type=float, default=10.0)
     return parser
 
 

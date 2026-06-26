@@ -25,6 +25,7 @@ class VoEvalSettings:
     max_interpolation_gap_s: float | None = 1.0
     continuous_segment_policy: str = "segments"
     rpe_delta: RpeDelta | None = None
+    rpe_deltas: tuple[RpeDelta, ...] = ()
     scale_delta: RpeDelta | None = None
     rpe_distance_tolerance_ratio: float = 0.05
 
@@ -64,7 +65,9 @@ def evaluate_vo_task(task: VoTask, settings: VoEvalSettings) -> dict[str, Any]:
     try:
         evaluator = _load_vo_evaluator()
         bundle = evaluator.load_vo_evaluation_bundle(task.data_dir, task.log_dir)
-        cfg = _make_vo_config(evaluator, settings)
+        rpe_deltas = _configured_rpe_deltas(settings)
+        base_delta = rpe_deltas[0] if rpe_deltas else None
+        cfg = _make_vo_config(evaluator, settings, rpe_delta=base_delta)
         report = evaluator.evaluate_vo_bundle(bundle, cfg)
 
         row: dict[str, Any] = {
@@ -73,7 +76,12 @@ def evaluate_vo_task(task: VoTask, settings: VoEvalSettings) -> dict[str, Any]:
             "_frame_count": int(report.get("summary", {}).get("raw_est_poses", len(bundle.vo.positions))),
         }
         _add_ate_metrics(row, report)
-        _add_vo_rpe_metrics(row, report, settings)
+        for index, delta in enumerate(rpe_deltas):
+            delta_report = report if index == 0 else evaluator.evaluate_vo_bundle(
+                bundle,
+                _make_vo_config(evaluator, settings, rpe_delta=delta),
+            )
+            _add_vo_rpe_metrics(row, delta_report, delta)
         _add_vo_summary(row, report)
         row["status"] = "OK"
         row["message"] = ""
@@ -82,8 +90,16 @@ def evaluate_vo_task(task: VoTask, settings: VoEvalSettings) -> dict[str, Any]:
         return _failure_row(task.log_id, str(task.data_dir), f"ERR:{type(exc).__name__}", str(exc))
 
 
-def _make_vo_config(evaluator, settings: VoEvalSettings):
-    rpe_delta = settings.rpe_delta
+def _configured_rpe_deltas(settings: VoEvalSettings) -> tuple[RpeDelta, ...]:
+    if settings.rpe_deltas:
+        return tuple(settings.rpe_deltas)
+    if settings.rpe_delta is not None:
+        return (settings.rpe_delta,)
+    return ()
+
+
+def _make_vo_config(evaluator, settings: VoEvalSettings, rpe_delta: RpeDelta | None = None):
+    rpe_delta = rpe_delta or settings.rpe_delta
     scale_delta = settings.scale_delta or rpe_delta
     kwargs: dict[str, Any] = {
         "alignment": "sim3",
@@ -132,8 +148,8 @@ def _add_ate_metrics(row: dict[str, Any], report: dict[str, Any]) -> None:
     row["max_z"] = _stat(z, "max")
 
 
-def _add_vo_rpe_metrics(row: dict[str, Any], report: dict[str, Any], settings: VoEvalSettings) -> None:
-    label = settings.rpe_delta.label if settings.rpe_delta is not None else "1f"
+def _add_vo_rpe_metrics(row: dict[str, Any], report: dict[str, Any], delta: RpeDelta) -> None:
+    label = delta.label
     trans = ((report.get("rpe_frame_delta") or {}).get("translation_m") or {})
     prefix = f"rpe_{label}_trans"
     row[f"{prefix}_rmse"] = _stat(trans, "rmse")

@@ -14,8 +14,8 @@ class Thresholds:
     z_warn: float = 20.0
     xy_fail: float = 50.0
     z_fail: float = 50.0
-    rpe_trans_warn: float = 0.05
-    rpe_trans_fail: float = 0.10
+    rpe_trans_warn: float = 5.0
+    rpe_trans_fail: float = 10.0
 
 
 def default_output_path(base_dir: Path | None = None) -> Path:
@@ -126,9 +126,13 @@ def _columns(rows: list[dict[str, Any]], rpe_labels: list[str]) -> list[str]:
         "mean_z",
         "max_xy",
         "max_z",
-        "trajectory_length_m",
+        "mean_error_pos_xy",
+        "mean_error_pos_z",
         "mean_error_euler",
+        "max_error_pos_xy",
+        "max_error_pos_z",
         "max_error_euler",
+        "trajectory_length_m",
     ]
     rpe_details: list[str] = []
     for label in rpe_labels:
@@ -169,6 +173,10 @@ def _default_primary_key(rows: list[dict[str, Any]], rpe_labels: list[str]) -> s
     all_keys = {key for row in rows for key in row.keys()}
     if "rpe_100m_trans_rmse" in all_keys:
         return "rpe_100m_trans_rmse"
+    if "max_error_pos_xy" in all_keys:
+        return "max_error_pos_xy"
+    if "mean_error_pos_xy" in all_keys:
+        return "mean_error_pos_xy"
     if "mean_xy" in all_keys:
         return "mean_xy"
     for label in rpe_labels:
@@ -186,6 +194,13 @@ def _classify(row: dict[str, Any], primary_key: str, thresholds: Thresholds) -> 
     status = str(row.get("status", "")).upper()
     if status and status != "OK":
         return "fail"
+
+    if _is_vloc_six_metric_row(row):
+        return _classify_matlab_max_error(
+            row.get("max_error_pos_xy"),
+            row.get("max_error_pos_z"),
+            thresholds,
+        )
 
     value = _as_float(row.get(primary_key))
     if value is None:
@@ -205,8 +220,16 @@ def _classify(row: dict[str, Any], primary_key: str, thresholds: Thresholds) -> 
             return "warn"
         return "ok"
 
-    max_xy = _as_float(row.get("max_xy")) or 0.0
-    max_z = _as_float(row.get("max_z")) or 0.0
+    return _classify_matlab_max_error(row.get("max_xy"), row.get("max_z"), thresholds)
+
+
+def _is_vloc_six_metric_row(row: dict[str, Any]) -> bool:
+    return "max_error_pos_xy" in row or "max_error_pos_z" in row
+
+
+def _classify_matlab_max_error(max_xy_value: Any, max_z_value: Any, thresholds: Thresholds) -> str:
+    max_xy = _as_float(max_xy_value) or 0.0
+    max_z = _as_float(max_z_value) or 0.0
     if max_xy > thresholds.xy_fail:
         return "fail"
     if max_xy > thresholds.xy_warn or max_z > thresholds.z_warn:
@@ -220,6 +243,14 @@ def _as_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return out
+
+
+def _first_float(*values: Any) -> float | None:
+    for value in values:
+        out = _as_float(value)
+        if out is not None:
+            return out
+    return None
 
 
 def _write_statistics_sheet(ws, rows, counts, thresholds, primary_key, border) -> None:

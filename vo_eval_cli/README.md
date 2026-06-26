@@ -60,9 +60,8 @@ vo_eval_cli/.venv/bin/python -m vo_eval_cli \
 `--mode vo` uses the existing `load_vo_evaluation_bundle()` /
 `evaluate_vo_bundle()` path, including VO reset segment filtering and segment-wise
 Sim3 alignment. Legacy 11-column `vo.txt` files are accepted by the core parser
-and padded with zero depth columns. Excel classification defaults to `mean_xy`
-and follows the slam_pipeline MATLAB-style rule: red when `max_xy > xy_fail`,
-yellow when `max_xy > xy_warn` or `max_z > z_warn`.
+and padded with zero depth columns. Excel classification defaults to `rpe_100m_trans_rmse`
+and follows the same evo/TUM RPE translation threshold rule.
 
 ### `--mode vloc`
 
@@ -88,8 +87,9 @@ vo_eval_cli/.venv/bin/python -m vo_eval_cli \
 
 `--mode vloc` uses the existing `load_vloc_evaluation_bundle()` /
 `evaluate_vloc_bundle()` path, including fixed `vloc_mode > 1` filtering and
-nav-to-VLOC timestamp interpolation. Excel classification defaults to `mean_xy`
-and follows the same slam_pipeline MATLAB-style `max_xy` / `max_z` rule.
+nav-to-VLOC timestamp interpolation. Excel classification defaults to `max_error_pos_xy`
+and follows the VLOC/MATLAB max-error rule: red when `max_error_pos_xy > xy_fail`,
+yellow when `max_error_pos_xy > xy_warn` or `max_error_pos_z > z_warn`.
 
 ## Output
 
