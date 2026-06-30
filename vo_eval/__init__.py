@@ -21,6 +21,7 @@ from .evaluator import (
     parse_imu_fixed,
     parse_vloc_fixed,
     parse_vo_fixed,
+    report_to_json,
 )
 
 __all__ = [
@@ -44,4 +45,5 @@ __all__ = [
     "parse_imu_fixed",
     "parse_vloc_fixed",
     "parse_vo_fixed",
+    "report_to_json",
 ]

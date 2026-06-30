@@ -1201,7 +1201,7 @@ def sf_nav_to_body_ned_trajectory(nav: Trajectory, home_point: HomePoint) -> Tra
     longitude = _required_extra(nav, "longitude")
     altitude_msl = _required_extra(nav, "altitude_msl")
     ned = geodetic_to_ned(latitude, longitude, altitude_msl, home_point)
-    ned[:, 2] = -np.asarray(altitude_msl, dtype=float)
+    # ned[:, 2] = -np.asarray(altitude_msl, dtype=float)
     extras = dict(nav.extras)
     extras["body_x_m"] = nav.positions[:, 0]
     extras["body_y_m"] = nav.positions[:, 1]
@@ -1225,7 +1225,7 @@ def sf_vloc_to_body_ned_trajectory(vloc: Trajectory, home_point: HomePoint, cali
     longitude = _required_extra(vloc, "longitude")
     altitude_msl = np.asarray(vloc.extras.get("altitude_msl", vloc.positions[:, 2]), dtype=float)
     imu_ned = geodetic_to_ned(latitude, longitude, altitude_msl, home_point)
-    imu_ned[:, 2] = np.asarray(vloc.positions[:, 2], dtype=float)
+    # imu_ned[:, 2] = np.asarray(vloc.positions[:, 2], dtype=float)
 
     rotations = vloc.rotations
     body_ned = imu_ned
@@ -2383,7 +2383,7 @@ def interpolate_rotations_from_brackets(
         return np.empty((0, 3, 3), dtype=float)
     quats = matrix_to_quaternion(src_rotations)
     out = np.empty((len(left_indices), 4), dtype=float)
-    for i, (left, right, alpha) in enumerate(zip(left_indices, right_indices, alphas, strict=False)):
+    for i, (left, right, alpha) in enumerate(zip(left_indices, right_indices, alphas)):
         if left == right or abs(float(alpha)) < 1e-15:
             out[i] = quats[left]
         elif abs(float(alpha) - 1.0) < 1e-15:

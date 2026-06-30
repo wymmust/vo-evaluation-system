@@ -2383,7 +2383,7 @@ def interpolate_rotations_from_brackets(
         return np.empty((0, 3, 3), dtype=float)
     quats = matrix_to_quaternion(src_rotations)
     out = np.empty((len(left_indices), 4), dtype=float)
-    for i, (left, right, alpha) in enumerate(zip(left_indices, right_indices, alphas, strict=False)):
+    for i, (left, right, alpha) in enumerate(zip(left_indices, right_indices, alphas)):
         if left == right or abs(float(alpha)) < 1e-15:
             out[i] = quats[left]
         elif abs(float(alpha) - 1.0) < 1e-15:
