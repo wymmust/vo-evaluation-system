@@ -26,9 +26,7 @@
 - 姿态/yaw 误差：rotation_errors()/yaw_from_rot() -> ate_orientation_deg / ate_yaw_deg。
 - RPE 帧数/距离间隔误差：rpe_frame_dataframe()/relative_error() -> report["rpe_frame_delta"] 和 rpe_per_frame。
 - KITTI/rpg 风格子轨迹误差：segment_errors() -> report["segment_errors"] 和 segment_records。
-- 速度分箱误差：summarize_by_speed_bins() -> report["speed_bins"]。
 - 覆盖率、路程、耗时、原始尺度比等汇总量：summary dict。
-- 发散检测：detect_divergence() -> report["divergence"]，目前主要作为导出/诊断字段，页面已弱化。
 - reset/gap/大跳变诊断：detect_associated_discontinuities() -> report["discontinuities"]。
 - runtime/资源统计：summarize_runtime() -> report["runtime"]。
 
@@ -59,8 +57,6 @@
   Zhang18 将其归入相对误差。
 - report["segment_errors"]：Geiger12/KITTI odometry 的固定长度子轨迹平移百分比和旋转 deg/m；
   Zhang18/rpg 轨迹评估也使用相对误差和尺度漂移思想。
-- report["speed_bins"]：Geiger12/KITTI 的 error-vs-speed 图表思想；本系统把它泛化到无人机速度分箱。
-- report["summary"]["endpoint_error_m"]：工程扩展，论文中不是标准排行榜指标；目前保留在 report 中供导出/诊断使用。
 - report["summary"]["gt_coverage_ratio"] 和 report["summary"]["est_coverage_ratio"]：工程扩展，动机来自 Schubert18/Delmerico18
   对长序列 VIO 跟踪成功率、鲁棒性和飞行可用性的关注。
 - report["summary"]["raw_path_scale_ratio"]：Zhang18 的尺度可观性和 Sim3/SE3 对齐讨论；用于判断估计轨迹是否无尺度或尺度不稳。
@@ -79,7 +75,7 @@ import math
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -228,26 +224,6 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "metric": "每个子轨迹明细",
         "report_field": 'report["segment_records"]',
         "code": "segment_errors(): records; summarize_segment_records()",
-    },
-    {
-        "metric": "速度分箱误差",
-        "report_field": 'report["speed_bins"]',
-        "code": "summarize_by_speed_bins(); describe_clean()",
-    },
-    {
-        "metric": "最差片段 Top-K",
-        "report_field": 'report["worst_segments"]',
-        "code": "build_worst_segments()",
-    },
-    {
-        "metric": "断点 / reset / 大跳变",
-        "report_field": 'report["discontinuities"]',
-        "code": "detect_associated_discontinuities(); select_evaluation_segments(); summarize_continuity()",
-    },
-    {
-        "metric": "发散检测",
-        "report_field": 'report["divergence"]',
-        "code": "detect_divergence(); classify_tracking_failure(); classify_scale_divergence()",
     },
     {
         "metric": "航程 / 耗时 / 匹配数量 / 覆盖率 / 原始尺度比",
@@ -426,7 +402,6 @@ class EvaluationConfig:
     - segment_lengths_m/segment_step_frames/max_segments_per_length/max_segment_length_diff_ratio:
       控制 Geiger/KITTI 风格长航程子轨迹抽样，对应 report["segment_errors"] 和 report["segment_records"]。
     - continuous_segment_policy/discontinuity_*: 控制断点诊断和跨 reset 轨迹如何纳入评估，对应 report["discontinuities"]。
-    - divergence_* 和 speed_bins_mps: 仍作为导出/诊断字段保留，当前页面主指标已弱化。
     """
 
     profile: str = "monocular_long_range_uav"
@@ -447,44 +422,9 @@ class EvaluationConfig:
     scale_delta_value: float | None = None
     scale_delta_unit: str = "frames"
     scale_distance_tolerance_ratio: float = 0.05
-    rpe_delta_seconds: tuple[float, ...] = (1.0, 5.0, 10.0)
-    segment_lengths_m: tuple[float, ...] = (50, 100, 200, 500, 1000, 2000, 5000)
-    max_segments_per_length: int = 10000
-    segment_step_frames: int = 10
-    max_segment_length_diff_ratio: float = 0.05
     continuous_segment_policy: str = "segments"
     discontinuity_step_m: float = 100.0
     discontinuity_time_gap_s: float = 5.0
-    divergence_abs_m: float = 30.0
-    divergence_rel_percent: float = 3.0
-    divergence_min_distance_m: float = 100.0
-    divergence_min_time_s: float = 5.0
-    speed_bins_mps: tuple[float, ...] = (0, 8, 12, 16, 20, math.inf)
-    top_k_worst_segments: int = 10
-
-
-AUTO_ORIENTATION_CORRECTION_CANDIDATES = (
-    "none",
-    "inverse",
-    "rx180_left",
-    "rx180_right",
-    "rx180_left_inverse",
-    "rx180_right_inverse",
-    "ry180_left",
-    "ry180_right",
-    "ry180_left_inverse",
-    "ry180_right_inverse",
-    "rz180_left",
-    "rz180_right",
-    "rz180_left_inverse",
-    "rz180_right_inverse",
-    "enu_ned_left",
-    "enu_ned_right",
-    "enu_ned_both",
-    "enu_ned_left_inverse",
-    "enu_ned_right_inverse",
-    "enu_ned_both_inverse",
-)
 
 
 IMU_FIXED_COLUMNS = (
@@ -1594,14 +1534,16 @@ def evaluate_trajectories(
     eval_ranges = select_evaluation_segments(discontinuities_all["segments"], cfg.continuous_segment_policy, original_match_count)
     if not eval_ranges:
         raise ValueError("No continuous segment contains at least two matched poses")
-
-    # 3. 根据 GT/estimate 姿态和评估段选择姿态修正。
-    #    当前 sf_vloc/sf_vo 固定 none；auto/手动/ignore 只保留给通用评估和历史回归。
-    orientation_selection = select_orientation_correction(gt, est, gt_idx, est_idx, eval_ranges, cfg)
-
+    orientation_selection = {
+        "requested": cfg.orientation_correction,
+        "selected": "none",
+        "auto": False,
+        "available": bool(gt.rotations is not None and est.rotations is not None),
+        "uses_rotations": bool(gt.rotations is not None and est.rotations is not None),
+        "note": "fixed workflow; no orientation correction is applied",
+    }
     # 这些列表会收集每个连续段的结果，最后统一 concat/describe。
     per_pose_frames: list[pd.DataFrame] = []
-    segment_record_frames: list[pd.DataFrame] = []
     pos_error_parts: list[np.ndarray] = []
     horizontal_error_parts: list[np.ndarray] = []
     vertical_error_signed_parts: list[np.ndarray] = []
@@ -1611,8 +1553,6 @@ def evaluate_trajectories(
     yaw_error_abs_parts: list[np.ndarray] = []
     rpe_trans_parts: list[np.ndarray] = []
     rpe_rot_parts: list[np.ndarray] = []
-    rpe_time_trans_parts: dict[float, list[np.ndarray]] = {float(delta): [] for delta in cfg.rpe_delta_seconds if float(delta) > 0}
-    rpe_time_rot_parts: dict[float, list[np.ndarray]] = {float(delta): [] for delta in cfg.rpe_delta_seconds if float(delta) > 0}
     used_gt_indices: list[np.ndarray] = []
     used_est_indices: list[np.ndarray] = []
     used_match_indices: list[np.ndarray] = []
@@ -1641,10 +1581,7 @@ def evaluate_trajectories(
         est_pos = est.positions[cur_est_idx]
         gt_rot = gt.rotations[cur_gt_idx] if gt.rotations is not None else None
         est_rot_raw = est.rotations[cur_est_idx] if est.rotations is not None else None
-        est_rot = apply_orientation_correction(est_rot_raw, orientation_selection["selected"]) if est_rot_raw is not None else None
-        if orientation_selection["selected"] == "ignore":
-            gt_rot = None
-            est_rot = None
+        est_rot = est_rot_raw
         stamps = gt.stamps[cur_gt_idx]
 
         # 5. 对齐 estimate 到 GT 坐标系。
@@ -1737,19 +1674,6 @@ def evaluate_trajectories(
         rpe_trans_parts.append(rpe_trans)
         if len(rpe_rot_deg):
             rpe_rot_parts.append(rpe_rot_deg)
-        for delta_s in rpe_time_trans_parts:
-            time_trans, time_rot = rpe_error_arrays_by_time(
-                gt_pos,
-                est_pos_aligned,
-                gt_rot,
-                est_rot_aligned,
-                stamps,
-                delta_s=delta_s,
-            )
-            rpe_time_trans_parts[delta_s].append(time_trans)
-            if len(time_rot):
-                rpe_time_rot_parts[delta_s].append(np.degrees(time_rot))
-
         scale_frame = scale_frame_dataframe(
             gt_pos,
             est_pos,
@@ -1762,27 +1686,6 @@ def evaluate_trajectories(
             distance_tolerance_ratio=cfg.scale_distance_tolerance_ratio,
         )
         scale_frame_export_frames.append(scale_frame)
-
-        # 9. 长航程核心指标：按固定距离 L 抽子轨迹，统计漂移百分比、旋转误差和尺度漂移。
-        #    来源：Geiger12/KITTI 的长度子轨迹平移/旋转漂移；尺度漂移解释参考 Zhang18。
-        cur_segments = segment_errors(
-            gt_pos,
-            est_pos_aligned,
-            est_pos,
-            gt_rot,
-            est_rot_aligned,
-            stamps,
-            lengths_m=cfg.segment_lengths_m,
-            max_segments_per_length=cfg.max_segments_per_length,
-            step_frames=cfg.segment_step_frames,
-            max_length_diff_ratio=cfg.max_segment_length_diff_ratio,
-            )
-        if not cur_segments["records"].empty:
-            rec = cur_segments["records"].copy()
-            rec["segment_id"] = int(seg_id)
-            rec["global_start_match_index"] = (rec["start_index"] + start).astype(float)
-            rec["global_end_match_index"] = (rec["end_index"] + start).astype(float)
-            segment_record_frames.append(rec)
 
         # 10. per_pose 是每帧明细表，既用于误差曲线，也可导出 CSV。
         frame = pd.DataFrame(
@@ -1846,12 +1749,9 @@ def evaluate_trajectories(
         raise ValueError("No continuous segment contains at least two matched poses")
 
     per_pose = pd.concat(per_pose_frames, ignore_index=True)
-    segment_records = pd.concat(segment_record_frames, ignore_index=True) if segment_record_frames else pd.DataFrame()
     rpe_per_frame = pd.concat(rpe_frame_export_frames, ignore_index=True) if rpe_frame_export_frames else pd.DataFrame()
     scale_per_frame = pd.concat(scale_frame_export_frames, ignore_index=True) if scale_frame_export_frames else pd.DataFrame()
     # 12. 统计汇总：describe() 会统一给出 count/rmse/mean/median/std/min/max/p95/p99。
-    segment_summary = summarize_segment_records(segment_records)
-    speed_bins = summarize_by_speed_bins(segment_records, cfg.speed_bins_mps)
     pos_error_m = np.concatenate(pos_error_parts)
     horizontal_error_m = np.concatenate(horizontal_error_parts)
     vertical_error_signed_m = np.concatenate(vertical_error_signed_parts)
@@ -1869,16 +1769,11 @@ def evaluate_trajectories(
         per_pose["visual_segment_id"] = visual_segment_ids[used_match_idx]
     else:
         per_pose["visual_segment_id"] = per_pose["segment_id"].to_numpy(dtype=int)
-    # 13. runtime 只统计 estimate extras 里存在的资源字段；没有字段则返回 None。
-    runtime = summarize_runtime(est, used_est_idx)
     alignment = aggregate_alignment(alignments, cfg.alignment)
-    global_sim3_ate = compute_global_ate(gt, est, used_gt_idx, used_est_idx, orientation_selection["selected"], mode="sim3")
-    ate_report = build_ate_report(
-        pos_error_m,
-        global_sim3_ate,
-        cfg,
-        alignment,
-    )
+    ate_report = {
+        "primary_label": f"{cfg.alignment.upper()} ATE",
+        "primary_position_m": describe(pos_error_m),
+    }
     rpe_delta_info = normalize_rpe_delta_config(cfg)
     rpe = {
         **rpe_delta_info,
@@ -1886,7 +1781,6 @@ def evaluate_trajectories(
         "translation_m": describe(rpe_trans),
         "rotation_deg": describe(rpe_rot_deg) if len(rpe_rot_deg) else None,
     }
-    rpe_time_delta = summarize_time_rpe(rpe_time_trans_parts, rpe_time_rot_parts)
     scale_valid = scale_per_frame["scale_available"].to_numpy(dtype=bool) if "scale_available" in scale_per_frame else np.asarray([], dtype=bool)
     local_sim3_scale = scale_per_frame.loc[scale_valid, "local_sim3_scale"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
     local_scale_ratio = scale_per_frame.loc[scale_valid, "local_scale_ratio_est_over_gt"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
@@ -1905,7 +1799,6 @@ def evaluate_trajectories(
         "selected_matches": int(len(used_gt_idx)),
         "dropped_matches": int(original_match_count - len(used_gt_idx)),
     }
-    endpoint_error_m = float(pos_error_m[-1])
 
     # 14. summary 是页面第一屏指标卡的主要来源。
     #     endpoint/coverage/divergence 不是论文标准排行榜字段，是物流无人机长航程可用性扩展；
@@ -1923,33 +1816,8 @@ def evaluate_trajectories(
         "gt_pose_coverage_ratio": _gt_coverage_ratio(assoc, total_duration_s, original_gt, len(used_gt_idx)),
         "gt_time_coverage_ratio": float(total_duration_s / original_gt.duration_s) if original_gt.duration_s > 0 else 1.0,
         "est_pose_coverage_ratio": float(len(used_est_idx) / max(1, len(original_est.positions))),
-        "endpoint_error_m": endpoint_error_m,
-        "endpoint_error_percent_of_path": float(100.0 * endpoint_error_m / total_gt_path_m) if total_gt_path_m > 0 else math.nan,
         "raw_path_scale_ratio_est_over_gt": float(total_raw_est_path_m / total_gt_path_m) if total_gt_path_m > 0 else math.nan,
     }
-    discontinuities_used = detect_associated_discontinuities(
-        per_pose["timestamp"].to_numpy(),
-        per_pose[["gt_x_m", "gt_y_m", "gt_z_m"]].to_numpy(),
-        per_pose[["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"]].to_numpy(),
-        step_threshold_m=cfg.discontinuity_step_m,
-        time_gap_threshold_s=cfg.discontinuity_time_gap_s,
-    )
-    continuity = summarize_continuity(discontinuities_all, original_stamps, original_gt_pos, total_gt_path_m)
-    discontinuities_all["continuity"] = continuity
-    worst_segments = build_worst_segments(segment_records, discontinuities_all, cfg.top_k_worst_segments)
-    divergence = detect_divergence(
-        pos_error_m,
-        per_pose["distance_m"].to_numpy(),
-        cfg.divergence_abs_m,
-        cfg.divergence_rel_percent,
-        per_pose["timestamp"].to_numpy(),
-        min_distance_m=cfg.divergence_min_distance_m,
-        min_time_s=cfg.divergence_min_time_s,
-        discontinuities=discontinuities_all,
-        segment_summary=segment_summary,
-        alignment=alignment,
-        summary=summary,
-    )
 
     # 15. report 是唯一对外返回值。app.py 的所有图表/表格/下载都从这里取数据。
     #     新增 report 指标时，同步更新 METRIC_CODE_MAP 和 README 的指标-代码总表。
@@ -1973,9 +1841,7 @@ def evaluate_trajectories(
         "association": assoc,
         "discontinuities": {
             "all_matches": discontinuities_all,
-            "used_matches": discontinuities_used,
             "selected_segment": selected_segment,
-            "continuity": continuity,
         },
         "alignment": alignment,
         "orientation_correction": orientation_selection,
@@ -1992,14 +1858,7 @@ def evaluate_trajectories(
         "yaw_error_abs_deg": describe(yaw_error_abs_deg) if yaw_error_abs_deg is not None else None,
         "rpe_frame_delta": rpe,
         "scale_frame_delta": scale_frame_delta,
-        "rpe_time_delta": rpe_time_delta,
-        "segment_errors": segment_summary,
-        "worst_segments": worst_segments,
-        "speed_bins": speed_bins,
-        "runtime": runtime,
-        "divergence": divergence,
         "per_pose": per_pose,
-        "segment_records": segment_records,
         "trajectory_exports": trajectory_exports,
     }
     return report
@@ -2052,26 +1911,6 @@ def build_associated_trajectories(
     mode = cfg.association_mode.lower()
     if mode in {"interpolate_gt", "gt_interpolate", "interpolate", "vo_timestamps"}:
         return interpolate_gt_to_est_timestamps(gt, est, cfg)
-    if mode in {"nearest", "tum", "tum_greedy", "tum_greedy_timestamp", "associate"}:
-        gt_idx, est_idx, assoc = associate_trajectories(gt, est, cfg.max_time_diff_s, cfg.time_offset_s)
-        assoc["mode"] = "nearest"
-        assoc["target"] = "nearest_timestamp_pairs"
-        assoc["interpolated"] = False
-        gt_eval = subset_trajectory(gt, gt_idx)
-        est_eval = subset_trajectory(est, est_idx)
-        gt_eval.extras["source_index"] = gt_idx
-        est_eval.extras["source_index"] = est_idx
-        return gt_eval, est_eval, assoc
-    if mode in {"index", "index_truncated"}:
-        gt_idx, est_idx, assoc = associate_trajectories(gt, est, None, cfg.time_offset_s)
-        assoc["mode"] = "index"
-        assoc["target"] = "row_index"
-        assoc["interpolated"] = False
-        gt_eval = subset_trajectory(gt, gt_idx)
-        est_eval = subset_trajectory(est, est_idx)
-        gt_eval.extras["source_index"] = gt_idx
-        est_eval.extras["source_index"] = est_idx
-        return gt_eval, est_eval, assoc
     raise ValueError(f"Unknown association mode: {cfg.association_mode}")
 
 
@@ -2426,88 +2265,6 @@ def _gt_coverage_ratio(assoc: dict[str, Any], total_duration_s: float, original_
     return float(used_count / max(1, len(original_gt.positions)))
 
 
-def associate_trajectories(
-    gt: Trajectory,
-    est: Trajectory,
-    max_time_diff_s: float | None,
-    time_offset_s: float = 0.0,
-) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """Associate timestamps using the TUM RGB-D benchmark greedy matching rule.
-
-    TUM's associate.py builds all pairs with abs(t_gt - (t_est + offset))
-    below max_difference, sorts by time difference, then greedily keeps
-    one-to-one matches.
-
-    指标对应：
-    - report["association"]["matches"]：成功匹配数量。
-    - max_time_diff_s / mean_time_diff_s：时间关联质量。
-    - summary 里的 GT/estimate 覆盖率由这里返回的索引数量计算。
-
-    来源对应：
-    - 直接对应 Sturm12 提供的 TUM RGB-D benchmark association 工具口径。
-    - 后续 ATE/RPE 的可比性依赖这个一对一匹配。
-    """
-    if len(gt.stamps) == len(est.stamps):
-        diffs = np.abs(gt.stamps - (est.stamps + time_offset_s))
-        if max_time_diff_s is None or np.nanmax(diffs) <= max_time_diff_s:
-            idx = np.arange(len(gt.stamps), dtype=int)
-            return idx, idx, {
-                "method": "index_equal_length",
-                "matches": int(len(idx)),
-                "time_offset_s": float(time_offset_s),
-                "max_time_diff_s": float(np.nanmax(diffs)) if len(diffs) else 0.0,
-                "mean_time_diff_s": float(np.nanmean(diffs)) if len(diffs) else 0.0,
-            }
-
-    if max_time_diff_s is None:
-        n = min(len(gt.stamps), len(est.stamps))
-        idx = np.arange(n, dtype=int)
-        return idx, idx, {"method": "index_truncated", "matches": int(n), "time_offset_s": float(time_offset_s)}
-
-    potential_matches: list[tuple[float, int, int]] = []
-    shifted_est_stamps = est.stamps + time_offset_s
-    for gt_i, gt_t in enumerate(gt.stamps):
-        left = int(np.searchsorted(shifted_est_stamps, gt_t - max_time_diff_s, side="left"))
-        right = int(np.searchsorted(shifted_est_stamps, gt_t + max_time_diff_s, side="right"))
-        for est_i in range(left, right):
-            diff = abs(float(gt_t - shifted_est_stamps[est_i]))
-            if diff < max_time_diff_s:
-                potential_matches.append((diff, gt_i, est_i))
-    potential_matches.sort(key=lambda item: item[0])
-
-    gt_available = set(range(len(gt.stamps)))
-    est_available = set(range(len(est.stamps)))
-    matches: list[tuple[int, int, float]] = []
-    for diff, gt_i, est_i in potential_matches:
-        if gt_i in gt_available and est_i in est_available:
-            gt_available.remove(gt_i)
-            est_available.remove(est_i)
-            matches.append((gt_i, est_i, diff))
-    matches.sort(key=lambda item: item[0])
-
-    gt_indices = [m[0] for m in matches]
-    est_indices = [m[1] for m in matches]
-    diffs = [m[2] for m in matches]
-
-    if len(gt_indices) < 2 and len(gt.stamps) == len(est.stamps):
-        idx = np.arange(len(gt.stamps), dtype=int)
-        return idx, idx, {
-            "method": "index_equal_length_fallback",
-            "matches": int(len(idx)),
-            "time_offset_s": float(time_offset_s),
-            "warning": "timestamp association found fewer than two matches; fell back to equal-length index pairing",
-        }
-
-    return np.asarray(gt_indices, dtype=int), np.asarray(est_indices, dtype=int), {
-        "method": "tum_greedy_timestamp",
-        "matches": int(len(gt_indices)),
-        "max_allowed_time_diff_s": float(max_time_diff_s),
-        "time_offset_s": float(time_offset_s),
-        "max_time_diff_s": float(np.max(diffs)) if diffs else math.nan,
-        "mean_time_diff_s": float(np.mean(diffs)) if diffs else math.nan,
-    }
-
-
 def compute_alignment(
     gt_pos: np.ndarray,
     est_pos: np.ndarray,
@@ -2537,21 +2294,6 @@ def compute_alignment(
     if mode in {"none", "identity"}:
         # 不对齐模式用于调试原始坐标系；如果 GT/estimate 不在同一坐标系，误差会很大。
         return _alignment_dict(mode, 1.0, np.eye(3), np.zeros(3))
-    if mode in {"first_pose", "first", "origin"}:
-        # 首帧对齐只消除起点坐标差，不用全局最小二乘消除后续漂移；
-        # 适合观察误差是否随距离逐渐累积。
-        scale = 1.0
-        if gt_rot is not None and est_rot is not None:
-            rot = gt_rot[0] @ est_rot[0].T
-        else:
-            rot = np.eye(3)
-        trans = gt_pos[0] - scale * (rot @ est_pos[0])
-        return _alignment_dict("first_pose", scale, rot, trans)
-    if mode in {"se3", "rigid"}:
-        # SE3 固定 scale=1。双目、VIO、带尺度传感器的 estimate 应优先用它，
-        # 因为它不会替算法隐藏尺度错误。
-        scale, rot, trans = umeyama_alignment(est_pos, gt_pos, with_scale=False)
-        return _alignment_dict("se3", scale, rot, trans)
     if mode in {"sim3", "similarity"}:
         # Sim3 允许估计全局尺度。单目无尺度 VO 或其他无尺度 estimate 用它可以评估“轨迹形状”，
         # 但不能证明原始输出已经具备真实米制尺度。
@@ -2696,848 +2438,6 @@ def aggregate_alignment(alignments: list[dict[str, Any]], mode: str) -> dict[str
     }
 
 
-def select_orientation_correction(
-    gt: Trajectory,
-    est: Trajectory,
-    gt_idx: np.ndarray,
-    est_idx: np.ndarray,
-    eval_ranges: list[dict[str, int]],
-    cfg: EvaluationConfig,
-) -> dict[str, Any]:
-    """选择 estimate 姿态修正方式。
-
-    指标对应：
-    - report["orientation_correction"]["selected"] 是最终应用到 estimate 姿态上的修正。
-    - requested="auto" 时，系统会在 AUTO_ORIENTATION_CORRECTION_CANDIDATES 中逐个试算，
-      根据姿态 RMSE、yaw RMSE、RPE 平移和 RPE 旋转组成的 score 选最优候选。
-    - requested="ignore" 时，后续 RPE/子轨迹误差退化为 position-only 口径。
-
-    当前固定入口说明：
-    - sf_vloc 和 sf_vo 都会把 orientation_correction 固定成 none。
-    - 这段 auto/手动修正逻辑保留给 TUM/通用入口和历史数据复查，页面主流程不再暴露这个选项。
-
-    来源对应：
-    - 不是 5 篇论文里的标准指标，是为 ENU/NED、camera-to-body、旋转矩阵方向不一致增加的工程扩展。
-    - 评分里使用的 orientation/RPE 误差来自 Zhang18/Sturm12；坐标约定问题在 Schubert18 这类 VIO 数据中很常见。
-    """
-    requested = normalize_orientation_correction(cfg.orientation_correction)
-    base = {
-        "requested": requested,
-        "selected": requested,
-        "auto": requested == "auto",
-        "available": bool(gt.rotations is not None and est.rotations is not None),
-        "score_metric": "orientation_rmse_deg + 0.25*yaw_rmse_deg + 2*rpe_rotation_rmse_deg + rpe_translation_rmse_m",
-    }
-    if requested == "ignore":
-        # ignore 是明确告诉系统不要使用姿态；位置 ATE 仍然可算，
-        # 但 rotation RPE、rotation_error_deg_per_m、ate_orientation_deg 会缺失或退化。
-        return {**base, "uses_rotations": False, "note": "orientation fields ignored; RPE/segment errors use position-only relative motion"}
-    if gt.rotations is None or est.rotations is None:
-        # 有些 estimate 只输出 xyz，没有姿态。此时不能强行计算旋转误差，
-        # 否则报告会给出没有物理意义的角度指标。
-        return {**base, "selected": "none", "uses_rotations": False, "note": "GT or VO has no orientation; correction skipped"}
-    if requested != "auto":
-        # 手动模式直接信任用户选择。validate 只检查模式合法，不判断好坏。
-        validate_orientation_correction(requested)
-        return {**base, "uses_rotations": True}
-
-    candidates: list[dict[str, Any]] = []
-    for candidate in AUTO_ORIENTATION_CORRECTION_CANDIDATES:
-        # auto 会遍历常见坐标系/外参候选：取逆、ENU/NED、绕轴 180 度等。
-        # 每个候选只快速算姿态/RPE 分数，不生成完整 report，避免页面等待过久。
-        result = score_orientation_correction_candidate(gt, est, gt_idx, est_idx, eval_ranges, cfg, candidate)
-        if result is not None:
-            candidates.append(result)
-    if not candidates:
-        return {**base, "selected": "none", "uses_rotations": True, "note": "no valid orientation correction candidate"}
-
-    best = min(candidates, key=lambda item: item["score"])
-    return {
-        **base,
-        "selected": best["mode"],
-        "uses_rotations": True,
-        "best_score": best["score"],
-        "candidates": candidates,
-    }
-
-
-def score_orientation_correction_candidate(
-    gt: Trajectory,
-    est: Trajectory,
-    gt_idx: np.ndarray,
-    est_idx: np.ndarray,
-    eval_ranges: list[dict[str, int]],
-    cfg: EvaluationConfig,
-    candidate: str,
-) -> dict[str, Any] | None:
-    """给一个姿态修正候选打分，供 auto 模式选择。
-
-    只使用姿态 ATE 和 RPE，不重新计算完整子轨迹表，避免自动选择过慢。
-
-    评分含义：
-    - orientation_rmse_deg: 整体姿态是否和 GT 接近。
-    - yaw_rmse_deg: 航向角是否合理；无人机航向通常很重要，但欧拉 yaw 容易受坐标约定影响。
-    - rpe_rotation_rmse_deg: 相对旋转是否稳定，避免只靠全局姿态 ATE 误选。
-    - rpe_translation_rmse_m: 姿态修正会影响首帧/SE3 对齐和相对运动，因此也纳入少量位置约束。
-
-    指标对应：
-    - 最优候选写入 report["orientation_correction"]["selected"]。
-    - 所有候选分数写入 report["orientation_correction"]["candidates"]，方便报告里复查。
-
-    来源对应：
-    - 候选选择不是论文标准流程；它是把 Zhang18 的姿态误差和 Sturm12 的 RPE 作为可解释评分项。
-    - 目的是避免无人机数据因 ENU/NED 或外参约定不同而把本来可比的姿态误判为算法错误。
-    """
-    orientation_parts: list[np.ndarray] = []
-    yaw_parts: list[np.ndarray] = []
-    rpe_trans_parts: list[np.ndarray] = []
-    rpe_rot_parts: list[np.ndarray] = []
-    for seg in eval_ranges:
-        start = int(seg["start"])
-        end = int(seg["end"])
-        cur_gt_idx = gt_idx[start:end]
-        cur_est_idx = est_idx[start:end]
-        if len(cur_gt_idx) < 2:
-            continue
-        gt_pos = gt.positions[cur_gt_idx]
-        est_pos = est.positions[cur_est_idx]
-        gt_rot = gt.rotations[cur_gt_idx] if gt.rotations is not None else None
-        est_rot_raw = est.rotations[cur_est_idx] if est.rotations is not None else None
-        est_rot = apply_orientation_correction(est_rot_raw, candidate) if est_rot_raw is not None else None
-        if gt_rot is None or est_rot is None:
-            continue
-        # 对每个候选都重新做一次对齐，因为不同姿态修正会影响 first_pose/姿态旋转对齐。
-        alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode=cfg.alignment)
-        est_pos_aligned = apply_alignment(est_pos, alignment)
-        est_rot_aligned = apply_rotation_alignment(est_rot, alignment)
-        if est_rot_aligned is None:
-            continue
-        orientation_parts.append(np.degrees(rotation_errors(gt_rot, est_rot_aligned)))
-        yaw_parts.append(np.abs(np.degrees(wrap_pi(yaw_from_rot(est_rot_aligned) - yaw_from_rot(gt_rot)))))
-        rpe_frame = rpe_frame_dataframe(
-            gt_pos,
-            est_pos_aligned,
-            gt_rot,
-            est_rot_aligned,
-            gt.stamps[cur_gt_idx],
-            segment_id=0,
-            match_indices=np.arange(len(cur_gt_idx), dtype=int),
-            delta=max(1, int(cfg.rpe_delta_frames)),
-            delta_value=cfg.rpe_delta_value,
-            delta_unit=cfg.rpe_delta_unit,
-            distance_tolerance_ratio=cfg.rpe_distance_tolerance_ratio,
-        )
-        rpe_valid = rpe_frame["rpe_available"].to_numpy(dtype=bool) if "rpe_available" in rpe_frame else np.asarray([], dtype=bool)
-        rpe_trans = rpe_frame.loc[rpe_valid, "rpe_translation_m"].to_numpy(dtype=float) if len(rpe_frame) else np.asarray([], dtype=float)
-        rpe_rot = rpe_frame.loc[rpe_valid, "rpe_rotation_deg"].dropna().to_numpy(dtype=float) if len(rpe_frame) else np.asarray([], dtype=float)
-        rpe_trans_parts.append(rpe_trans)
-        if len(rpe_rot):
-            rpe_rot_parts.append(rpe_rot)
-    if not orientation_parts:
-        return None
-
-    orientation = np.concatenate(orientation_parts)
-    yaw = np.concatenate(yaw_parts) if yaw_parts else np.asarray([], dtype=float)
-    rpe_trans = np.concatenate(rpe_trans_parts) if rpe_trans_parts else np.asarray([], dtype=float)
-    rpe_rot = np.concatenate(rpe_rot_parts) if rpe_rot_parts else np.asarray([], dtype=float)
-    orientation_rmse = rmse(orientation)
-    yaw_rmse = rmse(yaw)
-    rpe_trans_rmse = rmse(rpe_trans)
-    rpe_rot_rmse = rmse(rpe_rot)
-    # 权重是经验规则：旋转 RPE 权重大一些，避免选到全局角度看似接近但相对旋转不稳定的候选。
-    # 这不是学习模型，只是一套可解释的确定性评分。
-    score = orientation_rmse + 0.25 * yaw_rmse + 2.0 * rpe_rot_rmse + rpe_trans_rmse
-    return {
-        "mode": candidate,
-        "score": float(score),
-        "orientation_rmse_deg": float(orientation_rmse),
-        "yaw_rmse_deg": float(yaw_rmse),
-        "rpe_translation_rmse_m": float(rpe_trans_rmse),
-        "rpe_rotation_rmse_deg": float(rpe_rot_rmse),
-    }
-
-
-def rmse(values: np.ndarray) -> float:
-    """RMSE 基础函数。
-
-    NaN/Inf 会被忽略；空数组返回 inf，用于 auto 姿态评分时自动排在最后。
-    """
-    arr = np.asarray(values, dtype=float).reshape(-1)
-    arr = arr[np.isfinite(arr)]
-    if len(arr) == 0:
-        return math.inf
-    return float(np.sqrt(np.mean(arr * arr)))
-
-
-def normalize_orientation_correction(mode: str | None) -> str:
-    """把用户输入/前端选项归一化成内部姿态修正关键字。"""
-    normalized = (mode or "none").strip().lower().replace("-", "_").replace(" ", "_")
-    aliases = {
-        "": "none",
-        "off": "none",
-        "identity": "none",
-        "no_correction": "none",
-        "auto_select": "auto",
-        "automatic": "auto",
-        "position_only": "ignore",
-        "ignore_orientation": "ignore",
-        "no_orientation": "ignore",
-        "rt": "inverse",
-        "transpose": "inverse",
-        "ned_enu_left": "enu_ned_left",
-        "ned_enu_right": "enu_ned_right",
-        "ned_enu_both": "enu_ned_both",
-        "rz180": "rz180_right",
-        "z180": "rz180_right",
-    }
-    return aliases.get(normalized, normalized)
-
-
-def validate_orientation_correction(mode: str) -> None:
-    """检查姿态修正模式是否合法。
-
-    这里不判断某个模式是否适合当前数据，只保证 apply_orientation_correction()
-    后续可以找到对应矩阵操作。
-    """
-    if mode in {"none", "auto", "ignore", "inverse"}:
-        return
-    pure = mode.removesuffix("_inverse")
-    if pure in {
-        "enu_ned_left",
-        "enu_ned_right",
-        "enu_ned_both",
-        "rx180_left",
-        "rx180_right",
-        "ry180_left",
-        "ry180_right",
-        "rz180_left",
-        "rz180_right",
-    }:
-        return
-    raise ValueError(f"Unknown orientation_correction mode: {mode}")
-
-
-def apply_orientation_correction(rotations: np.ndarray | None, mode: str) -> np.ndarray | None:
-    """把 estimate 姿态从其输出约定修正到评估使用的姿态约定。
-
-    left 表示 M @ R，常用于世界坐标轴转换；right 表示 R @ M，常用于相机系到机体系外参；
-    both 表示 M @ R @ M.T，常用于同一个旋转矩阵两侧坐标基变换。
-    """
-    if rotations is None:
-        return None
-    normalized = normalize_orientation_correction(mode)
-    validate_orientation_correction(normalized)
-    if normalized in {"none", "auto"}:
-        return rotations
-    if normalized == "ignore":
-        return None
-
-    out = np.asarray(rotations, dtype=float)
-    if normalized == "inverse":
-        # 有些数据保存的是 body->world，有些保存的是 world->body；取逆用于修正方向相反的旋转定义。
-        return np.transpose(out, (0, 2, 1))
-
-    use_inverse = normalized.endswith("_inverse")
-    pure = normalized.removesuffix("_inverse")
-    if use_inverse:
-        out = np.transpose(out, (0, 2, 1))
-
-    if pure.startswith("enu_ned"):
-        # ENU/NED 是无人机和机器人数据中最常见的世界坐标约定差异。
-        matrix = enu_ned_matrix()
-    elif pure.startswith("rx180"):
-        matrix = axis_flip_matrix("x")
-    elif pure.startswith("ry180"):
-        matrix = axis_flip_matrix("y")
-    elif pure.startswith("rz180"):
-        matrix = axis_flip_matrix("z")
-    else:
-        raise ValueError(f"Unknown orientation_correction mode: {mode}")
-
-    if pure.endswith("_left"):
-        # 左乘：改变世界/参考坐标轴。
-        return np.einsum("ij,njk->nik", matrix, out)
-    if pure.endswith("_right"):
-        # 右乘：改变机体/相机自身坐标轴，常用于 camera-to-body 外参。
-        return np.einsum("nij,jk->nik", out, matrix)
-    if pure.endswith("_both"):
-        # 两侧变换：同一个旋转矩阵在两套坐标基之间表达。
-        return np.einsum("ij,njk,kl->nil", matrix, out, matrix.T)
-    raise ValueError(f"Unknown orientation_correction mode: {mode}")
-
-
-def enu_ned_matrix() -> np.ndarray:
-    """ENU/NED 世界坐标轴转换矩阵：交换 x/y，并翻转 z。"""
-    return np.asarray([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]], dtype=float)
-
-
-def axis_flip_matrix(axis: str) -> np.ndarray:
-    """绕 x/y/z 轴旋转 180 度的固定外参候选。"""
-    if axis == "x":
-        return np.diag([1.0, -1.0, -1.0])
-    if axis == "y":
-        return np.diag([-1.0, 1.0, -1.0])
-    if axis == "z":
-        return np.diag([-1.0, -1.0, 1.0])
-    raise ValueError(f"Unknown axis: {axis}")
-
-
-def rpe_error_arrays_by_time(
-    gt_pos: np.ndarray,
-    est_pos: np.ndarray,
-    gt_rot: np.ndarray | None,
-    est_rot: np.ndarray | None,
-    stamps: np.ndarray,
-    delta_s: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """固定时间间隔 RPE。
-
-    对每个起点 i，寻找时间最接近 stamps[i] + delta_s 的终点 j。
-    这比固定帧数更适合不均匀时间戳、丢帧或 VO 输出频率变化的数据。
-    """
-    if len(stamps) < 2 or delta_s <= 0:
-        return np.asarray([], dtype=float), np.asarray([], dtype=float)
-    stamps = np.asarray(stamps, dtype=float)
-    trans_errors: list[float] = []
-    rot_errors: list[float] = []
-    for i, stamp in enumerate(stamps[:-1]):
-        target = stamp + delta_s
-        j = nearest_time_index(stamps, i, target)
-        if j <= i:
-            continue
-        terr, rerr = relative_error(gt_pos, est_pos, gt_rot, est_rot, i, j)
-        trans_errors.append(terr)
-        if rerr is not None:
-            rot_errors.append(rerr)
-    return np.asarray(trans_errors, dtype=float), np.asarray(rot_errors, dtype=float)
-
-
-def nearest_time_index(stamps: np.ndarray, start_idx: int, target: float) -> int:
-    """从 start_idx 后面找到最接近目标时间的索引。"""
-    left = int(np.searchsorted(stamps, target, side="left"))
-    candidates = [idx for idx in (left - 1, left, left + 1) if start_idx < idx < len(stamps)]
-    if not candidates:
-        return -1
-    return min(candidates, key=lambda idx: abs(float(stamps[idx] - target)))
-
-
-def summarize_time_rpe(
-    trans_parts: dict[float, list[np.ndarray]],
-    rot_parts: dict[float, list[np.ndarray]],
-) -> dict[str, Any]:
-    """汇总固定时间间隔 RPE，输出 report["rpe_time_delta"]。"""
-    out: dict[str, Any] = {}
-    for delta_s in sorted(trans_parts):
-        trans = np.concatenate(trans_parts[delta_s]) if trans_parts[delta_s] else np.asarray([], dtype=float)
-        rot = np.concatenate(rot_parts.get(delta_s, [])) if rot_parts.get(delta_s) else np.asarray([], dtype=float)
-        out[f"{delta_s:g}s"] = {
-            "delta_s": float(delta_s),
-            "count": int(len(trans)),
-            "translation_m": describe(trans),
-            "rotation_deg": describe(rot) if len(rot) else None,
-        }
-    return out
-
-
-def compute_global_ate(
-    gt: Trajectory,
-    est: Trajectory,
-    used_gt_idx: np.ndarray,
-    used_est_idx: np.ndarray,
-    orientation_correction: str,
-    mode: str = "sim3",
-) -> dict[str, Any]:
-    """对所有已使用匹配点做一次全局对齐 ATE。
-
-    segment-wise Sim3 可以评估每个连续段形状，但会掩盖跨 reset 的坐标不连续；
-    global Sim3 使用一个统一尺度/旋转/平移，更适合判断整条航线是否能被一个尺度解释。
-    """
-    gt_pos = gt.positions[used_gt_idx]
-    est_pos = est.positions[used_est_idx]
-    gt_rot = gt.rotations[used_gt_idx] if gt.rotations is not None else None
-    est_rot_raw = est.rotations[used_est_idx] if est.rotations is not None else None
-    est_rot = apply_orientation_correction(est_rot_raw, orientation_correction) if est_rot_raw is not None else None
-    if orientation_correction == "ignore":
-        gt_rot = None
-        est_rot = None
-    alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode=mode)
-    est_pos_aligned = apply_alignment(est_pos, alignment)
-    errors = est_pos_aligned - gt_pos
-    pos_error_m = np.linalg.norm(errors, axis=1)
-    return {
-        "alignment": alignment,
-        "position_m": describe(pos_error_m),
-        "horizontal_m": describe(np.linalg.norm(errors[:, :2], axis=1)),
-        "vertical_abs_m": describe(np.abs(errors[:, 2])),
-        "vertical_signed_m": describe(errors[:, 2]),
-    }
-
-
-def build_ate_report(
-    segment_wise_pos_error_m: np.ndarray,
-    global_sim3_ate: dict[str, Any],
-    cfg: EvaluationConfig,
-    alignment: dict[str, Any],
-) -> dict[str, Any]:
-    """构造新的 ATE 结构，明确区分分段对齐和全局对齐。"""
-    is_segment_wise = cfg.continuous_segment_policy == "segments" and cfg.alignment.lower() in {"sim3", "similarity"}
-    primary_label = "segment-wise Sim3 ATE" if is_segment_wise else f"{cfg.alignment.upper()} ATE"
-    warning = None
-    if is_segment_wise:
-        warning = "segment-wise Sim3 ATE only evaluates each continuous segment shape; it may hide cross-reset discontinuity and scale inconsistency."
-    return {
-        "primary_label": primary_label,
-        "primary_position_m": describe(segment_wise_pos_error_m),
-        "segment_wise": {
-            "alignment_mode": alignment.get("base_mode") or alignment.get("mode"),
-            "position_m": describe(segment_wise_pos_error_m),
-        },
-        "global": {
-            "sim3": global_sim3_ate,
-        },
-        "global_sim3_ate_position_m": global_sim3_ate.get("position_m"),
-        "segment_wise_sim3_ate_position_m": describe(segment_wise_pos_error_m) if cfg.alignment.lower() in {"sim3", "similarity"} else None,
-        "warning": warning,
-    }
-
-
-def segment_errors(
-    gt_pos: np.ndarray,
-    est_pos_aligned: np.ndarray,
-    est_pos_raw: np.ndarray,
-    gt_rot: np.ndarray | None,
-    est_rot: np.ndarray | None,
-    stamps: np.ndarray,
-    lengths_m: Iterable[float],
-    max_segments_per_length: int = 10000,
-    step_frames: int = 10,
-    max_length_diff_ratio: float = 0.05,
-) -> dict[str, Any]:
-    """按距离的 KITTI/rpg 风格子轨迹误差。
-
-    这是物流无人机长航程最重要的漂移指标之一：
-    - length_m: 目标子轨迹长度 L。
-    - translation_error_percent: 100 * 相对位移误差 / actual_length_m。
-    - rotation_error_deg_per_m: 姿态相对误差除以 actual_length_m。
-    - raw_scale_ratio_est_over_gt: 原始 VO 段路程 / GT 实际段路程。
-    - aligned_scale_ratio_est_over_gt: 对齐后 VO 段路程 / GT 实际段路程。
-
-    计算口径：
-    - 先按 GT 累计路程找到起点 i 和目标终点 j，使 GT 路程约等于 L。
-    - 再比较 i->j 的 GT 相对运动和 VO 相对运动。
-    - 每个长度 L 会抽很多段，最后用 describe() 汇总成 mean/p95/max 等统计。
-
-    指标解释：
-    - 短距离 L 偏高：通常是前端跟踪、RANSAC、图像质量或运动模糊问题。
-    - 长距离 L 偏高：通常是累计漂移、尺度、后端约束或闭环/重定位能力问题。
-
-    来源对应：
-    - translation_error_percent 和 rotation_error_deg_per_m 直接对应 Geiger12/KITTI odometry 的子轨迹漂移口径。
-    - scale_ratio_est_over_gt / scale_drift_percent 是 Zhang18/rpg 相对误差和尺度可观性思想下的扩展。
-    - 本系统把 KITTI 常用车载长度扩展到 1000m、2000m、5000m 等物流无人机长航程长度。
-    """
-    cumulative = path_distance(gt_pos)
-    total_length = cumulative[-1] if len(cumulative) else 0.0
-    records: list[dict[str, float]] = []
-    summaries: list[dict[str, Any]] = []
-
-    for length in sorted({float(x) for x in lengths_m if float(x) > 0}):
-        if length > total_length:
-            # 轨迹总长不够时不能强行统计该长度，否则会让长航程指标失真。
-            continue
-        step = max(1, int(step_frames))
-        candidate_starts = np.arange(0, len(gt_pos) - 1, step, dtype=int)
-        if len(candidate_starts) > max_segments_per_length:
-            # 长轨迹可能有几十万帧，这里通过抽样限制计算量；
-            # 抽样只减少样本数量，不改变单个子轨迹误差公式。
-            stride = int(math.ceil(len(candidate_starts) / max_segments_per_length))
-            candidate_starts = candidate_starts[::stride]
-        length_records: list[dict[str, float]] = []
-        for i in candidate_starts:
-            target = cumulative[i] + length
-            max_diff_m = max(10.0, length * max(0.0, max_length_diff_ratio))
-            j = find_segment_end(cumulative, i, target, max_diff_m)
-            if j >= len(gt_pos) or j <= i:
-                continue
-            actual_length = float(cumulative[j] - cumulative[i])
-            if actual_length <= 0:
-                continue
-            # terr/rerr 是该固定距离子轨迹的核心误差；百分比使用 actual_length，
-            # 避免 1000m 目标段实际只有 900m 时仍按 1000m 分母低估误差。
-            terr, rerr = relative_error(gt_pos, est_pos_aligned, gt_rot, est_rot, i, j)
-            duration = float(stamps[j] - stamps[i]) if len(stamps) else math.nan
-            speed = actual_length / duration if duration > 0 else math.nan
-            raw_est_segment = float(path_distance(est_pos_raw[i : j + 1])[-1])
-            aligned_est_segment = float(path_distance(est_pos_aligned[i : j + 1])[-1])
-            raw_scale_ratio = raw_est_segment / actual_length if actual_length > 0 else math.nan
-            aligned_scale_ratio = aligned_est_segment / actual_length if actual_length > 0 else math.nan
-            gt_delta_world = gt_pos[j] - gt_pos[i]
-            est_delta_world = est_pos_aligned[j] - est_pos_aligned[i]
-            delta_error_world = est_delta_world - gt_delta_world
-            horizontal_error_m = float(np.linalg.norm(delta_error_world[:2]))
-            vertical_error_signed_m = float(delta_error_world[2])
-            vertical_error_abs_m = abs(vertical_error_signed_m)
-            yaw_error_signed_deg = math.nan
-            yaw_error_abs_deg = math.nan
-            yaw_error_deg_per_m = math.nan
-            if gt_rot is not None and est_rot is not None:
-                gt_r_rel, _ = relative_pose(gt_rot[i], gt_pos[i], gt_rot[j], gt_pos[j])
-                est_r_rel, _ = relative_pose(est_rot[i], est_pos_aligned[i], est_rot[j], est_pos_aligned[j])
-                yaw_error_signed = float(wrap_pi(yaw_from_rot(est_r_rel[np.newaxis, :, :]) - yaw_from_rot(gt_r_rel[np.newaxis, :, :]))[0])
-                yaw_error_signed_deg = float(np.degrees(yaw_error_signed))
-                yaw_error_abs_deg = abs(yaw_error_signed_deg)
-                yaw_error_deg_per_m = yaw_error_abs_deg / actual_length if actual_length > 0 else math.nan
-            rec = {
-                "length_m": float(length),
-                "start_index": float(i),
-                "end_index": float(j),
-                "start_time_s": float(stamps[i]) if len(stamps) else math.nan,
-                "end_time_s": float(stamps[j]) if len(stamps) else math.nan,
-                "duration_s": float(duration),
-                "start_distance_m": float(cumulative[i]),
-                "end_distance_m": float(cumulative[j]),
-                "actual_length_m": actual_length,
-                "length_diff_m": float(actual_length - length),
-                "translation_error_m": float(terr),
-                "translation_error_percent": float(100.0 * terr / actual_length),
-                "horizontal_translation_error_m": horizontal_error_m,
-                "horizontal_translation_error_percent": float(100.0 * horizontal_error_m / actual_length),
-                "vertical_error_signed_m": vertical_error_signed_m,
-                "vertical_error_abs_m": vertical_error_abs_m,
-                "vertical_error_percent_of_length": float(100.0 * vertical_error_abs_m / actual_length),
-                "rotation_error_deg": float(np.degrees(rerr)) if rerr is not None else math.nan,
-                "rotation_error_deg_per_m": float(np.degrees(rerr) / actual_length) if rerr is not None else math.nan,
-                "segment_yaw_error_signed_deg": yaw_error_signed_deg,
-                "segment_yaw_error_abs_deg": yaw_error_abs_deg,
-                "segment_yaw_error_deg_per_m": yaw_error_deg_per_m,
-                "speed_mps": float(speed),
-                "raw_scale_ratio_est_over_gt": float(raw_scale_ratio),
-                "raw_scale_drift_percent": float((raw_scale_ratio - 1.0) * 100.0) if math.isfinite(raw_scale_ratio) else math.nan,
-                "aligned_scale_ratio_est_over_gt": float(aligned_scale_ratio),
-                "aligned_scale_drift_percent": float((aligned_scale_ratio - 1.0) * 100.0) if math.isfinite(aligned_scale_ratio) else math.nan,
-                "scale_ratio_est_over_gt": float(raw_scale_ratio),
-                "scale_drift_percent": float((raw_scale_ratio - 1.0) * 100.0) if math.isfinite(raw_scale_ratio) else math.nan,
-            }
-            length_records.append(rec)
-            records.append(rec)
-        if length_records:
-            frame = pd.DataFrame(length_records)
-            summaries.append(
-                {
-                    "length_m": float(length),
-                    "count": int(len(frame)),
-                    "translation_error_percent": describe(frame["translation_error_percent"].to_numpy()),
-                    "translation_error_m": describe(frame["translation_error_m"].to_numpy()),
-                    "horizontal_translation_error_m": describe_clean(frame, "horizontal_translation_error_m"),
-                    "horizontal_translation_error_percent": describe_clean(frame, "horizontal_translation_error_percent"),
-                    "vertical_error_signed_m": describe_clean(frame, "vertical_error_signed_m"),
-                    "vertical_error_abs_m": describe_clean(frame, "vertical_error_abs_m"),
-                    "vertical_error_percent_of_length": describe_clean(frame, "vertical_error_percent_of_length"),
-                    "rotation_error_deg_per_m": describe(frame["rotation_error_deg_per_m"].replace([np.inf, -np.inf], np.nan).dropna().to_numpy()),
-                    "segment_yaw_error_signed_deg": describe_clean(frame, "segment_yaw_error_signed_deg"),
-                    "segment_yaw_error_abs_deg": describe_clean(frame, "segment_yaw_error_abs_deg"),
-                    "segment_yaw_error_deg_per_m": describe_clean(frame, "segment_yaw_error_deg_per_m"),
-                    "raw_scale_ratio_est_over_gt": describe_clean(frame, "raw_scale_ratio_est_over_gt"),
-                    "raw_scale_drift_percent": describe_clean(frame, "raw_scale_drift_percent"),
-                    "aligned_scale_ratio_est_over_gt": describe_clean(frame, "aligned_scale_ratio_est_over_gt"),
-                    "aligned_scale_drift_percent": describe_clean(frame, "aligned_scale_drift_percent"),
-                    "scale_ratio_est_over_gt": describe_clean(frame, "raw_scale_ratio_est_over_gt"),
-                    "scale_drift_percent": describe_clean(frame, "raw_scale_drift_percent"),
-                }
-            )
-    records_frame = pd.DataFrame(records)
-    return {"summary": summaries or summarize_segment_records(records_frame), "records": records_frame}
-
-
-def summarize_segment_records(records: pd.DataFrame) -> list[dict[str, Any]]:
-    """按子轨迹目标长度聚合 segment_records。
-
-    指标对应：
-    - translation_error_percent: 长距离漂移百分比，物流无人机长航程重点看。
-    - rotation_error_deg_per_m: 每米旋转误差。
-    - scale_ratio_est_over_gt / scale_drift_percent: 分段尺度和尺度漂移。
-
-    代码意义：
-    - segment_records 是“每一个子轨迹样本”的明细表。
-    - segment_errors 是“按 length_m 聚合后的统计表”，页面图表和报告主表主要看它。
-    - 每个误差数组都通过 describe() 生成 count/rmse/mean/median/std/min/max/p95/p99。
-
-    来源对应：
-    - 聚合维度 length_m 来自 Geiger12/KITTI 按固定路径长度汇总误差的设计。
-    - describe() 的统计项用于报告展示；其中 RMSE 是 Sturm12/Zhang18 常见的轨迹误差汇总方式。
-    """
-    if records.empty or "length_m" not in records:
-        return []
-    summaries: list[dict[str, Any]] = []
-    for length, frame in records.groupby("length_m", sort=True):
-        summaries.append(
-            {
-                "length_m": float(length),
-                "count": int(len(frame)),
-                "translation_error_percent": describe(frame["translation_error_percent"].to_numpy()),
-                "translation_error_m": describe(frame["translation_error_m"].to_numpy()),
-                "horizontal_translation_error_m": describe_clean(frame, "horizontal_translation_error_m"),
-                "horizontal_translation_error_percent": describe_clean(frame, "horizontal_translation_error_percent"),
-                "vertical_error_signed_m": describe_clean(frame, "vertical_error_signed_m"),
-                "vertical_error_abs_m": describe_clean(frame, "vertical_error_abs_m"),
-                "vertical_error_percent_of_length": describe_clean(frame, "vertical_error_percent_of_length"),
-                "rotation_error_deg_per_m": describe_clean(frame, "rotation_error_deg_per_m"),
-                "segment_yaw_error_signed_deg": describe_clean(frame, "segment_yaw_error_signed_deg"),
-                "segment_yaw_error_abs_deg": describe_clean(frame, "segment_yaw_error_abs_deg"),
-                "segment_yaw_error_deg_per_m": describe_clean(frame, "segment_yaw_error_deg_per_m"),
-                "raw_scale_ratio_est_over_gt": describe_clean(frame, "raw_scale_ratio_est_over_gt"),
-                "raw_scale_drift_percent": describe_clean(frame, "raw_scale_drift_percent"),
-                "aligned_scale_ratio_est_over_gt": describe_clean(frame, "aligned_scale_ratio_est_over_gt"),
-                "aligned_scale_drift_percent": describe_clean(frame, "aligned_scale_drift_percent"),
-                "scale_ratio_est_over_gt": describe_clean(frame, "raw_scale_ratio_est_over_gt"),
-                "scale_drift_percent": describe_clean(frame, "raw_scale_drift_percent"),
-            }
-        )
-    return summaries
-
-
-def describe_clean(frame: pd.DataFrame, column: str) -> dict[str, float | int] | None:
-    """对 DataFrame 某列做 describe()，自动过滤 inf/nan 和缺失列。"""
-    if column not in frame:
-        return None
-    values = frame[column].replace([np.inf, -np.inf], np.nan).dropna().to_numpy()
-    return describe(values)
-
-
-def find_segment_end(cumulative: np.ndarray, start_idx: int, target_distance: float, max_diff: float) -> int:
-    """为 KITTI/rpg 风格子轨迹寻找最接近目标长度的终点。
-
-    代码意义：
-    - cumulative 是 GT 累计路程。
-    - 给定起点 start_idx 和目标路程 target_distance，找最接近的终点 j。
-    - max_diff 控制实际长度和目标长度允许偏差，避免把 800m 段误当成 1000m 段。
-
-    指标影响：
-    - 如果找不到合格终点，该子轨迹样本会被跳过。
-    - max_segment_length_diff_ratio 过严时，长距离子轨迹样本数可能变少。
-
-    来源对应：
-    - 按累计路程寻找固定长度子轨迹来自 Geiger12/KITTI odometry 评估思想。
-    - 长度容差是工程扩展，避免无人机/稀疏轨迹采样时误把长度不合格的段纳入统计。
-    """
-    left = int(np.searchsorted(cumulative, target_distance, side="left"))
-    candidates = [idx for idx in (left - 1, left, left + 1) if start_idx < idx < len(cumulative)]
-    if not candidates:
-        return -1
-    best = min(candidates, key=lambda idx: abs(float(cumulative[idx] - target_distance)))
-    if abs(float(cumulative[best] - target_distance)) > max_diff:
-        return -1
-    return best
-
-
-def summarize_by_speed_bins(records: pd.DataFrame, bins: Iterable[float]) -> list[dict[str, Any]]:
-    """速度分箱误差。
-
-    segment_errors() 已经给每个子轨迹记录了 speed_mps，这里按速度区间聚合，
-    用于观察高速/低速飞行时 VO 漂移是否不同。
-
-    指标对应：
-    - speed_bins[*].translation_error_percent: 不同速度下的平移漂移。
-    - speed_bins[*].rotation_error_deg_per_m: 不同速度下的旋转漂移。
-
-    解释方式：
-    - 高速段误差高：常见原因是运动模糊、曝光、滚快门或特征跟踪跟不上。
-    - 低速/悬停段误差高：常见原因是视差不足、弱纹理或初始化/尺度退化。
-
-    来源对应：
-    - 直接参考 Geiger12/KITTI 的 error-vs-speed 分析方式。
-    - 无人机没有“车速”语义限制，所以这里用子轨迹平均速度 speed_mps 做泛化。
-    """
-    if records.empty or "speed_mps" not in records:
-        return []
-    clean = records.replace([np.inf, -np.inf], np.nan).dropna(subset=["speed_mps", "translation_error_percent"])
-    if clean.empty:
-        return []
-    bin_values = list(bins)
-    if len(bin_values) < 2:
-        return []
-    labels: list[str] = []
-    for left, right in zip(bin_values[:-1], bin_values[1:]):
-        right_label = "inf" if math.isinf(right) else f"{right:g}"
-        labels.append(f"{left:g}-{right_label}")
-    clean = clean.copy()
-    # pd.cut 采用左闭右开区间 [left, right)，这样 5m/s 会进入 5-10 而不是 0-5。
-    clean["speed_bin_mps"] = pd.cut(clean["speed_mps"], bins=bin_values, labels=labels, include_lowest=True, right=False)
-    out: list[dict[str, Any]] = []
-    for label, group in clean.groupby("speed_bin_mps", observed=True):
-        out.append(
-            {
-                "speed_bin_mps": str(label),
-                "count": int(len(group)),
-                "translation_error_percent": describe(group["translation_error_percent"].to_numpy()),
-                "rotation_error_deg_per_m": describe(group["rotation_error_deg_per_m"].dropna().to_numpy()),
-            }
-        )
-    return out
-
-
-def summarize_runtime(est: Trajectory, est_idx: np.ndarray) -> dict[str, Any] | None:
-    """运行资源统计。
-
-    如果 estimate extras 中包含 process_time_ms、fps、cpu_percent、memory_mb 等字段，
-    这里会按实际参与评估的 estimate 帧做 describe() 汇总，对应 report["runtime"]。
-
-    代码意义：
-    - runtime 字段不是轨迹格式必需字段，因此只在 extras 中存在时才统计。
-    - est_idx 只取实际参与评估的 estimate 帧，避免把未匹配的开机/落地前后日志纳入运行统计。
-
-    指标解释：
-    - process_time_ms / latency_ms 高：算法可能无法实时运行。
-    - fps 低或波动大：长航程部署可能掉帧，进一步影响 VO 稳定性。
-    - memory/cpu 高：边缘设备部署风险更高。
-
-    来源对应：
-    - Delmerico18 飞行机器人 VIO benchmark 明确把每帧处理时间、CPU、内存负载作为部署相关维度。
-    - 这些字段不是 Sturm12/KITTI 的轨迹几何误差，但对物流无人机上线同样关键。
-    """
-    runtime_keys = {
-        "process_time_ms",
-        "processing_time_ms",
-        "frame_time_ms",
-        "latency_ms",
-        "cpu_percent",
-        "memory_percent",
-        "memory_mb",
-        "fps",
-    }
-    out: dict[str, Any] = {}
-    for key, values in est.extras.items():
-        if key not in runtime_keys:
-            continue
-        try:
-            arr = np.asarray(values, dtype=float)[est_idx]
-        except Exception:
-            continue
-        out[key] = describe(arr)
-    return out or None
-
-
-def detect_divergence(
-    errors_m: np.ndarray,
-    cumulative_m: np.ndarray,
-    abs_threshold_m: float,
-    rel_threshold_percent: float,
-    stamps: np.ndarray,
-    min_distance_m: float = 0.0,
-    min_time_s: float = 0.0,
-    discontinuities: dict[str, Any] | None = None,
-    segment_summary: list[dict[str, Any]] | None = None,
-    alignment: dict[str, Any] | None = None,
-    summary: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """发散检测。
-
-    阈值取 max(绝对阈值, 当前累计路程 * 相对阈值百分比)，
-    第一个超过阈值的点就是页面提示的“首次发散”。
-
-    指标对应：
-    - divergence.diverged: 是否触发。
-    - first_divergence_distance_m: 第一次触发时已经飞过的路程。
-    - first_divergence_error_m: 第一次触发时的误差。
-    - max_error_m/final_error_m: 最坏误差和终点误差。
-
-    为什么同时用绝对阈值和相对阈值：
-    - 起飞初期累计路程很短，只用相对阈值会过于严格。
-    - 长航程后只用固定米级阈值又不能体现“误差占路程比例”。
-
-    来源对应：
-    - 这是工程扩展，5 篇论文没有统一发散阈值公式。
-    - 设计动机来自 Schubert18/TUM VI 与 Delmerico18 对长序列 VIO 鲁棒性、跟踪失败和飞行可用性的关注。
-    """
-    if len(errors_m) == 0:
-        return {"diverged": False, "metric_divergence": {"diverged": False}}
-    # 动态阈值随路程增长；例如 2% 路程在 1000m 处就是 20m。
-    dynamic_threshold = np.maximum(abs_threshold_m, cumulative_m * rel_threshold_percent / 100.0)
-    elapsed = stamps - stamps[0] if len(stamps) else np.asarray([], dtype=float)
-    valid = (cumulative_m >= min_distance_m) & (elapsed >= min_time_s)
-    exceeded = np.flatnonzero(valid & (errors_m > dynamic_threshold))
-    ignored_prefix = int(np.count_nonzero(~valid))
-    metric_result: dict[str, Any] = {
-        "diverged": bool(len(exceeded)),
-        "abs_threshold_m": float(abs_threshold_m),
-        "rel_threshold_percent": float(rel_threshold_percent),
-        "min_distance_m": float(min_distance_m),
-        "min_time_s": float(min_time_s),
-        "ignored_prefix_samples": ignored_prefix,
-        "max_error_m": float(np.nanmax(errors_m)),
-        "final_error_m": float(errors_m[-1]),
-    }
-    if len(exceeded):
-        idx = int(exceeded[0])
-        metric_result.update(
-            {
-                "first_divergence_index": idx,
-                "first_divergence_time_s": float(stamps[idx]),
-                "first_divergence_distance_m": float(cumulative_m[idx]),
-                "first_divergence_error_m": float(errors_m[idx]),
-                "threshold_at_divergence_m": float(dynamic_threshold[idx]),
-            }
-        )
-    tracking_result = classify_tracking_failure(discontinuities)
-    scale_result = classify_scale_divergence(segment_summary or [], alignment or {}, summary or {})
-    return {
-        **metric_result,
-        "tracking_failure": tracking_result,
-        "metric_divergence": metric_result,
-        "scale_divergence": scale_result,
-        "diverged": bool(metric_result["diverged"] or tracking_result["diverged"] or scale_result["diverged"]),
-    }
-
-
-def classify_tracking_failure(discontinuities: dict[str, Any] | None) -> dict[str, Any]:
-    """基于断点和时间 gap 判断是否存在跟踪连续性问题。"""
-    if not discontinuities:
-        return {"diverged": False, "break_count": 0}
-    breaks = discontinuities.get("breaks") or []
-    max_gap = max((float(item.get("time_gap_s", 0.0)) for item in breaks), default=0.0)
-    return {
-        "diverged": bool(discontinuities.get("break_count", 0) > 0),
-        "break_count": int(discontinuities.get("break_count", 0)),
-        "max_time_gap_s": float(max_gap),
-        "reason": "VO reset/gap detected" if discontinuities.get("break_count", 0) > 0 else "no break detected",
-    }
-
-
-def classify_scale_divergence(
-    segment_summary: list[dict[str, Any]],
-    alignment: dict[str, Any],
-    summary: dict[str, Any],
-) -> dict[str, Any]:
-    """基于 raw scale、分段 scale 和 Sim3 scale 范围判断尺度是否失控。"""
-    raw_ratio = float(summary.get("raw_path_scale_ratio_est_over_gt", math.nan))
-    raw_ratio_bad = math.isfinite(raw_ratio) and (raw_ratio < 0.8 or raw_ratio > 1.25)
-    scale = float(alignment.get("scale", math.nan))
-    scale_min = float(alignment.get("scale_min", math.nan))
-    scale_max = float(alignment.get("scale_max", math.nan))
-    sim3_range_percent = math.nan
-    if math.isfinite(scale) and scale != 0 and math.isfinite(scale_min) and math.isfinite(scale_max):
-        sim3_range_percent = 100.0 * (scale_max - scale_min) / abs(scale)
-    worst_raw_drift = max(
-        (
-            abs(float((row.get("raw_scale_drift_percent") or {}).get("p95", math.nan)))
-            for row in segment_summary
-            if row.get("raw_scale_drift_percent") is not None
-        ),
-        default=math.nan,
-    )
-    raw_drift_bad = math.isfinite(worst_raw_drift) and worst_raw_drift > 20.0
-    sim3_range_bad = math.isfinite(sim3_range_percent) and sim3_range_percent > 15.0
-    return {
-        "diverged": bool(raw_ratio_bad or raw_drift_bad or sim3_range_bad),
-        "raw_path_scale_ratio_est_over_gt": raw_ratio,
-        "sim3_scale_range_percent": sim3_range_percent,
-        "worst_raw_scale_drift_p95_percent": worst_raw_drift,
-        "raw_path_ratio_flag": bool(raw_ratio_bad),
-        "raw_segment_drift_flag": bool(raw_drift_bad),
-        "sim3_segment_scale_flag": bool(sim3_range_bad),
-    }
-
-
 def detect_associated_discontinuities(
     stamps: np.ndarray,
     gt_pos: np.ndarray,
@@ -3620,94 +2520,6 @@ def detect_associated_discontinuities(
         "segments": segments,
         "segment_ids": segment_ids,
     }
-
-
-def summarize_continuity(
-    discontinuities: dict[str, Any],
-    stamps: np.ndarray,
-    gt_pos: np.ndarray,
-    total_gt_path_m: float,
-) -> dict[str, Any]:
-    """连续性 summary：长航程调参优先看断点、最长连续段和 reset/km。"""
-    segments = discontinuities.get("segments") or []
-    if not len(stamps) or not segments:
-        return {
-            "longest_continuous_segment_m": 0.0,
-            "longest_continuous_segment_s": 0.0,
-            "longest_continuous_segment_pose_count": 0,
-            "reset_rate_per_km": math.nan,
-            "reset_rate_per_hour": math.nan,
-            "coverage_time_ratio": 0.0,
-            "coverage_distance_ratio": 0.0,
-        }
-    cumulative = path_distance(gt_pos)
-    segment_infos: list[dict[str, Any]] = []
-    for seg in segments:
-        start = int(seg["start"])
-        end = int(seg["end"])
-        if end <= start:
-            continue
-        distance_m = float(cumulative[end - 1] - cumulative[start]) if end - 1 < len(cumulative) else 0.0
-        duration_s = float(stamps[end - 1] - stamps[start]) if end - 1 < len(stamps) else 0.0
-        info = {
-            "start_index": start,
-            "end_index": end,
-            "pose_count": int(end - start),
-            "distance_m": distance_m,
-            "duration_s": duration_s,
-        }
-        segment_infos.append(info)
-    longest = max(segment_infos, key=lambda item: item["distance_m"], default={"distance_m": 0.0, "duration_s": 0.0, "pose_count": 0})
-    total_duration_h = (float(stamps[-1] - stamps[0]) / 3600.0) if len(stamps) > 1 else 0.0
-    break_count = int(discontinuities.get("break_count", 0))
-    total_distance_km = total_gt_path_m / 1000.0 if total_gt_path_m > 0 else 0.0
-    return {
-        "longest_continuous_segment_m": float(longest["distance_m"]),
-        "longest_continuous_segment_s": float(longest["duration_s"]),
-        "longest_continuous_segment_pose_count": int(longest["pose_count"]),
-        "reset_rate_per_km": float(break_count / total_distance_km) if total_distance_km > 0 else math.nan,
-        "reset_rate_per_hour": float(break_count / total_duration_h) if total_duration_h > 0 else math.nan,
-        "coverage_time_ratio": float(sum(item["duration_s"] for item in segment_infos) / (stamps[-1] - stamps[0])) if len(stamps) > 1 and stamps[-1] > stamps[0] else 1.0,
-        "coverage_distance_ratio": float(sum(item["distance_m"] for item in segment_infos) / total_gt_path_m) if total_gt_path_m > 0 else 1.0,
-        "segments": segment_infos,
-    }
-
-
-def build_worst_segments(records: pd.DataFrame, discontinuities: dict[str, Any], top_k: int) -> list[dict[str, Any]]:
-    """按 translation_error_percent 排序，输出最差子轨迹定位表。"""
-    if records.empty or top_k <= 0 or "translation_error_percent" not in records:
-        return []
-    clean = records.replace([np.inf, -np.inf], np.nan).dropna(subset=["translation_error_percent"]).copy()
-    if clean.empty:
-        return []
-    clean = clean.sort_values("translation_error_percent", ascending=False).head(int(top_k))
-    break_indices = [int(item.get("after_index", -10_000)) for item in discontinuities.get("breaks", [])]
-    out: list[dict[str, Any]] = []
-    for rank, (_, row) in enumerate(clean.iterrows(), start=1):
-        start_idx = int(row.get("global_start_match_index", row.get("start_index", -1)))
-        end_idx = int(row.get("global_end_match_index", row.get("end_index", -1)))
-        near_break = any((start_idx - 10) <= idx <= (end_idx + 10) for idx in break_indices)
-        out.append(
-            {
-                "rank": rank,
-                "length_m": float(row.get("length_m", math.nan)),
-                "start_time_s": float(row.get("start_time_s", math.nan)),
-                "end_time_s": float(row.get("end_time_s", math.nan)),
-                "duration_s": float(row.get("duration_s", math.nan)),
-                "start_distance_m": float(row.get("start_distance_m", math.nan)),
-                "end_distance_m": float(row.get("end_distance_m", math.nan)),
-                "translation_error_percent": float(row.get("translation_error_percent", math.nan)),
-                "translation_error_m": float(row.get("translation_error_m", math.nan)),
-                "yaw_error_abs_deg": float(row.get("segment_yaw_error_abs_deg", math.nan)),
-                "vertical_error_abs_m": float(row.get("vertical_error_abs_m", math.nan)),
-                "speed_mps": float(row.get("speed_mps", math.nan)),
-                "near_break": bool(near_break),
-                "segment_id": int(row.get("segment_id", -1)),
-                "start_index": start_idx,
-                "end_index": end_idx,
-            }
-        )
-    return out
 
 
 def select_evaluation_segments(segments: list[dict[str, int]], policy: str, total_count: int) -> list[dict[str, int]]:
@@ -4587,20 +3399,9 @@ def _dataclass_to_jsonable(cfg: EvaluationConfig) -> dict[str, Any]:
         "scale_delta_value": cfg.scale_delta_value,
         "scale_delta_unit": cfg.scale_delta_unit,
         "scale_distance_tolerance_ratio": cfg.scale_distance_tolerance_ratio,
-        "rpe_delta_seconds": list(cfg.rpe_delta_seconds),
-        "segment_lengths_m": list(cfg.segment_lengths_m),
-        "max_segments_per_length": cfg.max_segments_per_length,
-        "segment_step_frames": cfg.segment_step_frames,
-        "max_segment_length_diff_ratio": cfg.max_segment_length_diff_ratio,
         "continuous_segment_policy": cfg.continuous_segment_policy,
         "discontinuity_step_m": cfg.discontinuity_step_m,
         "discontinuity_time_gap_s": cfg.discontinuity_time_gap_s,
-        "divergence_abs_m": cfg.divergence_abs_m,
-        "divergence_rel_percent": cfg.divergence_rel_percent,
-        "divergence_min_distance_m": cfg.divergence_min_distance_m,
-        "divergence_min_time_s": cfg.divergence_min_time_s,
-        "speed_bins_mps": list(cfg.speed_bins_mps),
-        "top_k_worst_segments": cfg.top_k_worst_segments,
     }
 
 
