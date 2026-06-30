@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 .netlify/
+.tmp_verify/
 
 .venv/
 venv/
@@ -18,6 +19,7 @@ outputs/
 !static_web/index.html
 *.bag
 *.zip
+!static_web/vendor/pyodide/v0.26.4/full/python_stdlib.zip
 *.tar
 *.tar.gz
 *.tgz

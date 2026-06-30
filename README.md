@@ -2,6 +2,10 @@
 
 一个用于视觉里程计（VO/VIO/SLAM trajectory）结果评估的本地 Python 工具。目标流程是：把 ground truth 和 VO 输出轨迹拖进页面，得到指标表、轨迹可视化、误差曲线、子轨迹漂移统计，并导出 HTML/JSON/CSV 报告。
 
+## 当前主版本说明
+
+`refactor-supported-formats` 分支已经整理为新的主版本，完整说明见 [docs/refactor_supported_formats_version_notes.md](docs/refactor_supported_formats_version_notes.md)。该版本把评估入口拆成 VLOC 和 VO 两套固定格式流程，移除了旧版自动识别和冗余调参，并补齐静态网页、导出报告、选点对比、离线 vendor 资源和安全部署说明。
+
 ## 运行
 
 ```bash
@@ -26,13 +30,13 @@ python3 -m http.server 8765
 
 然后打开 `http://localhost:8765/`。不要直接双击 `index.html`，因为浏览器通常会限制本地文件读取，导致 Pyodide 或评估代码无法加载。
 
-公网部署时，把 `static_web/` 文件夹上传到任意静态网站托管平台即可，例如 Netlify、Vercel、Cloudflare Pages、对象存储静态站点或普通 Nginx 静态目录。这个静态版首次打开会下载 Pyodide、numpy、pandas 和 Plotly，首屏加载比 Streamlit 版慢一些；超大日志也会受浏览器内存限制。
+公网部署时，把完整的 `static_web/` 文件夹上传到任意静态网站托管平台即可，例如 Netlify、Vercel、Cloudflare Pages、对象存储静态站点或普通 Nginx 静态目录。`static_web/vendor/` 已包含固定版本的 Plotly、Pyodide、numpy、pandas 及其必要依赖，页面运行时只从同源静态资源加载代码，不再访问第三方 CDN；超大日志仍会受浏览器内存限制。
 
 静态版如果出现 `Failed to fetch`，优先检查三点：
 
 - 当前地址必须是 `http://...` 或 `https://...`，不能是 `file://.../index.html`。
 - 本地预览时 `python3 -m http.server 8765` 必须保持运行。
-- 公网部署时必须把 `static_web/py/` 目录和 `index.html` 一起上传，并确认浏览器可以访问 Pyodide CDN。
+- 公网部署时必须把 `static_web/py/`、`static_web/vendor/` 和 `index.html` 一起上传；如果漏传 `vendor/`，页面会在加载 Python 运行环境时失败。
 
 推荐方式一：Streamlit Community Cloud
 
@@ -125,7 +129,7 @@ docker run --rm -p 8501:8501 vo-evaluation-system
 | ATE 垂直 / 高度误差 | `report["ate_vertical_m"]`、`vertical_error_signed_m`、`vertical_error_abs_m` | `evaluate_trajectories()` 中的 `vertical_error_signed_m = errors[:, 2]`，以及 `describe()` | `#05 垂直 RMSE`、`高度与垂直误差` |
 | ATE 姿态误差 | `report["ate_orientation_deg"]` | `rotation_errors()`、`apply_rotation_alignment()`、`describe()` | `HTML 调参报告新增参数与代码/公式对应 / Attitude / yaw RMSE` |
 | ATE yaw 航向误差 | `report["ate_yaw_deg"]`、`yaw_error_signed_deg`、`yaw_error_abs_deg` | `yaw_from_rot()`、`wrap_pi()`、`describe()` | `HTML 调参报告新增参数与代码/公式对应 / Attitude / yaw RMSE` |
-| RPE 固定帧间隔误差 | `report["rpe_frame_delta"]` | `rpe_error_arrays()`、`relative_error()`、`describe()` | `#02 RPE RMSE`、`RPE 相对位姿误差` |
+| RPE 帧数/距离间隔误差 | `report["rpe_frame_delta"]` | `rpe_frame_dataframe()`、`relative_error()`、`describe()` | `#02 RPE RMSE`、`RPE 相对位姿误差` |
 | RPE 固定时间间隔误差 | `report["rpe_time_delta"]` | `rpe_error_arrays_by_time()`、`nearest_time_index()`、`summarize_time_rpe()` | `HTML 调参报告新增参数与代码/公式对应 / 固定时间 RPE` |
 | 按距离子轨迹平移 / 旋转 / 尺度误差 | `report["segment_errors"]` | `segment_errors()`、`find_segment_end()`、`relative_error()`、`summarize_segment_records()` | `按距离子轨迹误差`、`HTML 调参报告新增参数与代码/公式对应 / 长航程子轨迹表新增列` |
 | 每个子轨迹明细 | `report["segment_records"]` | `segment_errors()` 生成 records，`summarize_segment_records()` 聚合 | `HTML 调参报告新增参数与代码/公式对应 / Top-K 最差片段` |
@@ -180,9 +184,9 @@ $$
 
 ### #02 RPE RMSE
 
-- 前端取值：`value: rpe.rmse`，其中 `rpe = report.rpe_frame_delta?.translation_m || {}`；卡片备注 `Δ=... frames` 来自 `report.rpe_frame_delta.delta_frames`。
+- 前端取值：`value: rpe.rmse`，其中 `rpe = report.rpe_frame_delta?.translation_m || {}`；卡片备注来自 `report.rpe_frame_delta`，可能是 `Δ=... frames` 或 `Δ=... m ±5%`。
 - 后端字段：`report["rpe_frame_delta"]["translation_m"]["rmse"]`。
-- 后端代码：`rpe_error_arrays(..., delta=max(1, int(cfg.rpe_delta_frames)))`，每个 `i` 取 `j=i+delta`，再调用 `relative_error()`。
+- 后端代码：`rpe_frame_dataframe()`。帧数模式每个 `i` 取 `j=i+delta`；距离模式按 GT 累计路程在目标距离容差内找候选终点，并选择平移 RPE 最小的候选；最终都调用 `relative_error()`。
 - 公式：
 
 $$
@@ -409,7 +413,7 @@ $$
 
 ### #13 时间同步
 
-- 前端取值：`associationLabel(report.association)`；备注 `最大间隔 ${association.max_interpolation_gap_s}`。
+- 前端取值：`report["association"]` 中的 `method/mode`、`matches` 和 `max_interpolation_gap_s` 等字段。
 - 后端字段：`report["association"]`。
 - 后端代码：`prepare_evaluation_trajectories()` 调 `build_associated_trajectories()`；默认 `interpolate_gt` 会把 GT 插值到 VO 时间戳；`nearest` 使用 TUM greedy timestamp association；`index` 按行号截断配对。
 - 公式：

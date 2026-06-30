@@ -1,25 +1,81 @@
 import json
 import math
 import io
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from vo_eval.evaluator import (
+    Calibration,
     EvaluationConfig,
+    HomePoint,
+    SfVlocBundle,
+    SfVoBundle,
+    SUPPORTED_EVALUATION_FORMATS,
     Trajectory,
     build_associated_trajectories,
     evaluate_trajectories,
+    evaluate_vloc_bundle,
+    evaluate_vo_bundle,
     euler_yaw_pitch_roll_to_matrix,
+    get_evaluation_format_spec,
+    load_vloc_evaluation_bundle,
+    load_vo_evaluation_bundle,
     load_trajectory_from_text,
+    normalize_evaluation_format,
+    parse_home_point_fixed,
+    parse_calib_raw_fixed,
+    parse_imu_fixed,
+    parse_vloc_fixed,
+    parse_vo_fixed,
     report_to_excel,
     report_to_json,
     yaw_from_rot,
 )
 
 
-def test_streamlit_angle_time_series_unwraps_180_degree_boundary():
-    from app import make_gt_vo_time_series
+def test_streamlit_dead_time_series_helpers_are_removed():
+    source = Path("app.py").read_text()
+    for name in ["make_gt_vo_time_series", "make_error_time_series", "render_figure_grid"]:
+        assert f"def {name}" not in source
+
+
+def test_streamlit_html_report_cards_hide_removed_summary_metrics():
+    from app import build_report_metric_cards
+
+    report = {
+        "summary": {
+            "gt_path_length_m": 1000.0,
+            "duration_s": 50.0,
+            "matched_poses": 100,
+            "original_matched_poses": 100,
+            "gt_pose_coverage_ratio": 1.0,
+            "est_pose_coverage_ratio": 1.0,
+            "endpoint_error_m": 12.0,
+            "endpoint_error_percent_of_path": 1.2,
+            "raw_path_scale_ratio_est_over_gt": 1.0,
+        },
+        "ate_position_m": {"rmse": 1.0, "p95": 2.0},
+        "ate_vertical_m": {"rmse": 0.5, "p95": 1.0},
+        "rpe_frame_delta": {"translation_m": {"rmse": 0.2, "p95": 0.4}, "delta_unit": "frames", "delta_frames": 1},
+        "alignment": {"scale": 1.0},
+        "association": {"method": "interpolate_gt", "matches": 100},
+        "divergence": {"diverged": True, "first_divergence_distance_m": 10.0, "first_divergence_error_m": 5.0},
+        "discontinuities": {"all_matches": {"break_count": 0}, "selected_segment": {"policy": "vo_timestamps"}},
+        "orientation_correction": {"selected": "none"},
+    }
+
+    labels = [card["label"] for card in build_report_metric_cards(report)]
+
+    assert not any("终点漂移" in label for label in labels)
+    assert not any("发散状态" in label for label in labels)
+    assert not any("时间同步" in label for label in labels)
+
+
+def test_streamlit_composite_angle_time_series_unwraps_180_degree_boundary():
+    from app import make_composite_pair_time_series
 
     frame = pd.DataFrame(
         {
@@ -29,20 +85,19 @@ def test_streamlit_angle_time_series_unwraps_180_degree_boundary():
             "est_roll_aligned_deg": [179, -179, 178],
         }
     )
-    fig = make_gt_vo_time_series(
+    fig = make_composite_pair_time_series(
         frame,
         "Roll",
-        "gt_roll_deg",
-        "est_roll_aligned_deg",
-        "deg",
-        unwrap_angles=True,
+        [("Roll", "gt_roll_deg", "est_roll_aligned_deg", "deg", True)],
+        left_name="Ground truth",
+        right_name="VO aligned",
     )
 
-    assert list(fig.data[1].y) == [179, 181, 178, None]
+    assert list(fig.data[1].y) == [179, 181, 178]
 
 
-def test_streamlit_angle_error_time_series_unwraps_180_degree_boundary():
-    from app import make_error_time_series
+def test_streamlit_composite_angle_error_time_series_unwraps_180_degree_boundary():
+    from app import make_composite_error_time_series
 
     frame = pd.DataFrame(
         {
@@ -51,31 +106,193 @@ def test_streamlit_angle_error_time_series_unwraps_180_degree_boundary():
             "roll_error_signed_deg": [179, -179, 178],
         }
     )
-    fig = make_error_time_series(
+    fig = make_composite_error_time_series(
         frame,
         "Roll error",
-        "roll_error_signed_deg",
-        "deg",
-        unwrap_angles=True,
+        [("Roll error", "roll_error_signed_deg", "deg", True)],
     )
 
-    assert list(fig.data[0].y) == [179, 181, 178, None]
+    assert list(fig.data[0].y) == [179, 181, 178]
 
 
-def test_streamlit_sim3_scale_time_series_uses_exported_scale_by_timestamp():
-    from app import make_sim3_scale_time_series
+def test_streamlit_composite_charts_share_hover_spikes_across_subplots():
+    from app import make_composite_pair_time_series, make_composite_error_time_series, make_composite_single_time_series
 
     frame = pd.DataFrame(
         {
-            "timestamp": [10, 11, 20],
-            "segment_id": [0, 0, 1],
-            "local_sim3_scale": [2.0, 2.0, 3.0],
+            "timestamp": [0, 1, 2],
+            "nav_n_m": [0, 1, 2],
+            "vloc_n_m": [0.1, 1.1, 2.1],
+            "nav_e_m": [3, 4, 5],
+            "vloc_e_m": [3.1, 4.1, 5.1],
+            "position_error_n_m": [0.1, 0.2, 0.3],
+            "position_error_e_m": [0.4, 0.5, 0.6],
+            "vx": [1, 2, 3],
+            "vy": [4, 5, 6],
         }
     )
-    fig = make_sim3_scale_time_series(frame)
+    figures = [
+        make_composite_pair_time_series(
+            frame,
+            "NED",
+            [("N", "nav_n_m", "vloc_n_m", "m", False), ("E", "nav_e_m", "vloc_e_m", "m", False)],
+            left_name="nav",
+            right_name="vloc",
+        ),
+        make_composite_error_time_series(
+            frame,
+            "NED error",
+            [("N error", "position_error_n_m", "m", False), ("E error", "position_error_e_m", "m", False)],
+        ),
+        make_composite_single_time_series(
+            frame,
+            "Velocity",
+            [("vx", "vx", "m/s", False), ("vy", "vy", "m/s", False)],
+        ),
+    ]
 
-    assert list(fig.data[0].x) == [10, 11, None, 20, None]
-    assert list(fig.data[0].y) == [2.0, 2.0, None, 3.0, None]
+    for fig in figures:
+        assert fig.layout.hovermode == "x unified"
+        assert fig.layout.hoversubplots == "axis"
+        assert fig.layout.xaxis.showspikes is True
+        assert fig.layout.xaxis2.showspikes is True
+        assert fig.layout.xaxis.spikemode == "across"
+        assert fig.layout.xaxis2.spikemode == "across"
+
+
+def test_streamlit_chart_directory_is_wired_to_vloc_and_vo_visuals():
+    source = Path("app.py").read_text()
+    assert "VLOC_CHART_OPTIONS" in source
+    assert "VO_CHART_OPTIONS" in source
+    assert "show_vloc_chart_directory()" in source
+    assert "show_chart_directory(\"vo\", VO_CHART_OPTIONS)" in source
+    assert "show_visuals(report, entry_mode, selected_vloc_chart_ids, selected_vo_chart_ids)" in source
+    assert "show_vloc_visuals(report, selected_vloc_chart_ids)" in source
+    assert "图表目录" in source
+    for chart_id in [
+        "trajectory3d",
+        "trajectoryXY",
+        "errorDistance",
+        "heightComparison",
+        "navStatusModes",
+        "navVelocity",
+        "navResetCounts",
+        "vlocStatus",
+        "positionCompareComposite",
+        "attitudeCompareComposite",
+        "positionErrorComposite",
+        "attitudeErrorComposite",
+    ]:
+        assert chart_id in source
+    vo_options_source = source.split("VO_CHART_OPTIONS = [", 1)[1].split("]", 1)[0]
+    for chart_id in ["trajectoryXY", "segmentError", "speedError", "sim3ScaleTime", "heightComparison"]:
+        assert f'("{chart_id}",' not in vo_options_source
+    for chart_id in [
+        "trajectory3d",
+        "errorDistance",
+        "navStatusModes",
+        "navVelocity",
+        "navResetCounts",
+        "voStatus",
+        "positionCompareComposite",
+        "attitudeCompareComposite",
+        "positionErrorComposite",
+        "attitudeErrorComposite",
+        "rpeTranslationTime",
+        "rpeRotationTime",
+        "scaleFrameTime",
+    ]:
+        assert f'("{chart_id}",' in vo_options_source
+
+
+def test_streamlit_download_filenames_include_directory_and_entry_mode():
+    source = Path("app.py").read_text()
+    assert "def evaluation_export_filename(" in source
+    assert 'evaluation_export_filename(report, "evaluation_report", "html")' in source
+    assert 'evaluation_export_filename(report, "trajectory_exports", "xlsx")' in source
+    assert 'file_name="vo_evaluation_report.html"' not in source
+    assert 'file_name="vo_trajectory_exports.xlsx"' not in source
+
+
+def test_streamlit_download_filename_ignores_generic_data_and_log_dir_names():
+    from app import evaluation_export_filename
+
+    report = {"inputs": {"entry_mode": "vloc", "data_dir_name": "data_dir", "log_dir_name": "log_dir"}}
+    assert evaluation_export_filename(report, "evaluation_report", "html") == "vloc_evaluation_report.html"
+
+    report = {"inputs": {"entry_mode": "vo", "data_dir_name": "2839_traj", "log_dir_name": "2839_traj"}}
+    assert evaluation_export_filename(report, "trajectory_exports", "xlsx") == "2839_traj_vo_trajectory_exports.xlsx"
+
+
+def test_streamlit_trajectory_3d_marks_each_segment_start_and_end():
+    from app import make_trajectory_3d
+
+    frame = pd.DataFrame(
+        {
+            "segment_id": [0, 0, 1, 1],
+            "visual_segment_id": [0, 0, 1, 1],
+            "gt_x_m": [0.0, 1.0, 10.0, 11.0],
+            "gt_y_m": [0.0, 2.0, 10.0, 12.0],
+            "gt_z_m": [0.0, 3.0, 10.0, 13.0],
+            "est_x_aligned_m": [0.1, 1.1, 10.1, 11.1],
+            "est_y_aligned_m": [0.2, 2.2, 10.2, 12.2],
+            "est_z_aligned_m": [0.3, 3.3, 10.3, 13.3],
+        }
+    )
+    fig = make_trajectory_3d(frame)
+    traces = {trace.name: trace for trace in fig.data}
+
+    assert "GT start" not in traces
+    assert "GT end" not in traces
+    assert {"vo start", "vo end"}.issubset(traces)
+    assert list(traces["vo start"].x) == [0.1, 10.1]
+    assert list(traces["vo end"].x) == [1.1, 11.1]
+    assert list(traces["vo start"].text) == ["vo S1", "vo S2"]
+    assert list(traces["vo end"].text) == ["vo E1", "vo E2"]
+    assert traces["vo start"].marker.size == 5
+    assert traces["vo start"].marker.color == "#9333ea"
+    assert traces["vo start"].marker.line.width == 1
+    assert traces["vo start"].textfont.size == 10
+    assert traces["vo end"].marker.color == "#ef4444"
+
+
+def test_streamlit_vloc_trajectory_3d_marks_only_vloc_endpoints_with_small_markers():
+    from app import make_vloc_trajectory_3d
+
+    frame = pd.DataFrame(
+        {
+            "visual_segment_id": [0, 0, 1, 1],
+            "nav_n_m": [0.0, 1.0, 10.0, 11.0],
+            "nav_e_m": [0.0, 2.0, 10.0, 12.0],
+            "nav_d_m": [0.0, 3.0, 10.0, 13.0],
+            "vloc_n_m": [0.1, 1.1, 10.1, 11.1],
+            "vloc_e_m": [0.2, 2.2, 10.2, 12.2],
+            "vloc_d_m": [0.3, 3.3, 10.3, 13.3],
+        }
+    )
+    fig = make_vloc_trajectory_3d(frame)
+    traces = {trace.name: trace for trace in fig.data}
+
+    assert "nav start" not in traces
+    assert "nav end" not in traces
+    assert {"vloc start", "vloc end"}.issubset(traces)
+    assert list(traces["vloc start"].x) == [0.1, 10.1]
+    assert list(traces["vloc end"].x) == [1.1, 11.1]
+    assert list(traces["vloc start"].text) == ["vloc S1", "vloc S2"]
+    assert list(traces["vloc end"].text) == ["vloc E1", "vloc E2"]
+    assert traces["vloc start"].marker.size == 5
+    assert traces["vloc start"].marker.line.width == 1
+    assert traces["vloc start"].textfont.size == 10
+
+
+def test_vloc_detail_visual_segments_follow_discontinuity_diagnostics():
+    bundle = sample_vloc_bundle_with_large_nav_gap()
+    report = evaluate_vloc_bundle(bundle, EvaluationConfig(discontinuity_step_m=10.0))
+    comparison = report["vloc_details"]["comparison"]
+
+    assert report["discontinuities"]["all_matches"]["break_count"] == 1
+    assert comparison["visual_segment_id"].tolist() == [0, 0, 1]
+    assert comparison["segment_id"].tolist() == [0, 0, 1]
 
 
 def make_tum(rows=120):
@@ -87,6 +304,447 @@ def make_tum(rows=120):
         z = 50.0 + 0.01 * i
         lines.append(f"{t:.3f} {x:.6f} {y:.6f} {z:.6f} 0 0 0 1")
     return "\n".join(lines)
+
+
+def test_public_evaluation_formats_match_requirement_doc():
+    assert SUPPORTED_EVALUATION_FORMATS == ("sf_vloc", "sf_vo", "tum")
+
+    sf_vloc = get_evaluation_format_spec("sf_vloc")
+    assert sf_vloc.mode == "sf_vloc"
+    assert sf_vloc.required_files == (
+        "data_dir/imu.txt",
+        "log_dir/vloc.txt",
+        "log_dir/home_point.txt",
+        "log_dir/calib_raw.yaml",
+    )
+
+    sf_vo = get_evaluation_format_spec("sf_vo")
+    assert sf_vo.mode == "sf_vo"
+    assert sf_vo.required_files == (
+        "data_dir/imu.txt",
+        "log_dir/vo.txt",
+        "log_dir/home_point.txt",
+        "log_dir/calib_raw.yaml",
+    )
+
+    tum = get_evaluation_format_spec("tum")
+    assert tum.mode == "tum"
+    assert tum.required_files == ("ground_truth.tum", "estimate.tum")
+
+
+def test_public_evaluation_format_rejects_legacy_parser_formats():
+    for fmt in ["auto", "sf", "vloc", "csv", "kitti", "xyz"]:
+        with pytest.raises(ValueError, match="Supported evaluation formats"):
+            normalize_evaluation_format(fmt)
+
+
+def test_public_evaluation_format_normalizes_common_separators():
+    assert normalize_evaluation_format("SF-VLOC") == "sf_vloc"
+    assert normalize_evaluation_format("sf vo") == "sf_vo"
+    assert normalize_evaluation_format("Tum") == "tum"
+
+
+def sample_calib_text() -> str:
+    return """%YAML:1.0
+---
+T_imu_body: [ 1, 0, 0, 0.1, 0, 1, 0, 0.2, 0, 0, 1, 0.3, 0, 0, 0, 1 ]
+cam0:
+  T_cam_imu: [ 0, -1, 0, 1, 1, 0, 0, 2, 0, 0, 1, 3, 0, 0, 0, 1 ]
+cam1:
+  T_cn_cnm1: [ 1, 0, 0, 4, 0, 1, 0, 5, 0, 0, 1, 6, 0, 0, 0, 1 ]
+"""
+
+
+def sample_identity_calib_text() -> str:
+    return """%YAML:1.0
+---
+T_imu_body: [ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 ]
+cam0:
+  T_cam_imu: [ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 ]
+"""
+
+
+def sample_imu_text() -> str:
+    return """ts ts_fcc status flight_mode x y z yaw pitch roll vx vy vz position_reset_count altitude_reset_count heading_reset_count latitude longitude altitude altitude_msl height
+10.0 100.0 4194305 3 1 2 3 1.57079632679 0.1 -0.2 0.4 0.5 0.6 0 1 2 31.1 121.2 50 51 5
+10.1 100.1 268435457 3 2 3 4 1.67079632679 0.2 -0.3 0.5 0.6 0.7 0 1 2 31.2 121.3 51 52 6
+"""
+
+
+def sample_vloc_text() -> str:
+    return """ts status num_inliers reset_count x y z yaw pitch roll latitude longitude height
+10.0 2 42 0 11 12 13 90 2 -1 31.1 121.2 5
+10.1 3 43 1 12 13 14 91 3 -2 31.2 121.3 6
+"""
+
+
+def sample_vo_text() -> str:
+    return """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count depth_mean depth_min depth_max
+10.0 50 21 22 23 90 2 -1 1 12.5 0 4.1 0.2 8.9
+10.1 51 22 23 24 91 3 -2 0 13.5 1 4.2 0.3 9.0
+"""
+
+
+def _latitude_from_north_offset(home_lat_deg: float, north_m: float) -> float:
+    return home_lat_deg + north_m / 111320.0
+
+
+def sample_vloc_bundle_with_large_nav_gap() -> SfVlocBundle:
+    home = HomePoint(longitude=121.2, latitude=31.1, altitude_msl=50.0)
+    nav_stamps = np.asarray([0.0, 0.5, 1.0, 3.5, 4.0], dtype=float)
+    north_samples = np.asarray([0.0, 5.0, 10.0, 35.0, 40.0], dtype=float)
+    nav_lat = np.asarray([_latitude_from_north_offset(home.latitude, value) for value in north_samples], dtype=float)
+    nav_positions = np.column_stack([north_samples, np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps))])
+    nav_rot = euler_yaw_pitch_roll_to_matrix(np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps)))
+    nav = Trajectory(
+        "imu.txt",
+        nav_stamps,
+        nav_positions,
+        nav_rot,
+        extras={
+            "latitude": nav_lat,
+            "longitude": np.full(len(nav_stamps), home.longitude, dtype=float),
+            "altitude_msl": np.full(len(nav_stamps), home.altitude_msl, dtype=float),
+            "height": np.zeros(len(nav_stamps), dtype=float),
+            "status": np.zeros(len(nav_stamps), dtype=float),
+            "flight_mode": np.zeros(len(nav_stamps), dtype=float),
+            "vx": np.zeros(len(nav_stamps), dtype=float),
+            "vy": np.zeros(len(nav_stamps), dtype=float),
+            "vz": np.zeros(len(nav_stamps), dtype=float),
+            "position_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "altitude_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "heading_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "navi_mode": np.zeros(len(nav_stamps), dtype=float),
+            "rtk_yaw": np.zeros(len(nav_stamps), dtype=float),
+            "rtk_altitude": np.zeros(len(nav_stamps), dtype=float),
+        },
+        source_format="sf_imu",
+    )
+
+    vloc_stamps = np.asarray([0.25, 0.75, 2.0, 3.75, 3.9], dtype=float)
+    vloc_north = np.asarray([2.5, 7.5, 20.0, 37.5, 39.0], dtype=float)
+    vloc_lat = np.asarray([_latitude_from_north_offset(home.latitude, value) for value in vloc_north], dtype=float)
+    vloc_positions = np.column_stack([vloc_north, np.zeros(len(vloc_stamps)), np.full(len(vloc_stamps), -home.altitude_msl, dtype=float)])
+    vloc_rot = euler_yaw_pitch_roll_to_matrix(np.zeros(len(vloc_stamps)), np.zeros(len(vloc_stamps)), np.zeros(len(vloc_stamps)))
+    vloc = Trajectory(
+        "vloc.txt",
+        vloc_stamps,
+        vloc_positions,
+        vloc_rot,
+        extras={
+            "status": np.asarray([2, 2, 2, 1, 2], dtype=float),
+            "num_inliers": np.asarray([30, 31, 32, 33, 34], dtype=float),
+            "reset_count": np.zeros(len(vloc_stamps), dtype=float),
+            "latitude": vloc_lat,
+            "longitude": np.full(len(vloc_stamps), home.longitude, dtype=float),
+            "height": np.asarray([5.0, 5.0, 5.0, 5.0, 5.0], dtype=float),
+            "vloc_mode": np.asarray([2, 2, 2, 1, 2], dtype=float),
+        },
+        source_format="sf_vloc",
+    )
+    parsed_calib = parse_calib_raw_fixed(sample_identity_calib_text())
+    calibration = Calibration(
+        t_imu_body=parsed_calib.t_imu_body,
+        t_cam_imu=parsed_calib.t_cam_imu,
+        t_cn_cnm1=None,
+    )
+    return SfVlocBundle(
+        nav=nav,
+        vloc=vloc,
+        home_point=home,
+        calibration=calibration,
+        data_dir=Path("/tmp/data_dir"),
+        log_dir=Path("/tmp/log_dir"),
+        files={},
+    )
+
+
+def sample_vo_bundle_with_reset_segments() -> SfVoBundle:
+    home = HomePoint(longitude=121.2, latitude=31.1, altitude_msl=50.0)
+    nav_stamps = np.round(np.arange(0.0, 55.1, 0.1), 3)
+    nav_positions = np.column_stack([nav_stamps, np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps))])
+    nav_rot = euler_yaw_pitch_roll_to_matrix(np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps)), np.zeros(len(nav_stamps)))
+    nav = Trajectory(
+        "imu.txt",
+        nav_stamps,
+        nav_positions,
+        nav_rot,
+        extras={
+            "latitude": np.full(len(nav_stamps), home.latitude, dtype=float),
+            "longitude": np.full(len(nav_stamps), home.longitude, dtype=float),
+            "altitude_msl": np.full(len(nav_stamps), home.altitude_msl, dtype=float),
+            "height": np.zeros(len(nav_stamps), dtype=float),
+            "status": np.zeros(len(nav_stamps), dtype=float),
+            "flight_mode": np.zeros(len(nav_stamps), dtype=float),
+            "vx": np.ones(len(nav_stamps), dtype=float),
+            "vy": np.zeros(len(nav_stamps), dtype=float),
+            "vz": np.zeros(len(nav_stamps), dtype=float),
+            "position_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "altitude_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "heading_reset_count": np.zeros(len(nav_stamps), dtype=float),
+            "navi_mode": np.zeros(len(nav_stamps), dtype=float),
+            "rtk_yaw": np.zeros(len(nav_stamps), dtype=float),
+            "rtk_altitude": np.zeros(len(nav_stamps), dtype=float),
+        },
+        source_format="sf_imu",
+    )
+
+    invalid_stamps = np.round(np.arange(0.0, 5.0, 0.1), 3)
+    valid_1_stamps = np.round(np.arange(10.0, 30.1, 0.1), 3)
+    valid_2_stamps = np.round(np.arange(30.2, 50.3, 0.1), 3)
+    vo_stamps = np.concatenate([invalid_stamps, valid_1_stamps, valid_2_stamps])
+    vo_positions = np.column_stack([vo_stamps, np.zeros(len(vo_stamps)), np.zeros(len(vo_stamps))])
+    vo_rot = euler_yaw_pitch_roll_to_matrix(np.zeros(len(vo_stamps)), np.zeros(len(vo_stamps)), np.zeros(len(vo_stamps)))
+    vo = Trajectory(
+        "vo.txt",
+        vo_stamps,
+        vo_positions,
+        vo_rot,
+        extras={
+            "num_inliers": np.full(len(vo_stamps), 80.0, dtype=float),
+            "is_keyframe": np.ones(len(vo_stamps), dtype=float),
+            "time_cost": np.full(len(vo_stamps), 12.0, dtype=float),
+            "reset_count": np.concatenate(
+                [
+                    np.zeros(len(invalid_stamps), dtype=float),
+                    np.ones(len(valid_1_stamps), dtype=float),
+                    np.full(len(valid_2_stamps), 2.0, dtype=float),
+                ]
+            ),
+        },
+        source_format="sf_vo",
+    )
+    calibration = parse_calib_raw_fixed(sample_identity_calib_text())
+    return SfVoBundle(
+        nav=nav,
+        vo=vo,
+        home_point=home,
+        calibration=calibration,
+        data_dir=Path("/tmp/data_dir"),
+        log_dir=Path("/tmp/log_dir"),
+        files={},
+    )
+
+
+def test_vloc_detail_summary_contains_requested_scalar_error_metrics():
+    bundle = sample_vloc_bundle_with_large_nav_gap()
+    report = evaluate_vloc_bundle(bundle)
+    summary = report["vloc_details"]["summary"]
+
+    assert "mean_error_pos_xy" in summary
+    assert "mean_error_pos_z" in summary
+    assert "mean_error_euler" in summary
+    assert "max_error_pos_xy" in summary
+    assert "max_error_pos_z" in summary
+    assert "max_error_euler" in summary
+    assert math.isfinite(summary["mean_error_pos_xy"])
+    assert math.isfinite(summary["max_error_pos_xy"])
+
+
+def write_sf_dirs(tmp_path):
+    data_dir = tmp_path / "data_dir"
+    log_dir = tmp_path / "log_dir"
+    data_dir.mkdir()
+    log_dir.mkdir()
+    (data_dir / "imu.txt").write_text(sample_imu_text(), encoding="utf-8")
+    (log_dir / "vloc.txt").write_text(sample_vloc_text(), encoding="utf-8")
+    (log_dir / "vo.txt").write_text(sample_vo_text(), encoding="utf-8")
+    (log_dir / "home_point.txt").write_text("121.2 31.1 51.0\n", encoding="utf-8")
+    (log_dir / "calib_raw.yaml").write_text(sample_calib_text(), encoding="utf-8")
+    return data_dir, log_dir
+
+
+def test_fixed_sf_parsers_use_documented_column_order_without_header_adaptation():
+    imu = parse_imu_fixed(sample_imu_text(), name="imu.txt")
+    assert imu.source_format == "sf_imu"
+    assert np.allclose(imu.stamps, [10.0, 10.1])
+    assert np.allclose(imu.positions[0], [1, 2, 3])
+    assert abs(yaw_from_rot(imu.rotations)[0] - np.pi / 2) < 1e-9
+    assert np.allclose(imu.extras["vx"], [0.4, 0.5])
+    assert np.allclose(imu.extras["navi_mode"], [1, 1])
+
+    vloc = parse_vloc_fixed(sample_vloc_text(), name="vloc.txt")
+    assert vloc.source_format == "sf_vloc"
+    assert np.allclose(vloc.positions[0], [11, 12, 13])
+    assert abs(yaw_from_rot(vloc.rotations)[0] - np.pi / 2) < 1e-9
+    assert np.allclose(vloc.extras["vloc_mode"], [2, 3])
+
+    vo = parse_vo_fixed(sample_vo_text(), name="vo.txt")
+    assert vo.source_format == "sf_vo"
+    assert np.allclose(vo.positions[0], [21, 22, 23])
+    assert np.allclose(vo.extras["time_cost"], [12.5, 13.5])
+    assert "depth_mean" not in vo.extras
+    assert "depth_min" not in vo.extras
+    assert "depth_max" not in vo.extras
+
+    home = parse_home_point_fixed("121.2 31.1 51.0\n", name="home_point.txt")
+    assert home.longitude == 121.2
+    assert home.latitude == 31.1
+    assert home.altitude_msl == 51.0
+
+
+def test_vo_fixed_accepts_legacy_11_column_format():
+    legacy_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
+10.0 50 21 22 23 90 2 -1 1 12.5 0
+"""
+
+    vo = parse_vo_fixed(legacy_text, name="vo.txt")
+
+    assert vo.source_format == "sf_vo"
+    assert np.allclose(vo.positions[0], [21, 22, 23])
+    assert np.allclose(vo.extras["time_cost"], [12.5])
+    assert vo.extras["raw_numeric_table"].shape == (1, 14)
+    assert np.allclose(vo.extras["raw_numeric_table"][0, 11:14], [0, 0, 0])
+
+
+def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    bundle = load_vloc_evaluation_bundle(data_dir, log_dir)
+
+    assert bundle.nav.source_format == "sf_imu"
+    assert bundle.vloc.source_format == "sf_vloc"
+    assert np.allclose(bundle.vloc.positions[0], [11, 12, 13])
+    assert bundle.home_point.longitude == 121.2
+    assert np.allclose(bundle.calibration.t_imu_body[:3, 3], [0.1, 0.2, 0.3])
+    assert bundle.files["estimate"].name == "vloc.txt"
+
+
+def test_vo_evaluation_bundle_loads_vo_directory_contract_without_using_vloc(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    bundle = load_vo_evaluation_bundle(data_dir, log_dir)
+
+    assert bundle.nav.source_format == "sf_imu"
+    assert bundle.vo.source_format == "sf_vo"
+    assert np.allclose(bundle.vo.positions[0], [21, 22, 23])
+    assert bundle.files["estimate"].name == "vo.txt"
+
+
+def test_bundle_loader_reports_missing_required_file(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    (log_dir / "vloc.txt").unlink()
+
+    with pytest.raises(FileNotFoundError, match="log_dir/vloc.txt"):
+        load_vloc_evaluation_bundle(data_dir, log_dir)
+
+
+def test_vloc_bundle_uses_fixed_interpolation_defaults_and_drops_invalid_frames():
+    bundle = sample_vloc_bundle_with_large_nav_gap()
+    cfg = EvaluationConfig(
+        alignment="sim3",
+        orientation_correction="auto",
+        association_mode="nearest",
+        max_interpolation_gap_s=10.0,
+        allow_extrapolation=True,
+        time_offset_s=3.0,
+    )
+
+    report = evaluate_vloc_bundle(bundle, cfg)
+
+    assert report["inputs"]["entry_mode"] == "vloc"
+    assert report["config"]["alignment"] == "none"
+    assert report["config"]["orientation_correction"] == "none"
+    assert report["config"]["association_mode"] == "interpolate_gt"
+    assert report["config"]["max_interpolation_gap_s"] == 1.0
+    assert report["config"]["allow_extrapolation"] is False
+    assert report["config"]["time_offset_s"] == 0.0
+    assert report["summary"]["matched_poses"] == 3
+    assert report["association"]["dropped_est_large_gt_gap"] == 1
+    assert report["association"]["dropped_est_invalid_mode"] == 1
+    assert report["ate_position_m"]["rmse"] < 1e-3
+
+
+def test_vloc_report_contains_nav_vloc_specific_detail_tables():
+    bundle = sample_vloc_bundle_with_large_nav_gap()
+    shifted_vloc_north = np.asarray([1.5, 6.5, 19.0, 36.5, 38.0], dtype=float)
+    bundle.vloc.extras["latitude"] = np.asarray(
+        [_latitude_from_north_offset(bundle.home_point.latitude, value) for value in shifted_vloc_north],
+        dtype=float,
+    )
+
+    report = evaluate_vloc_bundle(bundle, EvaluationConfig())
+    details = report["vloc_details"]
+    comparison = details["comparison"]
+    nav_status = details["nav_status"]
+    vloc_status = details["vloc_status"]
+
+    assert details["summary"]["trajectory_length_m"] > 0
+    assert details["summary"]["horizontal_error_mean_m"] == pytest.approx(1.0, abs=0.02)
+    assert details["summary"]["vertical_error_max_m"] == pytest.approx(0.0, abs=1e-4)
+    assert {"flight_mode", "navi_mode", "rtk_yaw", "rtk_alti", "velocity_norm"}.issubset(nav_status.columns)
+    assert {"vloc_mode", "num_inliers", "reset_count"}.issubset(vloc_status.columns)
+    assert {"position_error_n_m", "position_error_e_m", "position_error_d_m"}.issubset(comparison.columns)
+    assert np.allclose(comparison["position_error_n_m"].to_numpy(), 1.0, atol=0.02)
+    assert np.allclose(comparison["position_error_e_m"].to_numpy(), 0.0, atol=1e-6)
+
+
+def test_vloc_excel_export_omits_sim3_sheets_because_vloc_has_metric_scale():
+    bundle = sample_vloc_bundle_with_large_nav_gap()
+    report = evaluate_vloc_bundle(bundle, EvaluationConfig())
+
+    sheets = report["trajectory_exports"]
+    assert "sim3_gt_tum" not in sheets
+    assert "sim3_vo_tum" not in sheets
+
+    workbook = report_to_excel(report)
+    xlsx = pd.ExcelFile(io.BytesIO(workbook))
+    assert "sim3_gt_tum" not in xlsx.sheet_names
+    assert "sim3_vo_tum" not in xlsx.sheet_names
+    assert {
+        "input_gt_tum",
+        "input_vo_tum",
+        "filtered_vo_tum",
+        "interpolated_gt_tum",
+        "ate_per_frame",
+        "rpe_per_frame",
+    }.issubset(set(xlsx.sheet_names))
+
+
+def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
+    bundle = sample_vo_bundle_with_reset_segments()
+    report = evaluate_vo_bundle(
+        bundle,
+        EvaluationConfig(
+            alignment="none",
+            orientation_correction="auto",
+            association_mode="nearest",
+            max_interpolation_gap_s=10.0,
+            allow_extrapolation=True,
+            time_offset_s=2.0,
+        ),
+    )
+
+    assert report["inputs"]["entry_mode"] == "vo"
+    assert report["inputs"]["workflow"] == "sf_vo"
+    assert report["config"]["alignment"] == "sim3"
+    assert report["config"]["orientation_correction"] == "none"
+    assert report["config"]["association_mode"] == "interpolate_gt"
+    assert report["config"]["max_interpolation_gap_s"] == 1.0
+    assert report["config"]["allow_extrapolation"] is False
+    assert report["config"]["time_offset_s"] == 0.0
+    assert report["config"]["continuous_segment_policy"] == "segments"
+
+    assert report["association"]["dropped_est_invalid_segment"] == 50
+    assert report["association"]["valid_est_after_segment_filter"] == 402
+    assert report["summary"]["raw_est_poses"] == int(len(bundle.vo.positions))
+    assert report["summary"]["matched_poses"] == 402
+    assert report["alignment"]["base_mode"] == "sim3"
+    assert report["alignment"]["segment_count"] == 2
+    assert report["ate_position_m"]["rmse"] < 1e-6
+
+    all_breaks = report["discontinuities"]["all_matches"]["breaks"]
+    assert any("evaluation_segment_id" in item["reasons"] for item in all_breaks)
+
+    details = report["vo_details"]
+    assert {"comparison", "nav_status", "vo_status", "segment_filter"}.issubset(details)
+    assert len(details["comparison"]) == 402
+    assert set(details["comparison"]["segment_id"].astype(int)) == {0, 1}
+    assert {"num_inliers", "is_keyframe", "time_cost", "reset_count"}.issubset(details["vo_status"].columns)
+
+
+def test_fixed_parser_rejects_wrong_column_count():
+    bad_vloc = "10.0 2 42 0 11 12 13 90 2 -1 31.1 121.2\n"
+    with pytest.raises(ValueError, match="13 columns"):
+        parse_vloc_fixed(bad_vloc, name="vloc.txt")
 
 
 def test_tum_zero_error_after_se3_alignment():
@@ -111,107 +769,11 @@ def test_sim3_recovers_scale_for_monocular_like_output():
     assert report["ate_position_m"]["rmse"] < 1e-6
 
 
-def test_csv_xyz_parser():
-    text = "timestamp,x,y,z,process_time_ms\n0,0,0,1,10\n1,1,0,1,11\n2,2,0,1,9\n"
-    traj = load_trajectory_from_text(text, fmt="csv", name="csv")
-    assert traj.positions.shape == (3, 3)
-    assert "process_time_ms" in traj.extras
-
-
-def test_commented_header_ypr_units_are_detected():
-    rad_text = """# ts x y z yaw pitch roll unused
-# yaw pitch roll rad
-0 0 0 0 1.57079632679 0 0 99
-"""
-    deg_text = """# ts x y z yaw pitch roll unused
-# yaw pitch roll degree
-0 0 0 0 90 0 0 99
-"""
-    rad_traj = load_trajectory_from_text(rad_text, fmt="auto", name="rad")
-    deg_traj = load_trajectory_from_text(deg_text, fmt="auto", name="deg")
-    assert abs(yaw_from_rot(rad_traj.rotations)[0] - np.pi / 2) < 1e-9
-    assert abs(yaw_from_rot(deg_traj.rotations)[0] - np.pi / 2) < 1e-9
-
-
-def test_sf_gt_format_uses_ts2_position_ypr_and_extra_fields():
-    text = """#ts1 ts2 status flight_mode x y z yaw pitch roll vx vy vz reset_count1 reset_count2 reset_count3 lati longi alti alti_msl height
-1000000000 1882.60 1 3 1 2 3 90 2 -1 0.1 0.2 0.3 0 1 2 31.1 121.2 50 51 5
-1005000000 1882.65 1 3 2 3 4 91 3 -2 0.2 0.3 0.4 0 1 2 31.1 121.2 51 52 6
-"""
-    traj = load_trajectory_from_text(text, fmt="sf", name="sf_gt")
-
-    assert traj.source_format == "sf_gt"
-    assert np.allclose(traj.stamps, [1882.60, 1882.65])
-    assert np.allclose(traj.positions[0], [1, 2, 3])
-    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
-    for key in ["status", "flight_mode", "vx", "vy", "vz", "reset_count1", "lati", "longi", "height"]:
-        assert key in traj.extras
-
-
-def test_sf_gt_format_auto_detects_radian_ypr_without_degree_hint():
-    text = """#ts1 ts2 status flight_mode x y z yaw pitch roll vx vy vz reset_count1 reset_count2 reset_count3 lati longi alti alti_msl height
-1000000000 1882.60 1 3 1 2 3 1.57079632679 0 0 0.1 0.2 0.3 0 1 2 31.1 121.2 50 51 5
-1005000000 1882.65 1 3 2 3 4 1.57079632679 0 0 0.2 0.3 0.4 0 1 2 31.1 121.2 51 52 6
-"""
-    traj = load_trajectory_from_text(text, fmt="sf", name="sf_gt_rad")
-
-    assert traj.source_format == "sf_gt"
-    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
-
-
-def test_sf_vo_format_uses_ts_txtyz_ypr_and_reset_fields_in_auto_mode():
-    text = """# ts num_inliers tx ty tz yaw pitch roll(degree) is_keyframe frame_cost reset_count depth_mean depth_min depth_max
-1882.60 42 1 2 3 90 2 -1 1 12.5 0 4.0 1.0 8.0
-1882.65 43 2 3 4 91 3 -2 0 13.5 1 4.2 1.1 8.1
-"""
-    traj = load_trajectory_from_text(text, fmt="auto", name="sf_vo")
-
-    assert traj.source_format == "sf_vo"
-    assert np.allclose(traj.stamps, [1882.60, 1882.65])
-    assert np.allclose(traj.positions[1], [2, 3, 4])
-    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
-    for key in ["num_inliers", "is_keyframe", "frame_cost", "reset_count", "depth_mean", "depth_min", "depth_max"]:
-        assert key in traj.extras
-
-
-def test_vloc_vo_format_uses_plain_header_tx_ty_negative_altitude_and_gps_fields_in_auto_mode():
-    text = """ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
-1882.55 0 10 0 9 9 0 89 1 -1 0 0 0
-1882.60 1 42 0 1 2 220 90 2 -1 31.1 121.2 50.5
-1882.65 1 43 1 2 3 221 91 3 -2 31.2 121.3 50.8
-"""
-    traj = load_trajectory_from_text(text, fmt="auto", name="vloc_vo")
-
-    assert traj.source_format == "vloc"
-    assert np.allclose(traj.stamps, [1882.60, 1882.65])
-    assert np.allclose(traj.positions[1], [2, 3, -50.8])
-    assert abs(yaw_from_rot(traj.rotations)[0] - np.pi / 2) < 1e-9
-    for key in ["status", "num_inliers", "reset_count", "latitude", "longitude", "altitude"]:
-        assert key in traj.extras
-
-
-def test_vloc_vo_format_falls_back_to_tz_when_gps_altitude_is_not_available():
-    text = """ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
-1882.60 1 42 0 1 2 3 90 2 -1 0 0 0
-1882.65 1 43 1 2 3 4 91 3 -2 0 0 0
-"""
-    traj = load_trajectory_from_text(text, fmt="vloc", name="vloc_vo_no_gps")
-
-    assert traj.source_format == "vloc"
-    assert np.allclose(traj.stamps, [1882.60, 1882.65])
-    assert np.allclose(traj.positions[1], [2, 3, 4])
-
-
-def test_euroc_commented_header_uses_seconds_and_qw_order():
-    text = """#timestamp [ns],p_RS_R_x [m],p_RS_R_y [m],p_RS_R_z [m],q_RS_w [],q_RS_x [],q_RS_y [],q_RS_z []
-1403636580863555584.0000000000,1,2,3,1,0,0,0
-1403636580913555456.0000000000,2,2,3,1,0,0,0
-"""
-    traj = load_trajectory_from_text(text, fmt="auto", name="euroc")
-    assert traj.source_format == "csv"
-    assert abs(traj.duration_s - 0.05) < 1e-6
-    assert np.allclose(traj.positions[0], [1, 2, 3])
-    assert abs(yaw_from_rot(traj.rotations)[0]) < 1e-9
+def test_load_trajectory_from_text_rejects_legacy_single_file_formats():
+    text = "0 0 0 0 0 0 0 1\n1 1 0 0 0 0 0 1\n"
+    for fmt in ["auto", "sf", "vloc", "csv", "kitti", "xyz"]:
+        with pytest.raises(ValueError, match="Unsupported trajectory format"):
+            load_trajectory_from_text(text, fmt=fmt, name=f"legacy_{fmt}")
 
 
 def test_numeric_tum_nanosecond_timestamps_are_normalized():
@@ -510,16 +1072,28 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
         f"{i * 0.1:.1f} {i:.3f} {np.sin(i):.6f} 1.000 0 0 0 1"
         for i in range(6)
     )
-    vo_text = """timestamp,x,y,z,aux,reset_id,tail_a,tail_b,tail_c
-0.0,0.0,0.000000,1.0,9,0,0,0,0
-0.1,1.0,0.841471,1.0,9,0,0,0,0
-0.2,2.0,0.909297,1.0,9,1,0,0,0
-0.3,3.0,0.141120,1.0,9,1,0,0,0
-0.4,4.0,-0.756802,1.0,9,2,0,0,0
-0.5,5.0,-0.958924,1.0,9,2,0,0,0
-"""
     gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
-    est = load_trajectory_from_text(vo_text, fmt="csv", name="vo")
+    est_stamps = np.arange(6, dtype=float) * 0.1
+    est_positions = np.column_stack([np.arange(6, dtype=float), np.sin(np.arange(6, dtype=float)), np.ones(6, dtype=float)])
+    raw_numeric = np.asarray(
+        [
+            [0.0, 0.0, 0.000000, 1.0, 9, 0, 0, 0, 0],
+            [0.1, 1.0, 0.841471, 1.0, 9, 0, 0, 0, 0],
+            [0.2, 2.0, 0.909297, 1.0, 9, 1, 0, 0, 0],
+            [0.3, 3.0, 0.141120, 1.0, 9, 1, 0, 0, 0],
+            [0.4, 4.0, -0.756802, 1.0, 9, 2, 0, 0, 0],
+            [0.5, 5.0, -0.958924, 1.0, 9, 2, 0, 0, 0],
+        ],
+        dtype=float,
+    )
+    est = Trajectory(
+        "vo",
+        est_stamps,
+        est_positions,
+        rotations=None,
+        extras={"raw_numeric_table": raw_numeric},
+        source_format="sf_vo",
+    )
     report = evaluate_trajectories(
         gt,
         est,

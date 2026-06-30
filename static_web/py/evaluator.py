@@ -1,28 +1,35 @@
-"""VO evaluation core.
+"""VO/VLOC evaluation core.
 
 这份文件负责所有“算法层”的工作，页面只是调用这里的函数。
 
+当前公开入口：
+1. sf_vloc: data_dir/imu.txt + log_dir/vloc.txt + home_point.txt + calib_raw.yaml。
+2. sf_vo: data_dir/imu.txt + log_dir/vo.txt + home_point.txt + calib_raw.yaml。
+3. tum: 标准 TUM 双轨迹文本，主要保留给离线/回归测试。
+
 代码分层：
-1. 输入解析：把 TUM/KITTI/CSV/EuRoC/注释表头等轨迹文件读成 Trajectory。
-2. 时间同步：默认把 GT 插值到 VO 时间戳；也保留 TUM greedy timestamp association。
-3. 轨迹对齐：SE3、Sim3、首帧对齐或不对齐，把 VO 坐标系映射到 GT 坐标系。
-4. 指标计算：ATE、RPE、长距离子轨迹误差、尺度漂移、覆盖率、发散、速度分箱、runtime。
-5. 报告输出：把指标、每帧误差表、子轨迹表组织成 report dict，供 app.py 展示和导出。
+1. 固定格式解析：目录入口只按需求文档固定列读取，不再做旧版自动表头识别。
+2. 坐标预处理：VLOC 统一到 body/NED；VO 从 camera 通过外参转到 body。
+3. 时间同步：固定把 GT/reference 插值到 estimate 时间戳；超过 1.0 s GT 插值间隔的帧会被丢弃。
+4. 有效段处理：VLOC 先过滤 vloc_mode <= 1；VO 按 reset_count 分段并过滤短段。
+5. 轨迹评估：VLOC 固定不做 Sim3/SE3 对齐；VO 固定按有效连续段分别做 Sim3。
+6. 指标与导出：生成页面指标、可视化明细、逐帧 ATE/RPE/尺度表和 Excel 中间结果。
 
 指标与代码字段对应：
-- 时间同步质量：prepare_evaluation_trajectories()/associate_trajectories() -> report["association"]。
-- 轨迹对齐尺度：compute_alignment()/aggregate_alignment() -> report["alignment"]。
+- 时间同步质量：prepare_evaluation_trajectories()/interpolate_reference_to_estimate() -> report["association"]。
+- 轨迹对齐尺度：compute_alignment()/aggregate_alignment() -> report["alignment"]；VLOC 固定 none，VO 固定分段 Sim3。
 - ATE 三维位置误差：pos_error_m -> report["ate_position_m"]。
 - ATE 水平误差：horizontal_error_m -> report["ate_horizontal_m"]。
 - ATE 垂直/高度误差：vertical_error_m -> report["ate_vertical_m"]。
-- VO 姿态修正：select_orientation_correction()/apply_orientation_correction() -> report["orientation_correction"]。
+- 姿态修正：select_orientation_correction()/apply_orientation_correction() -> report["orientation_correction"]；
+  当前 sf_vloc/sf_vo 固定 none，旧的 auto/手动修正只保留给通用评估入口。
 - 姿态/yaw 误差：rotation_errors()/yaw_from_rot() -> ate_orientation_deg / ate_yaw_deg。
 - RPE 帧数/距离间隔误差：rpe_frame_dataframe()/relative_error() -> report["rpe_frame_delta"] 和 rpe_per_frame。
 - KITTI/rpg 风格子轨迹误差：segment_errors() -> report["segment_errors"] 和 segment_records。
 - 速度分箱误差：summarize_by_speed_bins() -> report["speed_bins"]。
-- 终点漂移、覆盖率、路程、耗时、原始尺度比：summary dict。
-- 发散检测：detect_divergence() -> report["divergence"]。
-- VO 重置/大跳变诊断：detect_associated_discontinuities() -> report["discontinuities"]。
+- 覆盖率、路程、耗时、原始尺度比等汇总量：summary dict。
+- 发散检测：detect_divergence() -> report["divergence"]，目前主要作为导出/诊断字段，页面已弱化。
+- reset/gap/大跳变诊断：detect_associated_discontinuities() -> report["discontinuities"]。
 - runtime/资源统计：summarize_runtime() -> report["runtime"]。
 
 论文出处标注：
@@ -38,7 +45,7 @@
   直接来源：按传感器可观性选择 SE3/Sim3/首帧等对齐方式，ATE 与相对误差的统一解释。
 
 每个输出指标对应的论文方法：
-- report["association"]：Sturm12 的 TUM greedy timestamp association；interpolate_gt 是本系统为“GT 高频、VO 低频或错位”
+- report["association"]：Sturm12 的 TUM greedy timestamp association；interpolate_gt 是本系统为“GT 高频、estimate 低频或错位”
   增加的工程扩展，动机来自 Schubert18 的高频同步 GT 和 Zhang18 对时间关联问题的强调。
 - report["alignment"]：Sturm12 ATE 需要先对齐轨迹；Zhang18 明确按单目/双目/VIO 选择 Sim3、SE3 或其他变换。
 - report["ate_position_m"]：Sturm12 的 Absolute Trajectory Error；Zhang18 也把 ATE 作为常用全局误差。
@@ -53,15 +60,15 @@
 - report["segment_errors"]：Geiger12/KITTI odometry 的固定长度子轨迹平移百分比和旋转 deg/m；
   Zhang18/rpg 轨迹评估也使用相对误差和尺度漂移思想。
 - report["speed_bins"]：Geiger12/KITTI 的 error-vs-speed 图表思想；本系统把它泛化到无人机速度分箱。
-- report["summary"]["endpoint_error_m"]：工程扩展，论文中不是标准排行榜指标；用于物流无人机终点/降落点偏差分析。
+- report["summary"]["endpoint_error_m"]：工程扩展，论文中不是标准排行榜指标；目前保留在 report 中供导出/诊断使用。
 - report["summary"]["gt_coverage_ratio"] 和 report["summary"]["est_coverage_ratio"]：工程扩展，动机来自 Schubert18/Delmerico18
   对长序列 VIO 跟踪成功率、鲁棒性和飞行可用性的关注。
-- report["summary"]["raw_path_scale_ratio"]：Zhang18 的尺度可观性和 Sim3/SE3 对齐讨论；用于判断单目 VO 是否无尺度或尺度不稳。
+- report["summary"]["raw_path_scale_ratio"]：Zhang18 的尺度可观性和 Sim3/SE3 对齐讨论；用于判断估计轨迹是否无尺度或尺度不稳。
 - report["summary"]["duration_s"]、["gt_path_m"]、["est_path_m"]：工程基础量，用于把 Geiger12 的长度/速度误差、
   Delmerico18 的运行时间约束和无人机长航程需求放到同一报告。
 - report["divergence"]：工程扩展，论文中没有统一阈值公式；用于把 Schubert18/Delmerico18 的长序列鲁棒性需求落到可报警字段。
-- report["discontinuities"]：工程扩展，处理 VO 重定位/重置/丢跟踪后的大跳变，避免跨断点污染 Geiger12 式子轨迹统计。
-- report["runtime"]：Delmerico18 直接关注每帧处理时间、CPU 和内存负载；本系统从 VO 输出 extras 字段中统计这些量。
+- report["discontinuities"]：工程扩展，处理 estimate 重定位/重置/丢跟踪后的大跳变，避免跨断点污染 Geiger12 式子轨迹统计。
+- report["runtime"]：Delmerico18 直接关注每帧处理时间、CPU 和内存负载；本系统从 estimate extras 字段中统计这些量。
 """
 
 from __future__ import annotations
@@ -70,7 +77,7 @@ import io
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -78,11 +85,92 @@ import numpy as np
 import pandas as pd
 
 
+@dataclass(frozen=True)
+class EvaluationFormatSpec:
+    """公开评估入口格式定义。
+
+    这是新需求的第一层后端约束：页面或自动化流程只能选择这些评估模式。
+    注意它和底层单文件 parser 不是同一个概念：
+    - sf_vloc/sf_vo 是完整评估模式，需要 data_dir/log_dir 及配套文件；
+    - tum 是标准双轨迹文件模式；
+    - 旧的 sf/vloc/csv/kitti/xyz 只会作为内部解析工具逐步被迁移或删除，不再作为公开入口。
+    """
+
+    mode: str
+    label: str
+    required_files: tuple[str, ...]
+    description: str
+
+
+EVALUATION_FORMAT_SPECS: dict[str, EvaluationFormatSpec] = {
+    "sf_vloc": EvaluationFormatSpec(
+        mode="sf_vloc",
+        label="SF VLOC",
+        required_files=(
+            "data_dir/imu.txt",
+            "log_dir/vloc.txt",
+            "log_dir/home_point.txt",
+            "log_dir/calib_raw.yaml",
+        ),
+        description="SF VLOC 评估：读取 IMU/nav GT、VLOC 输出、home point 和外参标定。",
+    ),
+    "sf_vo": EvaluationFormatSpec(
+        mode="sf_vo",
+        label="SF VO",
+        required_files=(
+            "data_dir/imu.txt",
+            "log_dir/vo.txt",
+            "log_dir/home_point.txt",
+            "log_dir/calib_raw.yaml",
+        ),
+        description="SF VO 评估：读取 IMU/nav GT、VO 输出、home point 和相机/IMU/body 外参。",
+    ),
+    "tum": EvaluationFormatSpec(
+        mode="tum",
+        label="TUM",
+        required_files=("ground_truth.tum", "estimate.tum"),
+        description="TUM 双轨迹评估：timestamp tx ty tz qx qy qz qw。",
+    ),
+}
+
+
+SUPPORTED_EVALUATION_FORMATS: tuple[str, ...] = tuple(EVALUATION_FORMAT_SPECS)
+
+
+def normalize_evaluation_format(fmt: str) -> str:
+    """把用户/页面传入的评估格式规范化为三种公开模式之一。
+
+    支持大小写、空格、短横线的宽松写法，例如 SF-VLOC、sf vo、Tum。
+    但不会把 auto/csv/kitti/xyz/sf/vloc 这些旧单文件 parser 名称当成评估入口，
+    这样后端边界和 docs/需求梳理.md 的“一、可接受数据格式”保持一致。
+    """
+
+    token = re.sub(r"[^a-z0-9]+", "_", str(fmt).strip().lower()).strip("_")
+    aliases = {
+        "sfvloc": "sf_vloc",
+        "sf_vloc": "sf_vloc",
+        "sfvo": "sf_vo",
+        "sf_vo": "sf_vo",
+        "tum": "tum",
+    }
+    normalized = aliases.get(token)
+    if normalized in EVALUATION_FORMAT_SPECS:
+        return normalized
+    allowed = ", ".join(SUPPORTED_EVALUATION_FORMATS)
+    raise ValueError(f"Unsupported evaluation format: {fmt}. Supported evaluation formats: {allowed}")
+
+
+def get_evaluation_format_spec(fmt: str) -> EvaluationFormatSpec:
+    """返回公开评估格式的文件需求和说明。"""
+
+    return EVALUATION_FORMAT_SPECS[normalize_evaluation_format(fmt)]
+
+
 # 指标代码索引。README 的“指标与 evaluator.py 代码总表”应和这里保持一致。
 # 维护规则：只要 report 新增/改名指标，就同步更新本表和 README，避免页面、文档、代码三处口径分叉。
 METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
     {
-        "metric": "时间同步 / GT 插值到 VO",
+        "metric": "时间同步 / GT 插值到 estimate",
         "report_field": 'report["association"]',
         "code": "prepare_evaluation_trajectories(); build_associated_trajectories(); interpolate_reference_to_estimate(); associate_trajectories()",
     },
@@ -92,7 +180,7 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "code": "compute_alignment(); umeyama_alignment(); aggregate_alignment(); apply_alignment()",
     },
     {
-        "metric": "VO 姿态修正",
+        "metric": "estimate 姿态修正",
         "report_field": 'report["orientation_correction"]',
         "code": "select_orientation_correction(); score_orientation_correction_candidate(); apply_orientation_correction()",
     },
@@ -152,7 +240,7 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "code": "build_worst_segments()",
     },
     {
-        "metric": "断点 / VO 重置 / 大跳变",
+        "metric": "断点 / reset / 大跳变",
         "report_field": 'report["discontinuities"]',
         "code": "detect_associated_discontinuities(); select_evaluation_segments(); summarize_continuity()",
     },
@@ -162,7 +250,7 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "code": "detect_divergence(); classify_tracking_failure(); classify_scale_divergence()",
     },
     {
-        "metric": "航程 / 耗时 / 匹配数量 / 覆盖率 / 终点漂移 / 原始尺度比",
+        "metric": "航程 / 耗时 / 匹配数量 / 覆盖率 / 原始尺度比",
         "report_field": 'report["summary"]',
         "code": "evaluate_trajectories(): summary dict; path_distance(); _gt_coverage_ratio()",
     },
@@ -191,7 +279,7 @@ class Trajectory:
     stamps: 秒级时间戳。所有 ns/us/ms 输入都会先归一化到秒。
     positions: N x 3 的位置，单位默认按输入理解为米。
     rotations: 可选 N x 3 x 3 旋转矩阵；没有姿态时仍可计算位置类指标。
-    extras: runtime 或资源字段，例如 process_time_ms、fps、memory_mb。
+    extras: 与轨迹等长的附加字段，例如状态位、速度、reset_count、经纬高、runtime 或 source_index。
     """
 
     name: str
@@ -207,7 +295,7 @@ class Trajectory:
         代码意义：
         - 所有输入格式最终都会走到 Trajectory，因此这里统一做 shape 校验、类型转换和时间排序。
         - 时间排序很重要：后续 path_distance()、插值、RPE、子轨迹搜索都默认轨迹按时间递增。
-        - extras 会跟随相同排序同步重排，确保 runtime 字段仍然和 VO 位姿一一对应。
+        - extras 会跟随相同排序同步重排，确保状态、reset_count、runtime 等字段仍然和位姿一一对应。
 
         指标影响：
         - 如果这里不排序，summary.duration_s、speed_bins、RPE 和断点检测都会被乱序时间污染。
@@ -248,23 +336,97 @@ class Trajectory:
         return float(path_distance(self.positions)[-1]) if len(self.positions) else 0.0
 
 
+@dataclass(frozen=True)
+class HomePoint:
+    """SF 评估目录中的 home_point.txt。
+
+    固定格式：longitude latitude altitude_msl。
+    这里只负责读取固定三列，后续 NED 转换再使用这个原点。
+    """
+
+    longitude: float
+    latitude: float
+    altitude_msl: float
+
+
+@dataclass(frozen=True)
+class Calibration:
+    """SF 评估目录中的 calib_raw.yaml 关键外参。
+
+    只提取需求文档后续坐标变换会用到的 4x4 矩阵。
+    """
+
+    t_imu_body: np.ndarray
+    t_cam_imu: np.ndarray
+    t_cn_cnm1: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class SfVlocBundle:
+    """VLOC 评估入口读取结果。
+
+    这个 bundle 明确代表 VLOC 流程，只包含 vloc.txt，不会尝试读取 vo.txt。
+    后续 VLOC 专用预处理会在这个结构上继续做时间插值、NED 和外参转换。
+    """
+
+    nav: Trajectory
+    vloc: Trajectory
+    home_point: HomePoint
+    calibration: Calibration
+    data_dir: Path
+    log_dir: Path
+    files: dict[str, Path]
+
+
+@dataclass(frozen=True)
+class SfVoBundle:
+    """VO 评估入口读取结果。
+
+    这个 bundle 明确代表 VO 流程，只包含 vo.txt，不会尝试读取 vloc.txt。
+    后续 VO 专用预处理会按 reset_count 分段并做每段 Sim3。
+    """
+
+    nav: Trajectory
+    vo: Trajectory
+    home_point: HomePoint
+    calibration: Calibration
+    data_dir: Path
+    log_dir: Path
+    files: dict[str, Path]
+
+
+VLOC_FIXED_MAX_INTERPOLATION_GAP_S = 1.0
+VO_FIXED_MAX_INTERPOLATION_GAP_S = 1.0
+VO_MIN_VALID_SEGMENT_DURATION_S = 10.0
+VO_MIN_VALID_SEGMENT_FRAMES = 200
+WGS84_A_M = 6378137.0
+WGS84_F = 1.0 / 298.257223563
+WGS84_E2 = WGS84_F * (2.0 - WGS84_F)
+
+
 @dataclass
 class EvaluationConfig:
-    """评估配置，基本都由 app.py/静态网页侧边栏控件传入。
+    """评估配置。
+
+    当前前端只暴露少量必要参数：
+    - sf_vloc: 页面不暴露对齐/时间同步/RPE 配置，evaluate_vloc_bundle() 会强制使用固定规则。
+    - sf_vo: 页面只保留 RPE 统计间隔和尺度图间隔；其余对齐、时间同步和分段规则由 normalized_vo_evaluation_config() 固化。
+
+    其余字段仍保留，是为了：
+    - 支持通用 evaluate_trajectories()、TUM 回归测试和后端自动化调用。
+    - 让 VO/VLOC 固定入口可以通过 replace() 明确写出“哪些参数被强制固定”。
 
     配置与指标/流程的对应关系：
-    - alignment: 决定 compute_alignment() 的 SE3/Sim3/首帧/不对齐方式，影响所有 ATE/RPE/子轨迹误差。
-    - orientation_correction: 对 VO 姿态做坐标系/外参修正，或自动选择最优修正，
-      对应 report["orientation_correction"]，会影响姿态 ATE、RPE 和带姿态的子轨迹误差。
-    - association_mode/max_time_diff_s/max_interpolation_gap_s/time_offset_s/allow_extrapolation:
-      决定 prepare_evaluation_trajectories() 如何把 GT 和 VO 放到同一时间轴，影响匹配位姿、覆盖率和所有后续误差。
-    - rpe_delta_value/rpe_delta_unit: 控制 RPE 按帧数或按 GT 距离统计，对应 report["rpe_frame_delta"] 和 rpe_per_frame。
-      rpe_delta_frames 保留为旧配置兼容字段；rpe_delta_seconds 仍输出固定时间 RPE 参考值。
+    - alignment: 通用对齐方式；sf_vloc 固定 none，sf_vo 固定 sim3 并按 segment 逐段对齐。
+    - orientation_correction: 通用姿态修正；当前 sf_vloc/sf_vo 固定 none。
+    - association_mode/max_interpolation_gap_s/time_offset_s/allow_extrapolation:
+      控制 GT/reference 如何插值到 estimate 时间戳；当前 sf_vloc/sf_vo 固定 interpolate_gt、1.0 s、0、False。
+    - rpe_delta_value/rpe_delta_unit: 控制 VO 页面 RPE 按帧数或按 GT 距离统计，对应 report["rpe_frame_delta"] 和 rpe_per_frame。
+    - scale_delta_value/scale_delta_unit: 控制 VO 页面局部尺度图按帧数或按 GT 距离取窗口，对应 report["scale_frame_delta"] 和 scale_per_frame。
     - segment_lengths_m/segment_step_frames/max_segments_per_length/max_segment_length_diff_ratio:
-      控制 segment_errors() 的长航程子轨迹抽样，对应 report["segment_errors"] 和 report["segment_records"]。
-    - continuous_segment_policy/discontinuity_*: 控制断点诊断和跨重置轨迹如何纳入评估，对应 report["discontinuities"]。
-    - divergence_*: 控制 detect_divergence() 的发散阈值，对应 report["divergence"]。
-    - speed_bins_mps: 控制 summarize_by_speed_bins() 的速度分箱，对应 report["speed_bins"]。
+      控制 Geiger/KITTI 风格长航程子轨迹抽样，对应 report["segment_errors"] 和 report["segment_records"]。
+    - continuous_segment_policy/discontinuity_*: 控制断点诊断和跨 reset 轨迹如何纳入评估，对应 report["discontinuities"]。
+    - divergence_* 和 speed_bins_mps: 仍作为导出/诊断字段保留，当前页面主指标已弱化。
     """
 
     profile: str = "monocular_long_range_uav"
@@ -301,60 +463,6 @@ class EvaluationConfig:
     top_k_worst_segments: int = 10
 
 
-# 下面这些候选列名用于 CSV/TSV/注释表头自动识别。
-# 目的：不要求用户改原始数据列名，只要能识别到所需字段即可。
-TIME_COLUMN_CANDIDATES = ["timestamp", "time", "t", "stamp", "sec", "seconds", "ts", "ts1", "frame", "index"]
-X_COLUMN_CANDIDATES = [
-    "x",
-    "tx",
-    "px",
-    "p_x",
-    "p_RS_R_x",
-    "p_W_B_x",
-    "p_W_C_x",
-    "posx",
-    "positionx",
-    "translationx",
-    "utmex",
-    "east",
-    "easting",
-]
-Y_COLUMN_CANDIDATES = [
-    "y",
-    "ty",
-    "py",
-    "p_y",
-    "p_RS_R_y",
-    "p_W_B_y",
-    "p_W_C_y",
-    "posy",
-    "positiony",
-    "translationy",
-    "utmnorth",
-    "north",
-    "northing",
-]
-Z_COLUMN_CANDIDATES = [
-    "z",
-    "tz",
-    "pz",
-    "p_z",
-    "p_RS_R_z",
-    "p_W_B_z",
-    "p_W_C_z",
-    "posz",
-    "positionz",
-    "translationz",
-    "alt",
-    "altitude",
-    "height",
-    "up",
-]
-QX_COLUMN_CANDIDATES = ["qx", "q_x", "q_RS_x", "q_W_B_x", "q_B_W_x", "quatx", "quaternionx", "orientationx"]
-QY_COLUMN_CANDIDATES = ["qy", "q_y", "q_RS_y", "q_W_B_y", "q_B_W_y", "quaty", "quaterniony", "orientationy"]
-QZ_COLUMN_CANDIDATES = ["qz", "q_z", "q_RS_z", "q_W_B_z", "q_B_W_z", "quatz", "quaternionz", "orientationz"]
-QW_COLUMN_CANDIDATES = ["qw", "q_w", "q_RS_w", "q_W_B_w", "q_B_W_w", "quatw", "quaternionw", "orientationw"]
-
 AUTO_ORIENTATION_CORRECTION_CANDIDATES = (
     "none",
     "inverse",
@@ -379,59 +487,1051 @@ AUTO_ORIENTATION_CORRECTION_CANDIDATES = (
 )
 
 
-def load_trajectory(source: str | bytes | Path | io.BytesIO, fmt: str = "auto", name: str | None = None) -> Trajectory:
-    """从文件、上传对象或纯文本中读取轨迹。
+IMU_FIXED_COLUMNS = (
+    "ts",
+    "ts_fcc",
+    "status",
+    "flight_mode",
+    "x",
+    "y",
+    "z",
+    "yaw",
+    "pitch",
+    "roll",
+    "vx",
+    "vy",
+    "vz",
+    "position_reset_count",
+    "altitude_reset_count",
+    "heading_reset_count",
+    "latitude",
+    "longitude",
+    "altitude",
+    "altitude_msl",
+    "height",
+)
 
-    支持的常见格式：
-    - TUM: timestamp tx ty tz qx qy qz qw
-    - KITTI odometry: 12 values per row, row-major 3x4 pose matrix
-    - CSV/TSV/空格表：time/x/y/z，可选 quaternion、rotation matrix 或 yaw/pitch/roll。
+VLOC_FIXED_COLUMNS = (
+    "ts",
+    "status",
+    "num_inliers",
+    "reset_count",
+    "x",
+    "y",
+    "z",
+    "yaw",
+    "pitch",
+    "roll",
+    "latitude",
+    "longitude",
+    "height",
+)
 
-    代码意义：
-    - 这里只负责把输入对象变成文本，真正的格式识别在 load_trajectory_from_text()。
-    - 保留 name 是为了 report["inputs"] 能告诉用户本次评估到底用了哪个文件。
+VO_FIXED_COLUMNS = (
+    "ts",
+    "num_inliers",
+    "x",
+    "y",
+    "z",
+    "yaw",
+    "pitch",
+    "roll",
+    "is_keyframe",
+    "time_cost",
+    "reset_count",
+    "depth_mean",
+    "depth_min",
+    "depth_max",
+)
 
-    指标影响：
-    - 读取错误会影响所有指标；因此解析失败时宁愿报错，也不默默生成错误轨迹。
+
+def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVlocBundle:
+    """读取 VLOC 评估目录。
+
+    固定目录契约：
+    - data_dir/imu.txt
+    - log_dir/vloc.txt
+    - log_dir/home_point.txt
+    - log_dir/calib_raw.yaml
+
+    这个入口不接受 vo.txt，也不会调用旧的自动表头识别 parser。
     """
+
+    data_path = _require_directory(data_dir, "data_dir")
+    log_path = _require_directory(log_dir, "log_dir")
+    imu_path = _required_bundle_file(data_path, "imu.txt", "data_dir/imu.txt")
+    vloc_path = _required_bundle_file(log_path, "vloc.txt", "log_dir/vloc.txt")
+    home_path = _required_bundle_file(log_path, "home_point.txt", "log_dir/home_point.txt")
+    calib_path = _required_bundle_file(log_path, "calib_raw.yaml", "log_dir/calib_raw.yaml")
+
+    return SfVlocBundle(
+        nav=parse_imu_fixed(imu_path.read_text(encoding="utf-8", errors="replace"), name=str(imu_path)),
+        vloc=parse_vloc_fixed(vloc_path.read_text(encoding="utf-8", errors="replace"), name=str(vloc_path)),
+        home_point=parse_home_point_fixed(home_path.read_text(encoding="utf-8", errors="replace"), name=str(home_path)),
+        calibration=parse_calib_raw_fixed(calib_path.read_text(encoding="utf-8", errors="replace"), name=str(calib_path)),
+        data_dir=data_path,
+        log_dir=log_path,
+        files={
+            "nav": imu_path,
+            "estimate": vloc_path,
+            "home_point": home_path,
+            "calib_raw": calib_path,
+        },
+    )
+
+
+def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVoBundle:
+    """读取 VO 评估目录。
+
+    固定目录契约：
+    - data_dir/imu.txt
+    - log_dir/vo.txt
+    - log_dir/home_point.txt
+    - log_dir/calib_raw.yaml
+
+    这个入口不接受 vloc.txt，也不会调用旧的自动表头识别 parser。
+    """
+
+    data_path = _require_directory(data_dir, "data_dir")
+    log_path = _require_directory(log_dir, "log_dir")
+    imu_path = _required_bundle_file(data_path, "imu.txt", "data_dir/imu.txt")
+    vo_path = _required_bundle_file(log_path, "vo.txt", "log_dir/vo.txt")
+    home_path = _required_bundle_file(log_path, "home_point.txt", "log_dir/home_point.txt")
+    calib_path = _required_bundle_file(log_path, "calib_raw.yaml", "log_dir/calib_raw.yaml")
+
+    return SfVoBundle(
+        nav=parse_imu_fixed(imu_path.read_text(encoding="utf-8", errors="replace"), name=str(imu_path)),
+        vo=parse_vo_fixed(vo_path.read_text(encoding="utf-8", errors="replace"), name=str(vo_path)),
+        home_point=parse_home_point_fixed(home_path.read_text(encoding="utf-8", errors="replace"), name=str(home_path)),
+        calibration=parse_calib_raw_fixed(calib_path.read_text(encoding="utf-8", errors="replace"), name=str(calib_path)),
+        data_dir=data_path,
+        log_dir=log_path,
+        files={
+            "nav": imu_path,
+            "estimate": vo_path,
+            "home_point": home_path,
+            "calib_raw": calib_path,
+        },
+    )
+
+
+def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None = None) -> dict[str, Any]:
+    """按需求文档固定流程评估 sf_vloc。
+
+    这条入口不暴露对齐/姿态修正/时间同步模式选择：
+    - 固定使用经纬高 -> NED；
+    - 固定把 vloc 的 imu 位姿转到 body；
+    - 固定按有效 vloc 时间戳插值 nav；
+    - 固定最大 GT 插值间隔 1.0 s，超过直接丢弃该 vloc 帧；
+    - 固定不外推、固定 time_offset=0、固定不做 Sim3/SE3 用户选择。
+    """
+
+    cfg = normalized_vloc_evaluation_config(config)
+    nav_ned_body = sf_nav_to_body_ned_trajectory(bundle.nav, bundle.home_point)
+    vloc_ned_body = sf_vloc_to_body_ned_trajectory(bundle.vloc, bundle.home_point, bundle.calibration)
+
+    vloc_mode = np.asarray(vloc_ned_body.extras.get("vloc_mode", np.zeros(len(vloc_ned_body.positions))), dtype=float)
+    valid_mode = np.isfinite(vloc_mode) & (vloc_mode > 1.0)
+    dropped_invalid_mode = int(np.count_nonzero(~valid_mode))
+    if not np.any(valid_mode):
+        raise ValueError("No VLOC samples remain after filtering vloc_mode > 1")
+
+    valid_indices = np.flatnonzero(valid_mode)
+    vloc_valid = subset_trajectory(vloc_ned_body, valid_indices)
+    report = evaluate_trajectories(nav_ned_body, vloc_valid, cfg)
+    visual_segment_ids = (
+        report["per_pose"]["visual_segment_id"].to_numpy(dtype=int)
+        if "visual_segment_id" in report["per_pose"]
+        else None
+    )
+    report["vloc_details"] = build_vloc_detail_report(nav_ned_body, vloc_valid, cfg, visual_segment_ids=visual_segment_ids)
+    report["inputs"]["entry_mode"] = "vloc"
+    report["inputs"]["workflow"] = "sf_vloc"
+    report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
+    report["inputs"]["log_dir_name"] = bundle.log_dir.name or "log_dir"
+    report["inputs"]["fixed_rules"] = {
+        "alignment": "none",
+        "orientation_correction": "none",
+        "association_mode": "interpolate_gt",
+        "max_interpolation_gap_s": float(VLOC_FIXED_MAX_INTERPOLATION_GAP_S),
+        "allow_extrapolation": False,
+        "time_offset_s": 0.0,
+    }
+    report["association"]["dropped_est_invalid_mode"] = dropped_invalid_mode
+    report["association"]["valid_est_after_mode_filter"] = int(len(vloc_valid.positions))
+    report["summary"]["raw_est_poses"] = int(len(bundle.vloc.positions))
+    for sheet_name in ("sim3_gt_tum", "sim3_vo_tum"):
+        report["trajectory_exports"].pop(sheet_name, None)
+    return report
+
+
+def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = None) -> dict[str, Any]:
+    """按需求文档固定流程评估 sf_vo。
+
+    这条入口和 VLOC 分开：
+    - 固定读取 data_dir/imu.txt 和 log_dir/vo.txt；
+    - 固定把 VO cam 位姿通过 calib_raw.yaml 外参转到 body；
+    - 固定按 reset_count 连续段切分，丢弃小于 10 s 或小于 200 帧的短段；
+    - 固定把 GT 插值到有效 VO 时间戳，最大 GT 插值间隔 1.0 s；
+    - 固定按连续段分别做 Sim3，让每个 VO 重置后的局部坐标系单独对齐。
+    """
+
+    cfg = normalized_vo_evaluation_config(config)
+    nav_body = sf_nav_to_body_trajectory(bundle.nav)
+    vo_body = sf_vo_to_body_trajectory(bundle.vo, bundle.calibration)
+
+    valid_indices, valid_segment_ids, segment_filter = vo_valid_segment_indices(vo_body)
+    if len(valid_indices) < 2:
+        raise ValueError("No VO reset segment remains after filtering duration >= 10s and frame count >= 200")
+
+    vo_valid = subset_trajectory(vo_body, valid_indices)
+    vo_valid.extras["evaluation_segment_id"] = np.asarray(valid_segment_ids, dtype=int)
+    report = evaluate_trajectories(nav_body, vo_valid, cfg)
+    report["association"]["dropped_est_invalid_segment"] = int(segment_filter["dropped_pose_count"])
+    report["association"]["valid_est_after_segment_filter"] = int(len(vo_valid.positions))
+    report["association"]["vo_reset_segment_filter"] = segment_filter
+    visual_segment_ids = (
+        report["per_pose"]["visual_segment_id"].to_numpy(dtype=int)
+        if "visual_segment_id" in report["per_pose"]
+        else None
+    )
+    report["vo_details"] = build_vo_detail_report(nav_body, vo_valid, cfg, report, visual_segment_ids=visual_segment_ids)
+    report["inputs"]["entry_mode"] = "vo"
+    report["inputs"]["workflow"] = "sf_vo"
+    report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
+    report["inputs"]["log_dir_name"] = bundle.log_dir.name or "log_dir"
+    report["inputs"]["fixed_rules"] = {
+        "alignment": "sim3",
+        "orientation_correction": "none",
+        "association_mode": "interpolate_gt",
+        "max_interpolation_gap_s": float(VO_FIXED_MAX_INTERPOLATION_GAP_S),
+        "allow_extrapolation": False,
+        "time_offset_s": 0.0,
+        "continuous_segment_policy": "segments",
+        "min_valid_segment_duration_s": float(VO_MIN_VALID_SEGMENT_DURATION_S),
+        "min_valid_segment_frames": int(VO_MIN_VALID_SEGMENT_FRAMES),
+    }
+    report["summary"]["raw_est_poses"] = int(len(bundle.vo.positions))
+    return report
+
+
+def build_vloc_detail_report(
+    nav: Trajectory,
+    vloc: Trajectory,
+    cfg: EvaluationConfig,
+    visual_segment_ids: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """构造 VLOC 页面专用明细。
+
+    这部分严格对应需求文档中的 VLOC 轨迹对比和可视化：
+    - comparison: nav_data.ned - vloc_data.ned 的逐帧位置误差，以及 R_ref^-1 R_est 姿态误差；
+    - nav_status: 插值到 VLOC 时间戳后的导航状态、速度和 reset 信息；
+    - vloc_status: 与有效 VLOC 样本对应的 vloc_mode、num_inliers、reset_count；
+    - summary: VLOC 轨迹长度、水平/垂直平均和最大误差。
+    """
+    nav_eval, vloc_eval, _assoc = build_associated_trajectories(nav, vloc, cfg)
+    timestamps = vloc_eval.stamps
+    target_stamps = np.asarray(vloc_eval.extras.get("target_stamp", timestamps + float(cfg.time_offset_s)), dtype=float)
+    if len(timestamps) == 0:
+        empty = pd.DataFrame()
+        return {"summary": {}, "comparison": empty, "nav_status": empty, "vloc_status": empty}
+
+    nav_status = vloc_nav_status_frame(nav, target_stamps, timestamps)
+    vloc_status = vloc_est_status_frame(vloc_eval)
+    comparison = vloc_comparison_frame(nav_eval, vloc_eval, nav_status, vloc_status, visual_segment_ids=visual_segment_ids)
+
+    horizontal = comparison["horizontal_position_error_m"].to_numpy(dtype=float)
+    vertical_abs = comparison["vertical_position_error_abs_m"].to_numpy(dtype=float)
+    euler_norm = comparison["attitude_error_euler_norm_deg"].to_numpy(dtype=float) if "attitude_error_euler_norm_deg" in comparison else np.asarray([], dtype=float)
+    summary = {
+        "trajectory_length_m": float(path_distance(nav_eval.positions)[-1]) if len(nav_eval.positions) else 0.0,
+        "horizontal_error_mean_m": float(np.nanmean(horizontal)) if len(horizontal) else math.nan,
+        "horizontal_error_max_m": float(np.nanmax(horizontal)) if len(horizontal) else math.nan,
+        "vertical_error_mean_m": float(np.nanmean(vertical_abs)) if len(vertical_abs) else math.nan,
+        "vertical_error_max_m": float(np.nanmax(vertical_abs)) if len(vertical_abs) else math.nan,
+        "mean_error_pos_xy": float(np.nanmean(horizontal)) if len(horizontal) else math.nan,
+        "max_error_pos_xy": float(np.nanmax(horizontal)) if len(horizontal) else math.nan,
+        "mean_error_pos_z": float(np.nanmean(vertical_abs)) if len(vertical_abs) else math.nan,
+        "max_error_pos_z": float(np.nanmax(vertical_abs)) if len(vertical_abs) else math.nan,
+        "mean_error_euler": float(np.nanmean(euler_norm)) if len(euler_norm) else math.nan,
+        "max_error_euler": float(np.nanmax(euler_norm)) if len(euler_norm) else math.nan,
+    }
+    return {
+        "summary": summary,
+        "comparison": comparison,
+        "nav_status": nav_status,
+        "vloc_status": vloc_status,
+    }
+
+
+def build_vo_detail_report(
+    nav: Trajectory,
+    vo: Trajectory,
+    cfg: EvaluationConfig,
+    report: dict[str, Any],
+    visual_segment_ids: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """构造 VO 页面专用明细。
+
+    comparison 使用通用 evaluator 已经算好的 Sim3 后 per_pose 数据：
+    这样页面看到的 VO 轨迹、ATE/RPE 和导出结果使用同一套对齐结果。
+    """
+    nav_eval, vo_eval, _assoc = build_associated_trajectories(nav, vo, cfg)
+    timestamps = vo_eval.stamps
+    target_stamps = np.asarray(vo_eval.extras.get("target_stamp", timestamps + float(cfg.time_offset_s)), dtype=float)
+    if len(timestamps) == 0:
+        empty = pd.DataFrame()
+        return {"summary": {}, "comparison": empty, "nav_status": empty, "vo_status": empty, "segment_filter": {}}
+
+    nav_status = vloc_nav_status_frame(nav, target_stamps, timestamps)
+    vo_status = vo_est_status_frame(vo_eval)
+    comparison = vo_comparison_frame(report.get("per_pose", pd.DataFrame()), vo_status, visual_segment_ids=visual_segment_ids)
+    summary = {
+        "trajectory_length_m": float(report.get("summary", {}).get("gt_path_length_m", math.nan)),
+        "mean_error_pos_xy": float(report.get("ate_horizontal_m", {}).get("mean", math.nan)),
+        "mean_error_pos_z": float(report.get("ate_vertical_m", {}).get("mean", math.nan)),
+        "max_error_pos_xy": float(report.get("ate_horizontal_m", {}).get("max", math.nan)),
+        "max_error_pos_z": float(report.get("ate_vertical_m", {}).get("max", math.nan)),
+        "mean_error_euler": float(report.get("ate_orientation_deg", {}).get("mean", math.nan)) if report.get("ate_orientation_deg") else math.nan,
+        "max_error_euler": float(report.get("ate_orientation_deg", {}).get("max", math.nan)) if report.get("ate_orientation_deg") else math.nan,
+    }
+    segment_filter = report.get("association", {}).get("vo_reset_segment_filter", {})
+    return {
+        "summary": summary,
+        "comparison": comparison,
+        "nav_status": nav_status,
+        "vo_status": vo_status,
+        "segment_filter": segment_filter,
+    }
+
+
+def vloc_nav_status_frame(nav: Trajectory, target_stamps: np.ndarray, timestamps: np.ndarray) -> pd.DataFrame:
+    """把 nav 状态按需求文档插到有效 VLOC 时间戳。
+
+    离散状态字段按最近邻；速度、高度等连续字段按线性插值。
+    """
+    frame = pd.DataFrame({"timestamp": timestamps})
+    nearest_fields = {
+        "flight_mode": "flight_mode",
+        "navi_mode": "navi_mode",
+        "rtk_yaw": "rtk_yaw",
+        "rtk_alti": "rtk_altitude",
+        "position_reset_count": "position_reset_count",
+        "altitude_reset_count": "altitude_reset_count",
+        "heading_reset_count": "heading_reset_count",
+    }
+    for output_name, extra_name in nearest_fields.items():
+        frame[output_name] = extra_values_nearest(nav, extra_name, target_stamps)
+
+    for extra_field in ("vx", "vy", "vz", "height"):
+        frame[extra_field] = extra_values_linear(nav, extra_field, target_stamps)
+    frame["velocity_norm"] = np.linalg.norm(frame[["vx", "vy", "vz"]].to_numpy(dtype=float), axis=1)
+    return frame
+
+
+def vloc_est_status_frame(vloc: Trajectory) -> pd.DataFrame:
+    """提取有效 VLOC 样本自身的状态字段。"""
+    frame = pd.DataFrame({"timestamp": vloc.stamps})
+    for extra_field in ("vloc_mode", "num_inliers", "reset_count", "height"):
+        frame[extra_field] = trajectory_extra_or_nan(vloc, extra_field)
+    return frame
+
+
+def vo_est_status_frame(vo: Trajectory) -> pd.DataFrame:
+    """提取有效 VO 样本自身的状态字段。"""
+    frame = pd.DataFrame({"timestamp": vo.stamps})
+    for extra_field in ("num_inliers", "is_keyframe", "time_cost", "reset_count", "evaluation_segment_id"):
+        frame[extra_field] = trajectory_extra_or_nan(vo, extra_field)
+    return frame
+
+
+def vo_comparison_frame(
+    per_pose: pd.DataFrame,
+    vo_status: pd.DataFrame,
+    visual_segment_ids: np.ndarray | None = None,
+) -> pd.DataFrame:
+    """VO 逐帧对比表，位置误差按 nav - aligned VO 输出。"""
+    if per_pose.empty:
+        return pd.DataFrame()
+    frame = pd.DataFrame(
+        {
+            "timestamp": per_pose["timestamp"].to_numpy(dtype=float),
+            "segment_id": per_pose["segment_id"].to_numpy(dtype=int),
+            "visual_segment_id": (
+                np.asarray(visual_segment_ids, dtype=int)
+                if visual_segment_ids is not None and len(visual_segment_ids) == len(per_pose)
+                else per_pose.get("visual_segment_id", per_pose["segment_id"]).to_numpy(dtype=int)
+            ),
+            "distance_m": per_pose["distance_m"].to_numpy(dtype=float),
+            "nav_x_m": per_pose["gt_x_m"].to_numpy(dtype=float),
+            "nav_y_m": per_pose["gt_y_m"].to_numpy(dtype=float),
+            "nav_z_m": per_pose["gt_z_m"].to_numpy(dtype=float),
+            "vo_x_aligned_m": per_pose["est_x_aligned_m"].to_numpy(dtype=float),
+            "vo_y_aligned_m": per_pose["est_y_aligned_m"].to_numpy(dtype=float),
+            "vo_z_aligned_m": per_pose["est_z_aligned_m"].to_numpy(dtype=float),
+            "position_error_x_m": -per_pose["x_error_m"].to_numpy(dtype=float),
+            "position_error_y_m": -per_pose["y_error_m"].to_numpy(dtype=float),
+            "position_error_z_m": -per_pose["z_error_m"].to_numpy(dtype=float),
+            "position_error_3d_m": per_pose["error_m"].to_numpy(dtype=float),
+            "horizontal_position_error_m": per_pose["horizontal_error_m"].to_numpy(dtype=float),
+            "vertical_position_error_signed_m": -per_pose["z_error_m"].to_numpy(dtype=float),
+            "vertical_position_error_abs_m": per_pose["vertical_error_abs_m"].to_numpy(dtype=float),
+        }
+    )
+    if {"gt_yaw_deg", "est_yaw_aligned_deg", "yaw_error_signed_deg"}.issubset(per_pose.columns):
+        frame["nav_yaw_deg"] = per_pose["gt_yaw_deg"].to_numpy(dtype=float)
+        frame["nav_pitch_deg"] = per_pose["gt_pitch_deg"].to_numpy(dtype=float)
+        frame["nav_roll_deg"] = per_pose["gt_roll_deg"].to_numpy(dtype=float)
+        frame["vo_yaw_aligned_deg"] = per_pose["est_yaw_aligned_deg"].to_numpy(dtype=float)
+        frame["vo_pitch_aligned_deg"] = per_pose["est_pitch_aligned_deg"].to_numpy(dtype=float)
+        frame["vo_roll_aligned_deg"] = per_pose["est_roll_aligned_deg"].to_numpy(dtype=float)
+        frame["attitude_error_yaw_deg"] = -per_pose["yaw_error_signed_deg"].to_numpy(dtype=float)
+        frame["attitude_error_pitch_deg"] = -per_pose["pitch_error_signed_deg"].to_numpy(dtype=float)
+        frame["attitude_error_roll_deg"] = -per_pose["roll_error_signed_deg"].to_numpy(dtype=float)
+        frame["attitude_error_euler_norm_deg"] = np.linalg.norm(
+            frame[["attitude_error_yaw_deg", "attitude_error_pitch_deg", "attitude_error_roll_deg"]].to_numpy(dtype=float),
+            axis=1,
+        )
+    if len(vo_status) == len(frame):
+        for extra_field in ("num_inliers", "is_keyframe", "time_cost", "reset_count", "evaluation_segment_id"):
+            if extra_field in vo_status:
+                frame[extra_field] = vo_status[extra_field].to_numpy(dtype=float)
+    return frame
+
+
+def vloc_comparison_frame(
+    nav_eval: Trajectory,
+    vloc_eval: Trajectory,
+    nav_status: pd.DataFrame,
+    vloc_status: pd.DataFrame,
+    visual_segment_ids: np.ndarray | None = None,
+) -> pd.DataFrame:
+    """VLOC 逐帧对比表，位置误差按需求文档使用 nav - vloc。"""
+    nav_pos = np.asarray(nav_eval.positions, dtype=float)
+    vloc_pos = np.asarray(vloc_eval.positions, dtype=float)
+    pos_error = nav_pos - vloc_pos
+    segment_ids = np.zeros(len(vloc_eval.stamps), dtype=int)
+    if visual_segment_ids is not None and len(visual_segment_ids) == len(vloc_eval.stamps):
+        segment_ids = np.asarray(visual_segment_ids, dtype=int)
+    frame = pd.DataFrame(
+        {
+            "timestamp": vloc_eval.stamps,
+            "segment_id": segment_ids,
+            "visual_segment_id": segment_ids,
+            "distance_m": path_distance(nav_pos),
+            "nav_n_m": nav_pos[:, 0],
+            "nav_e_m": nav_pos[:, 1],
+            "nav_d_m": nav_pos[:, 2],
+            "vloc_n_m": vloc_pos[:, 0],
+            "vloc_e_m": vloc_pos[:, 1],
+            "vloc_d_m": vloc_pos[:, 2],
+            "position_error_n_m": pos_error[:, 0],
+            "position_error_e_m": pos_error[:, 1],
+            "position_error_d_m": pos_error[:, 2],
+            "position_error_3d_m": np.linalg.norm(pos_error, axis=1),
+            "horizontal_position_error_m": np.linalg.norm(pos_error[:, :2], axis=1),
+            "vertical_position_error_signed_m": pos_error[:, 2],
+            "vertical_position_error_abs_m": np.abs(pos_error[:, 2]),
+        }
+    )
+    frame["nav_height_m"] = nav_status["height"].to_numpy(dtype=float) if "height" in nav_status else np.nan
+    frame["vloc_height_m"] = vloc_status["height"].to_numpy(dtype=float) if "height" in vloc_status else np.nan
+    if nav_eval.rotations is not None and vloc_eval.rotations is not None:
+        nav_ypr = np.degrees(euler_yaw_pitch_roll_from_matrix(nav_eval.rotations))
+        vloc_ypr = np.degrees(euler_yaw_pitch_roll_from_matrix(vloc_eval.rotations))
+        err_rot = np.einsum("nji,njk->nik", nav_eval.rotations, vloc_eval.rotations)
+        err_ypr = np.degrees(wrap_pi(euler_yaw_pitch_roll_from_matrix(err_rot)))
+        frame["nav_yaw_deg"] = nav_ypr[:, 0]
+        frame["nav_pitch_deg"] = nav_ypr[:, 1]
+        frame["nav_roll_deg"] = nav_ypr[:, 2]
+        frame["vloc_yaw_deg"] = vloc_ypr[:, 0]
+        frame["vloc_pitch_deg"] = vloc_ypr[:, 1]
+        frame["vloc_roll_deg"] = vloc_ypr[:, 2]
+        frame["attitude_error_yaw_deg"] = err_ypr[:, 0]
+        frame["attitude_error_pitch_deg"] = err_ypr[:, 1]
+        frame["attitude_error_roll_deg"] = err_ypr[:, 2]
+        frame["attitude_error_euler_norm_deg"] = np.linalg.norm(err_ypr, axis=1)
+    return frame
+
+
+def trajectory_extra_or_nan(traj: Trajectory, key: str) -> np.ndarray:
+    """读取等长 extras；不存在时返回 NaN，方便前端图表跳过。"""
+    values = traj.extras.get(key)
+    if values is None or len(values) != len(traj.positions):
+        return np.full(len(traj.positions), math.nan, dtype=float)
+    return np.asarray(values, dtype=float)
+
+
+def extra_values_linear(traj: Trajectory, key: str, target_stamps: np.ndarray) -> np.ndarray:
+    """连续字段线性插值到 target_stamps。"""
+    unique = _unique_timestamp_trajectory(traj)
+    values = trajectory_extra_or_nan(unique, key)
+    if len(values) == 0:
+        return np.asarray([], dtype=float)
+    if np.all(~np.isfinite(values)):
+        return np.full(len(target_stamps), math.nan, dtype=float)
+    return np.interp(target_stamps, unique.stamps, values)
+
+
+def extra_values_nearest(traj: Trajectory, key: str, target_stamps: np.ndarray) -> np.ndarray:
+    """离散状态字段最近邻插值到 target_stamps。"""
+    unique = _unique_timestamp_trajectory(traj)
+    values = trajectory_extra_or_nan(unique, key)
+    if len(values) == 0:
+        return np.asarray([], dtype=float)
+    indices = nearest_indices_for_stamps(unique.stamps, target_stamps)
+    return values[indices]
+
+
+def nearest_indices_for_stamps(stamps: np.ndarray, target_stamps: np.ndarray) -> np.ndarray:
+    """向量化最近时间戳索引，用于状态字段最近邻插值。"""
+    src = np.asarray(stamps, dtype=float)
+    target = np.asarray(target_stamps, dtype=float)
+    if len(src) == 0:
+        raise ValueError("Cannot find nearest index in an empty timestamp array")
+    insert = np.searchsorted(src, target, side="left")
+    left = np.clip(insert - 1, 0, len(src) - 1)
+    right = np.clip(insert, 0, len(src) - 1)
+    choose_right = np.abs(src[right] - target) < np.abs(target - src[left])
+    return np.where(choose_right, right, left)
+
+
+def parse_imu_fixed(text: str, name: str = "imu.txt") -> Trajectory:
+    """按需求文档固定 21 列解析 IMU/nav GT。
+
+    不根据表头猜列名；表头只会被当作非数字说明行跳过。
+    yaw/pitch/roll 固定为弧度。
+    """
+
+    data = _read_fixed_numeric_table(text, len(IMU_FIXED_COLUMNS), name, "IMU")
+    _require_finite_numeric_table(data, name)
+    status = data[:, 2].astype(np.int64)
+    extras = {
+        "raw_numeric_table": data,
+        "ts_fcc": data[:, 1],
+        "status": data[:, 2],
+        "flight_mode": data[:, 3],
+        "vx": data[:, 10],
+        "vy": data[:, 11],
+        "vz": data[:, 12],
+        "position_reset_count": data[:, 13],
+        "altitude_reset_count": data[:, 14],
+        "heading_reset_count": data[:, 15],
+        "latitude": data[:, 16],
+        "longitude": data[:, 17],
+        "altitude": data[:, 18],
+        "altitude_msl": data[:, 19],
+        "height": data[:, 20],
+        "navi_mode": (status & 0x0F).astype(float),
+        "rtk_yaw": ((status & (1 << 22)) != 0).astype(float),
+        "rtk_altitude": ((status & (1 << 28)) != 0).astype(float),
+    }
+    rotations = euler_yaw_pitch_roll_to_matrix(data[:, 7], data[:, 8], data[:, 9])
+    return Trajectory(
+        name,
+        _normalize_timestamps(data[:, 0], "s"),
+        data[:, 4:7],
+        rotations,
+        extras=extras,
+        source_format="sf_imu",
+    )
+
+
+def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
+    """按需求文档固定 13 列解析 VLOC 输出。
+
+    不根据表头猜列名；yaw/pitch/roll 固定为角度。
+    """
+
+    data = _read_fixed_numeric_table(text, len(VLOC_FIXED_COLUMNS), name, "VLOC")
+    _require_finite_numeric_table(data, name)
+    status = data[:, 1].astype(np.int64)
+    extras = {
+        "raw_numeric_table": data,
+        "status": data[:, 1],
+        "num_inliers": data[:, 2],
+        "reset_count": data[:, 3],
+        "latitude": data[:, 10],
+        "longitude": data[:, 11],
+        "altitude_msl": data[:, 6],
+        "height": data[:, 12],
+        "vloc_mode": (status & 0x0F).astype(float),
+    }
+    angles = np.deg2rad(data[:, 7:10])
+    rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
+    return Trajectory(
+        name,
+        _normalize_timestamps(data[:, 0], "s"),
+        data[:, 4:7],
+        rotations,
+        extras=extras,
+        source_format="sf_vloc",
+    )
+
+
+def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
+    """按需求文档固定 14 列解析 VO 输出。
+
+    不根据表头猜列名；yaw/pitch/roll 固定为角度。
+    最后三列 depth_mean/depth_min/depth_max 只用于固定格式校验，不参与评估指标。
+    兼容旧版 11 列 VO：缺失的 depth 三列会补 0。
+    """
+
+    data = _read_vo_fixed_numeric_table(text, name)
+    _require_finite_numeric_table(data, name)
+    extras = {
+        "raw_numeric_table": data,
+        "num_inliers": data[:, 1],
+        "is_keyframe": data[:, 8],
+        "time_cost": data[:, 9],
+        "reset_count": data[:, 10],
+    }
+    angles = np.deg2rad(data[:, 5:8])
+    rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
+    return Trajectory(
+        name,
+        _normalize_timestamps(data[:, 0], "s"),
+        data[:, 2:5],
+        rotations,
+        extras=extras,
+        source_format="sf_vo",
+    )
+
+
+def _read_vo_fixed_numeric_table(text: str, name: str) -> np.ndarray:
+    """读取 VO 固定数字表，兼容旧版 11 列输出。"""
+
+    data = _read_fixed_numeric_table_variants(
+        text,
+        expected_cols=len(VO_FIXED_COLUMNS),
+        legacy_cols=11,
+        legacy_padding=(0.0, 0.0, 0.0),
+        name=name,
+        fmt_name="VO",
+    )
+    return data
+
+
+def parse_home_point_fixed(text: str, name: str = "home_point.txt") -> HomePoint:
+    """按固定三列解析 home_point.txt：longitude latitude altitude_msl。"""
+
+    data = _read_fixed_numeric_table(text, 3, name, "home_point")
+    _require_finite_numeric_table(data, name)
+    if len(data) != 1:
+        raise ValueError(f"{name}: home_point format expects exactly one numeric row")
+    return HomePoint(longitude=float(data[0, 0]), latitude=float(data[0, 1]), altitude_msl=float(data[0, 2]))
+
+
+def parse_calib_raw_fixed(text: str, name: str = "calib_raw.yaml") -> Calibration:
+    """读取 calib_raw.yaml 中后续坐标变换需要的固定 4x4 矩阵。"""
+
+    return Calibration(
+        t_imu_body=_extract_fixed_yaml_matrix(text, "T_imu_body", name, required=True),
+        t_cam_imu=_extract_fixed_yaml_matrix(text, "T_cam_imu", name, required=True),
+        t_cn_cnm1=_extract_fixed_yaml_matrix(text, "T_cn_cnm1", name, required=False),
+    )
+
+
+def normalized_vloc_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
+    """把用户配置收敛成 sf_vloc 固定评估参数。"""
+    base = config if config is not None else EvaluationConfig()
+    return replace(
+        base,
+        alignment="none",
+        orientation_correction="none",
+        association_mode="interpolate_gt",
+        max_time_diff_s=None,
+        max_interpolation_gap_s=float(VLOC_FIXED_MAX_INTERPOLATION_GAP_S),
+        allow_extrapolation=False,
+        interpolate_rotation=True,
+        interpolation_position_method="linear",
+        interpolation_rotation_method="slerp",
+        time_offset_s=0.0,
+        continuous_segment_policy="vo_timestamps",
+    )
+
+
+def normalized_vo_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
+    """把用户配置收敛成 sf_vo 固定评估参数。
+
+    VO 和 VLOC 的关键区别是：VO 是可能无尺度且会 reset 的轨迹，因此固定走 Sim3，
+    并把 reset_count 形成的连续段交给 evaluate_trajectories() 逐段对齐。
+    """
+    base = config if config is not None else EvaluationConfig()
+    return replace(
+        base,
+        alignment="sim3",
+        orientation_correction="none",
+        association_mode="interpolate_gt",
+        max_time_diff_s=None,
+        max_interpolation_gap_s=float(VO_FIXED_MAX_INTERPOLATION_GAP_S),
+        allow_extrapolation=False,
+        interpolate_rotation=True,
+        interpolation_position_method="linear",
+        interpolation_rotation_method="slerp",
+        time_offset_s=0.0,
+        continuous_segment_policy="segments",
+    )
+
+
+def sf_nav_to_body_trajectory(nav: Trajectory) -> Trajectory:
+    """VO 流程中的 nav GT 已经是 body 坐标系，这里只补齐语义字段。"""
+    extras = dict(nav.extras)
+    extras["body_x_m"] = nav.positions[:, 0]
+    extras["body_y_m"] = nav.positions[:, 1]
+    extras["body_z_m"] = nav.positions[:, 2]
+    return Trajectory(
+        nav.name,
+        nav.stamps,
+        nav.positions,
+        nav.rotations,
+        extras=extras,
+        source_format="sf_imu_body",
+    )
+
+
+def sf_nav_to_body_ned_trajectory(nav: Trajectory, home_point: HomePoint) -> Trajectory:
+    """把 nav GT 转成以 home_point 为原点的 body/NED 轨迹。
+
+    水平 N/E 使用经纬度转 NED；垂直分量按原 MATLAB VLOC 口径处理：
+    nav 使用 altitude_msl，VLOC 使用 raw z，因此后续误差等价于
+    abs(nav_altitude_msl + vloc_body_z)。
+    """
+    latitude = _required_extra(nav, "latitude")
+    longitude = _required_extra(nav, "longitude")
+    altitude_msl = _required_extra(nav, "altitude_msl")
+    ned = geodetic_to_ned(latitude, longitude, altitude_msl, home_point)
+    ned[:, 2] = -np.asarray(altitude_msl, dtype=float)
+    extras = dict(nav.extras)
+    extras["body_x_m"] = nav.positions[:, 0]
+    extras["body_y_m"] = nav.positions[:, 1]
+    extras["body_z_m"] = nav.positions[:, 2]
+    extras["ned_n_m"] = ned[:, 0]
+    extras["ned_e_m"] = ned[:, 1]
+    extras["ned_d_m"] = ned[:, 2]
+    return Trajectory(
+        nav.name,
+        nav.stamps,
+        ned,
+        nav.rotations,
+        extras=extras,
+        source_format="sf_imu_body_ned",
+    )
+
+
+def sf_vloc_to_body_ned_trajectory(vloc: Trajectory, home_point: HomePoint, calibration: Calibration) -> Trajectory:
+    """把 vloc 的 imu 位姿转成 body/NED 轨迹。"""
+    latitude = _required_extra(vloc, "latitude")
+    longitude = _required_extra(vloc, "longitude")
+    altitude_msl = np.asarray(vloc.extras.get("altitude_msl", vloc.positions[:, 2]), dtype=float)
+    imu_ned = geodetic_to_ned(latitude, longitude, altitude_msl, home_point)
+    imu_ned[:, 2] = np.asarray(vloc.positions[:, 2], dtype=float)
+
+    rotations = vloc.rotations
+    body_ned = imu_ned
+    body_rot = rotations
+    if rotations is not None:
+        rot_imu_body = np.asarray(calibration.t_imu_body[:3, :3], dtype=float)
+        trans_imu_body = np.asarray(calibration.t_imu_body[:3, 3], dtype=float)
+        rot_body_imu = rot_imu_body.T
+        trans_body_in_imu = -rot_body_imu @ trans_imu_body
+        body_ned = imu_ned + np.einsum("nij,j->ni", rotations, trans_body_in_imu)
+        body_rot = np.einsum("nij,jk->nik", rotations, rot_body_imu)
+
+    extras = dict(vloc.extras)
+    extras["imu_x_m"] = vloc.positions[:, 0]
+    extras["imu_y_m"] = vloc.positions[:, 1]
+    extras["imu_z_m"] = vloc.positions[:, 2]
+    extras["ned_n_m"] = body_ned[:, 0]
+    extras["ned_e_m"] = body_ned[:, 1]
+    extras["ned_d_m"] = body_ned[:, 2]
+    return Trajectory(
+        vloc.name,
+        vloc.stamps,
+        body_ned,
+        body_rot,
+        extras=extras,
+        source_format="sf_vloc_body_ned",
+    )
+
+
+def sf_vo_to_body_trajectory(vo: Trajectory, calibration: Calibration) -> Trajectory:
+    """把 VO camera 位姿转成 body 位姿。
+
+    需求文档定义 VO 输出在 cam frame，评估时要和 nav body frame 对比。
+    这里按 T_world_body = T_world_cam * T_cam_imu * T_imu_body 组合外参；
+    单位外参时输出应与原始 VO 完全一致。
+    """
+    t_cam_body = np.asarray(calibration.t_cam_imu, dtype=float) @ np.asarray(calibration.t_imu_body, dtype=float)
+    rot_cam_body = t_cam_body[:3, :3]
+    trans_cam_body = t_cam_body[:3, 3]
+
+    rotations = vo.rotations
+    body_positions = np.asarray(vo.positions, dtype=float)
+    body_rotations = rotations
+    if rotations is not None:
+        body_positions = body_positions + np.einsum("nij,j->ni", rotations, trans_cam_body)
+        body_rotations = np.einsum("nij,jk->nik", rotations, rot_cam_body)
+
+    extras = dict(vo.extras)
+    extras["cam_x_m"] = vo.positions[:, 0]
+    extras["cam_y_m"] = vo.positions[:, 1]
+    extras["cam_z_m"] = vo.positions[:, 2]
+    extras["body_x_m"] = body_positions[:, 0]
+    extras["body_y_m"] = body_positions[:, 1]
+    extras["body_z_m"] = body_positions[:, 2]
+    return Trajectory(
+        vo.name,
+        vo.stamps,
+        body_positions,
+        body_rotations,
+        extras=extras,
+        source_format="sf_vo_body",
+    )
+
+
+def vo_valid_segment_indices(vo: Trajectory) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """按 reset_count 连续段筛选 VO 有效段。
+
+    规则来自需求文档：
+    - reset_count 变化代表 VO 重新初始化，新段不能和旧段混成一条连续轨迹；
+    - 每段 duration < 10 s 或 frame count < 200 都视为无效，先过滤；
+    - 剩余有效段会重新编号为 evaluation_segment_id，供 Sim3 分段对齐和 3D 起终点显示使用。
+    """
+    reset_count = trajectory_extra_or_nan(vo, "reset_count")
+    n = len(vo.positions)
+    if n == 0:
+        return np.asarray([], dtype=int), np.asarray([], dtype=int), {
+            "segments": [],
+            "valid_segment_count": 0,
+            "invalid_segment_count": 0,
+            "dropped_pose_count": 0,
+        }
+
+    starts = [0]
+    for idx in range(n - 1):
+        current = reset_count[idx]
+        nxt = reset_count[idx + 1]
+        changed = current != nxt
+        if not np.isfinite(current) or not np.isfinite(nxt):
+            changed = True
+        if changed:
+            starts.append(idx + 1)
+    starts.append(n)
+
+    valid_indices: list[int] = []
+    valid_segment_ids: list[int] = []
+    segment_infos: list[dict[str, Any]] = []
+    next_valid_segment_id = 0
+    for raw_segment_id, (start, end) in enumerate(zip(starts[:-1], starts[1:])):
+        count = int(end - start)
+        duration_s = float(vo.stamps[end - 1] - vo.stamps[start]) if count > 1 else 0.0
+        valid = count >= VO_MIN_VALID_SEGMENT_FRAMES and duration_s >= VO_MIN_VALID_SEGMENT_DURATION_S
+        info = {
+            "raw_segment_id": int(raw_segment_id),
+            "start_index": int(start),
+            "end_index": int(end),
+            "count": count,
+            "duration_s": duration_s,
+            "reset_count": float(reset_count[start]) if np.isfinite(reset_count[start]) else math.nan,
+            "valid": bool(valid),
+        }
+        if valid:
+            segment_indices = list(range(start, end))
+            valid_indices.extend(segment_indices)
+            valid_segment_ids.extend([next_valid_segment_id] * count)
+            info["evaluation_segment_id"] = int(next_valid_segment_id)
+            next_valid_segment_id += 1
+        segment_infos.append(info)
+
+    valid_idx_arr = np.asarray(valid_indices, dtype=int)
+    valid_seg_arr = np.asarray(valid_segment_ids, dtype=int)
+    return valid_idx_arr, valid_seg_arr, {
+        "min_duration_s": float(VO_MIN_VALID_SEGMENT_DURATION_S),
+        "min_frames": int(VO_MIN_VALID_SEGMENT_FRAMES),
+        "segments": segment_infos,
+        "valid_segment_count": int(next_valid_segment_id),
+        "invalid_segment_count": int(sum(1 for item in segment_infos if not item["valid"])),
+        "dropped_pose_count": int(n - len(valid_idx_arr)),
+    }
+
+
+def _required_extra(traj: Trajectory, key: str) -> np.ndarray:
+    values = traj.extras.get(key)
+    if values is None:
+        raise ValueError(f"{traj.name}: missing required trajectory extra '{key}'")
+    arr = np.asarray(values, dtype=float)
+    if len(arr) != len(traj.positions):
+        raise ValueError(f"{traj.name}: extra '{key}' length mismatch")
+    return arr
+
+
+def geodetic_to_ned(
+    latitude_deg: np.ndarray,
+    longitude_deg: np.ndarray,
+    altitude_m: np.ndarray,
+    home_point: HomePoint,
+) -> np.ndarray:
+    """WGS84 经纬高转以 home_point 为原点的 NED。"""
+    lat = np.asarray(latitude_deg, dtype=float).reshape(-1)
+    lon = np.asarray(longitude_deg, dtype=float).reshape(-1)
+    alt = np.asarray(altitude_m, dtype=float).reshape(-1)
+    if not (len(lat) == len(lon) == len(alt)):
+        raise ValueError("latitude/longitude/altitude arrays must have the same length")
+
+    ecef = geodetic_to_ecef(lat, lon, alt)
+    home_ecef = geodetic_to_ecef(
+        np.asarray([home_point.latitude], dtype=float),
+        np.asarray([home_point.longitude], dtype=float),
+        np.asarray([home_point.altitude_msl], dtype=float),
+    )[0]
+    lat0 = math.radians(float(home_point.latitude))
+    lon0 = math.radians(float(home_point.longitude))
+    sin_lat0, cos_lat0 = math.sin(lat0), math.cos(lat0)
+    sin_lon0, cos_lon0 = math.sin(lon0), math.cos(lon0)
+    ecef_to_ned = np.asarray(
+        [
+            [-sin_lat0 * cos_lon0, -sin_lat0 * sin_lon0, cos_lat0],
+            [-sin_lon0, cos_lon0, 0.0],
+            [-cos_lat0 * cos_lon0, -cos_lat0 * sin_lon0, -sin_lat0],
+        ],
+        dtype=float,
+    )
+    delta = ecef - home_ecef
+    return delta @ ecef_to_ned.T
+
+
+def geodetic_to_ecef(latitude_deg: np.ndarray, longitude_deg: np.ndarray, altitude_m: np.ndarray) -> np.ndarray:
+    """WGS84 经纬高转 ECEF。"""
+    lat = np.deg2rad(np.asarray(latitude_deg, dtype=float).reshape(-1))
+    lon = np.deg2rad(np.asarray(longitude_deg, dtype=float).reshape(-1))
+    alt = np.asarray(altitude_m, dtype=float).reshape(-1)
+    sin_lat = np.sin(lat)
+    cos_lat = np.cos(lat)
+    sin_lon = np.sin(lon)
+    cos_lon = np.cos(lon)
+    radius = WGS84_A_M / np.sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat)
+    x = (radius + alt) * cos_lat * cos_lon
+    y = (radius + alt) * cos_lat * sin_lon
+    z = (radius * (1.0 - WGS84_E2) + alt) * sin_lat
+    return np.column_stack([x, y, z])
+
+
+def _require_directory(path: str | Path, label: str) -> Path:
+    resolved = Path(path).expanduser()
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"{label} must be a directory: {resolved}")
+    return resolved
+
+
+def _required_bundle_file(base_dir: Path, filename: str, requirement_label: str) -> Path:
+    path = base_dir / filename
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing required file {requirement_label}: {path}")
+    return path
+
+
+def _read_fixed_numeric_table(text: str, expected_cols: int, name: str, fmt_name: str) -> np.ndarray:
+    """读取固定列数字表。
+
+    为了兼容文件首行写死的表头，非数字说明行只允许出现在第一条数据之前。
+    真正的数据行必须严格满足固定列数。
+    """
+
+    rows: list[list[float]] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = [token for token in re.split(r"[\s,;]+", line) if token]
+        try:
+            values = [float(token) for token in tokens]
+        except ValueError:
+            if not rows:
+                continue
+            raise ValueError(f"{name}: {fmt_name} line {line_no} contains non-numeric values after data started")
+        if len(values) != expected_cols:
+            raise ValueError(f"{name}: {fmt_name} format expects {expected_cols} columns, got {len(values)} on line {line_no}")
+        rows.append(values)
+    if not rows:
+        raise ValueError(f"{name}: {fmt_name} file contains no numeric data rows")
+    return np.asarray(rows, dtype=float)
+
+
+def _read_fixed_numeric_table_variants(
+    text: str,
+    *,
+    expected_cols: int,
+    legacy_cols: int,
+    legacy_padding: tuple[float, ...],
+    name: str,
+    fmt_name: str,
+) -> np.ndarray:
+    """读取固定列数字表，同时兼容一种旧列数。"""
+
+    rows: list[list[float]] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = [token for token in re.split(r"[\s,;]+", line) if token]
+        try:
+            values = [float(token) for token in tokens]
+        except ValueError:
+            if not rows:
+                continue
+            raise ValueError(f"{name}: {fmt_name} line {line_no} contains non-numeric values after data started")
+        if len(values) == legacy_cols:
+            values = values + list(legacy_padding)
+        elif len(values) != expected_cols:
+            raise ValueError(
+                f"{name}: {fmt_name} format expects {expected_cols} columns "
+                f"(or legacy {legacy_cols}), got {len(values)} on line {line_no}"
+            )
+        rows.append(values)
+    if not rows:
+        raise ValueError(f"{name}: {fmt_name} file contains no numeric data rows")
+    return np.asarray(rows, dtype=float)
+
+
+def _require_finite_numeric_table(data: np.ndarray, name: str) -> None:
+    if not np.isfinite(data).all():
+        raise ValueError(f"{name}: fixed-format input contains NaN or infinite values")
+
+
+def _extract_fixed_yaml_matrix(text: str, key: str, name: str, required: bool) -> np.ndarray | None:
+    match = re.search(rf"{re.escape(key)}\s*:\s*\[([^\]]+)\]", text, flags=re.DOTALL)
+    if not match:
+        if required:
+            raise ValueError(f"{name}: missing required calibration matrix {key}")
+        return None
+    values = [float(token) for token in re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", match.group(1))]
+    if len(values) != 16:
+        raise ValueError(f"{name}: calibration matrix {key} expects 16 values, got {len(values)}")
+    return np.asarray(values, dtype=float).reshape(4, 4)
+
+
+def load_trajectory(source: str | bytes | Path | io.BytesIO, fmt: str = "tum", name: str | None = None) -> Trajectory:
+    """从文件、上传对象或纯文本中读取单条 TUM 轨迹。"""
     text, inferred_name = _read_text(source)
     return load_trajectory_from_text(text, fmt=fmt, name=name or inferred_name)
 
 
-def load_trajectory_from_text(text: str, fmt: str = "auto", name: str = "trajectory") -> Trajectory:
+def load_trajectory_from_text(text: str, fmt: str = "tum", name: str = "trajectory") -> Trajectory:
     """把文本轨迹读成 Trajectory。
 
-    这里是输入格式分发层：auto 会先看是否有注释表头，再按列数识别
-    SF/VLOC/KITTI/TUM/XYZ/CSV。真正的列解析在 _parse_sf()、_parse_vloc()、_parse_csv() 和 _parse_numeric_table()。
-
-    指标影响：
-    - 识别成 KITTI/TUM/CSV 会决定时间戳、姿态和单位如何解析。
-    - 如果误把带表头文件当无表头数字表，后续 ATE/RPE 可能完全失真，所以 auto 优先检查注释表头。
+    当前单文件入口只保留 TUM。
+    SF VLOC/VO 主流程必须走目录入口：
+    - load_vloc_evaluation_bundle()
+    - load_vo_evaluation_bundle()
     """
-
     lines = _meaningful_lines(text)
     if not lines:
         raise ValueError(f"{name}: empty trajectory file")
 
     normalized_fmt = fmt.lower()
-    if normalized_fmt == "auto":
-        if _comment_header(text):
-            normalized_fmt = _detect_commented_format(text)
-        else:
-            normalized_fmt = _detect_plain_header_format(lines) or _detect_format(lines)
-
-    if normalized_fmt == "sf":
-        return _parse_sf(text, name)
-    if normalized_fmt == "vloc":
-        return _parse_vloc(text, name)
-    if normalized_fmt == "csv":
-        return _parse_csv(text, name)
     if normalized_fmt == "tum":
-        return _parse_numeric_table(lines, name, "tum")
-    if normalized_fmt == "kitti":
-        return _parse_numeric_table(lines, name, "kitti")
-    if normalized_fmt == "xyz":
-        return _parse_numeric_table(lines, name, "xyz")
+        return _parse_tum_numeric_table(lines, name)
     raise ValueError(f"Unsupported trajectory format: {fmt}")
 
 
@@ -440,7 +1540,12 @@ def evaluate_trajectories(
     est: Trajectory,
     config: EvaluationConfig | None = None,
 ) -> dict[str, Any]:
-    """评估入口：输入 GT 和 VO 轨迹，输出完整 report。
+    """通用轨迹评估入口：输入 GT/reference 和 estimate，输出完整 report。
+
+    这里是 VLOC 和 VO 都会复用的核心计算层：
+    - VLOC 入口会先把 nav/vloc 都转成 body/NED，再固定不对齐地调用这里。
+    - VO 入口会先把 camera pose 转成 body pose、按 reset_count 筛掉短段，再用分段 Sim3 调用这里。
+    - TUM/测试入口也可以直接传两条 Trajectory 进来。
 
     流程对应页面上的“运行结果、可视化、明细与导出”：
     1. 时间同步 -> association / coverage。
@@ -457,8 +1562,8 @@ def evaluate_trajectories(
     """
     cfg = config or EvaluationConfig()
 
-    # 1. 时间同步：默认以 VO 时间戳为评估基准，把 GT/IMU 插值到 VO 时刻。
-    #    这样 GT=0.1/0.3/0.5、VO=0.2/0.4/0.6 的相位错开数据不会被错误丢弃。
+    # 1. 时间同步：默认以 estimate 时间戳为评估基准，把 GT/reference 插值到 estimate 时刻。
+    #    这样 GT=0.1/0.3/0.5、estimate=0.2/0.4/0.6 的相位错开数据不会被错误丢弃。
     #    如果选择 nearest，则退回 TUM RGB-D benchmark 的 greedy timestamp association。
     original_gt = gt
     original_est = est
@@ -466,25 +1571,32 @@ def evaluate_trajectories(
     if len(gt_idx) < 2:
         raise ValueError("Need at least two associated poses to evaluate a trajectory")
 
-    # 2. 先在原始匹配序列上诊断断点/跳变。默认策略 vo_timestamps 不丢点，
-    #    断点只用于提示 VO 可能发生了重置或局部坐标系切换。
+    # 2. 先在同步后的原始匹配序列上诊断断点/跳变。
+    #    sf_vo 会把 reset_count 分段结果写入 evaluation_segment_id，因此 reset 边界也会被标为断点；
+    #    sf_vloc 没有 VO reset 分段时，则主要看 GT/estimate 步长和时间 gap。
     original_match_count = int(len(gt_idx))
     original_gt_pos = gt.positions[gt_idx]
     original_est_pos = est.positions[est_idx]
     original_stamps = gt.stamps[gt_idx]
+    forced_segment_ids = None
+    if "evaluation_segment_id" in est.extras:
+        candidate_segment_ids = np.asarray(est.extras["evaluation_segment_id"])
+        if len(candidate_segment_ids) == len(est.positions):
+            forced_segment_ids = candidate_segment_ids[est_idx]
     discontinuities_all = detect_associated_discontinuities(
         original_stamps,
         original_gt_pos,
         original_est_pos,
         step_threshold_m=cfg.discontinuity_step_m,
         time_gap_threshold_s=cfg.discontinuity_time_gap_s,
+        forced_segment_ids=forced_segment_ids,
     )
     eval_ranges = select_evaluation_segments(discontinuities_all["segments"], cfg.continuous_segment_policy, original_match_count)
     if not eval_ranges:
         raise ValueError("No continuous segment contains at least two matched poses")
 
-    # 3. 根据 GT/VO 姿态和评估段选择 VO 姿态修正。auto 会试多个坐标系/外参候选，
-    #    手动模式则直接应用用户选定的修正；ignore 会退化成 position-only RPE/子轨迹误差。
+    # 3. 根据 GT/estimate 姿态和评估段选择姿态修正。
+    #    当前 sf_vloc/sf_vo 固定 none；auto/手动/ignore 只保留给通用评估和历史回归。
     orientation_selection = select_orientation_correction(gt, est, gt_idx, est_idx, eval_ranges, cfg)
 
     # 这些列表会收集每个连续段的结果，最后统一 concat/describe。
@@ -503,6 +1615,7 @@ def evaluate_trajectories(
     rpe_time_rot_parts: dict[float, list[np.ndarray]] = {float(delta): [] for delta in cfg.rpe_delta_seconds if float(delta) > 0}
     used_gt_indices: list[np.ndarray] = []
     used_est_indices: list[np.ndarray] = []
+    used_match_indices: list[np.ndarray] = []
     alignments: list[dict[str, Any]] = []
     sim3_gt_export_frames: list[pd.DataFrame] = []
     sim3_vo_export_frames: list[pd.DataFrame] = []
@@ -515,7 +1628,8 @@ def evaluate_trajectories(
     distance_offset = 0.0
 
     for seg_id, seg in enumerate(eval_ranges):
-        # 4. 根据连续段策略切片；默认是一整段 VO 时间戳，segments 模式会分段评估。
+        # 4. 根据连续段策略切片。
+        #    sf_vloc 固定基本是一整段有效 vloc 时间戳；sf_vo 固定按 reset_count 连续段分别评估。
         start = int(seg["start"])
         end = int(seg["end"])
         cur_gt_idx = gt_idx[start:end]
@@ -533,7 +1647,9 @@ def evaluate_trajectories(
             est_rot = None
         stamps = gt.stamps[cur_gt_idx]
 
-        # 5. 对齐 VO 到 GT 坐标系。alignment.scale 是页面“对齐尺度”。
+        # 5. 对齐 estimate 到 GT 坐标系。
+        #    sf_vloc 固定 alignment=none，位置误差就是 nav-vloc 原始坐标差；
+        #    sf_vo 固定 alignment=sim3，位置误差基于每段 Sim3 后的 aligned VO。
         alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode=cfg.alignment)
         alignment["segment_id"] = int(seg_id)
         alignment["start_match_index"] = start
@@ -543,8 +1659,9 @@ def evaluate_trajectories(
         est_pos_aligned = apply_alignment(est_pos, alignment)
         est_rot_aligned = apply_rotation_alignment(est_rot, alignment) if est_rot is not None else None
 
-        # Excel 导出需要固定给出 Sim3 结果。这里独立计算 Sim3，不受页面当前 alignment 选项影响；
-        # 这样即使用户临时选择 SE3/首帧对齐，导出的 sim3_vo_tum 仍然是标准 Sim3 对齐输出。
+        # Excel 导出固定保留一份 Sim3 中间轨迹。
+        # 对 VO，这就是需求文档中的分段 Sim3 输出；对 VLOC，虽然主评估不使用 Sim3，
+        # 这个 sheet 仍可作为诊断中间结果，且不会影响 VLOC 页面指标。
         sim3_alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode="sim3")
         sim3_est_pos = apply_alignment(est_pos, sim3_alignment)
         sim3_est_rot = apply_rotation_alignment(est_rot, sim3_alignment) if est_rot is not None else None
@@ -713,8 +1830,9 @@ def evaluate_trajectories(
         vertical_error_abs_parts.append(vertical_error_abs_m)
         used_gt_indices.append(cur_gt_idx)
         used_est_indices.append(cur_est_idx)
+        used_match_indices.append(np.arange(start, end, dtype=int))
 
-        # 11. summary 所需的总路程、raw VO 路程、对齐后 VO 路程、耗时等。
+        # 11. summary 所需的总路程、raw estimate 路程、对齐后 estimate 路程、耗时等。
         #     来源：路程/速度支撑 Geiger12 风格统计；duration/runtime 支撑 Delmerico18 实时性分析；
         #     raw_path_scale_ratio 支撑 Zhang18 的尺度可观性判断。
         seg_gt_path = float(local_distance_m[-1])
@@ -745,7 +1863,13 @@ def evaluate_trajectories(
     rpe_rot_deg = np.concatenate(rpe_rot_parts) if rpe_rot_parts else np.asarray([], dtype=float)
     used_gt_idx = np.concatenate(used_gt_indices)
     used_est_idx = np.concatenate(used_est_indices)
-    # 13. runtime 只统计 VO 输出里存在的资源字段；没有字段则返回 None。
+    used_match_idx = np.concatenate(used_match_indices)
+    visual_segment_ids = np.asarray(discontinuities_all.get("segment_ids", []), dtype=int)
+    if len(visual_segment_ids) and len(used_match_idx) == len(per_pose):
+        per_pose["visual_segment_id"] = visual_segment_ids[used_match_idx]
+    else:
+        per_pose["visual_segment_id"] = per_pose["segment_id"].to_numpy(dtype=int)
+    # 13. runtime 只统计 estimate extras 里存在的资源字段；没有字段则返回 None。
     runtime = summarize_runtime(est, used_est_idx)
     alignment = aggregate_alignment(alignments, cfg.alignment)
     global_sim3_ate = compute_global_ate(gt, est, used_gt_idx, used_est_idx, orientation_selection["selected"], mode="sim3")
@@ -886,11 +2010,11 @@ def prepare_evaluation_trajectories(
     est: Trajectory,
     cfg: EvaluationConfig,
 ) -> tuple[Trajectory, Trajectory, np.ndarray, np.ndarray, dict[str, Any]]:
-    """把 GT 和 VO 准备成同一时间轴上的评估序列。
+    """把 GT/reference 和 estimate 准备成同一时间轴上的评估序列。
 
     代码意义：
-    - 默认 interpolate_gt: 以 VO 时间戳为基准，把 GT 插值到 VO 时刻。
-      这适合物流无人机/IMU GT 长时间记录场景，VO 只有算法运行段也不会引入无关 GT。
+    - 默认 interpolate_gt: 以 estimate 时间戳为基准，把 GT/reference 插值到 estimate 时刻。
+      这适合物流无人机/IMU GT 长时间记录场景，算法输出只有运行段也不会引入无关 GT。
     - nearest: 保留 TUM RGB-D benchmark 的最近邻贪心匹配口径，用于复现论文/开源工具。
     - index: 忽略时间戳，按行号配对，用于已经离线同步好的文件。
 
@@ -902,7 +2026,7 @@ def prepare_evaluation_trajectories(
     来源对应：
     - nearest 模式直接对应 Sturm12/TUM 工具的时间戳匹配。
     - interpolate_gt 是工程扩展：Schubert18/TUM VI 提供高频同步 GT 的评估语境；
-      对物流无人机这种“GT 全程跑、VO 只在算法段输出”的数据，按 VO 时间戳插 GT 更合理。
+      对物流无人机这种“GT 全程跑、estimate 只在算法段输出”的数据，按 estimate 时间戳插 GT 更合理。
     """
     gt_eval, est_eval, assoc = build_associated_trajectories(gt, est, cfg)
     idx = np.arange(len(gt_eval.positions), dtype=int)
@@ -914,10 +2038,10 @@ def build_associated_trajectories(
     est: Trajectory,
     cfg: EvaluationConfig,
 ) -> tuple[Trajectory, Trajectory, dict[str, Any]]:
-    """按配置构造同一时间轴上的 GT/VO 评估轨迹。
+    """按配置构造同一时间轴上的 GT/reference 和 estimate 评估轨迹。
 
     代码意义：
-    - interpolate_gt: 默认模式，以 VO 时间戳为基准，把 GT position 线性插值、GT rotation 用 SLERP 插值到 VO 时刻。
+    - interpolate_gt: 默认模式，以 estimate 时间戳为基准，把 GT position 线性插值、GT rotation 用 SLERP 插值到 estimate 时刻。
     - nearest/tum_greedy_timestamp: 保留 TUM-style greedy timestamp association，不做插值。
     - index: 不看时间戳，显式按行号对齐，主要用于已经离线同步好的调试数据。
 
@@ -956,18 +2080,18 @@ def interpolate_gt_to_est_timestamps(
     est: Trajectory,
     cfg: EvaluationConfig,
 ) -> tuple[Trajectory, Trajectory, dict[str, Any]]:
-    """将 GT 插值到 VO 时间戳。
+    """将 GT/reference 插值到 estimate 时间戳。
 
     代码意义：
-    - 先把 VO 时间戳加上 time_offset_s，解决 GT/VO 两套时钟固定偏移。
-    - 只保留落在 GT 时间范围内的 VO 点，避免拿没有 GT 的 VO 段做统计。
+    - 先把 estimate 时间戳加上 time_offset_s，解决 GT/reference 与 estimate 两套时钟固定偏移。
+    - 只保留落在 GT 时间范围内的 estimate 点，避免拿没有 GT 的算法输出段做统计。
     - max_interpolation_gap_s 用来阻止跨很长 GT 缺口插值，避免虚假的平滑 GT。
-    - 位置用线性插值；姿态如果存在，后续 interpolate_rotations() 使用 SLERP。
+    - 位置用线性插值；姿态如果存在，后续 interpolate_rotations_from_brackets() 使用 SLERP。
 
     指标对应：
-    - report["association"]["matches"]: 最终参与评估的 VO 时间戳数量。
-    - report["association"]["dropped_est_outside_gt_range"]: 因超出 GT 时间范围丢弃的 VO 点。
-    - report["association"]["dropped_est_large_gt_gap"]: 因 GT 插值间隔过大丢弃的 VO 点。
+    - report["association"]["matches"]: 最终参与评估的 estimate 时间戳数量。
+    - report["association"]["dropped_est_outside_gt_range"]: 因超出 GT 时间范围丢弃的 estimate 点。
+    - report["association"]["dropped_est_large_gt_gap"]: 因 GT 插值间隔过大丢弃的 estimate 点。
     - report["association"]["max_interpolation_gap_s"]: 实际使用样本中的最大 GT 插值间隔。
 
     来源对应：
@@ -997,11 +2121,13 @@ def interpolate_reference_to_estimate(
     interpolation_position_method: str = "linear",
     interpolation_rotation_method: str = "slerp",
 ) -> tuple[Trajectory, Trajectory, dict[str, Any]]:
-    """Interpolate reference trajectory to estimate timestamps.
+    """把 reference 轨迹插值到 estimate 时间戳。
 
-    返回的 ref_interp 和 est_matched 等长，且都使用原始 estimate 时间戳。
-    reference 的查询时刻是 estimate.stamps + time_offset_s；这个 target_stamp
-    会保存在 extras 中，方便排查固定时间偏移。
+    这是当前 sf_vloc/sf_vo 的固定时间同步方法：
+    - estimate 自己的时间戳作为评估行；
+    - reference 的查询时刻是 estimate.stamps + time_offset_s；
+    - 超出 reference 时间范围、时间戳非法或左右 reference 样本间隔超过 max_interpolation_gap_s 的 estimate 帧会被丢弃；
+    - 返回的 ref_interp 和 est_matched 等长，且都使用原始 estimate 时间戳，target_stamp 会保存在 extras 中方便排查固定时间偏移。
     """
     position_method = interpolation_position_method.lower()
     rotation_method = interpolation_rotation_method.lower()
@@ -1132,11 +2258,11 @@ def interpolate_reference_to_estimate(
     elif ref_unique.rotations is None:
         info["rotation_interpolation_note"] = "rotation interpolation skipped: no reference rotation"
     if info["coverage_estimate_ratio"] < 0.8:
-        info["warning"] = "low interpolate_gt coverage; check timestamp units, GT/VO time ranges, time_offset_s, and max_interpolation_gap_s"
+        info["warning"] = "low interpolate_gt coverage; check timestamp units, GT/estimate time ranges, time_offset_s, and max_interpolation_gap_s"
     if not len(est_indices):
-        info["warning"] = "no VO timestamp remains after interpolation filtering"
+        info["warning"] = "no estimate timestamp remains after interpolation filtering"
     elif len(est_indices) < 2:
-        info["warning"] = "fewer than two VO timestamps remain after interpolation filtering"
+        info["warning"] = "fewer than two estimate timestamps remain after interpolation filtering"
     return ref_interp, est_matched, info
 
 
@@ -1156,11 +2282,6 @@ def subset_trajectory(traj: Trajectory, indices: np.ndarray, stamps_override: np
     return Trajectory(traj.name, stamps, traj.positions[indices], rotations, extras=extras, source_format=traj.source_format)
 
 
-def interpolate_positions(src_stamps: np.ndarray, src_positions: np.ndarray, target_stamps: np.ndarray) -> np.ndarray:
-    """GT 位置插值：x/y/z 三个轴分别按时间线性插值。"""
-    return np.column_stack([np.interp(target_stamps, src_stamps, src_positions[:, axis]) for axis in range(3)])
-
-
 def interpolate_positions_from_brackets(
     src_positions: np.ndarray,
     left_indices: np.ndarray,
@@ -1174,11 +2295,6 @@ def interpolate_positions_from_brackets(
     p1 = src_positions[right_indices]
     alpha = np.asarray(alphas, dtype=float).reshape(-1, 1)
     return (1.0 - alpha) * p0 + alpha * p1
-
-
-def interpolation_bracket_gaps(src_stamps: np.ndarray, target_stamps: np.ndarray) -> np.ndarray:
-    """计算每个目标时间戳两侧 GT 样本的时间间隔，用于过滤大缺口插值。"""
-    return interpolation_brackets(src_stamps, target_stamps)["gap_s"]
 
 
 def interpolation_brackets(
@@ -1254,28 +2370,6 @@ def interpolation_brackets(
     }
 
 
-def interpolate_rotations(src_stamps: np.ndarray, src_rotations: np.ndarray | None, target_stamps: np.ndarray) -> np.ndarray | None:
-    """GT 姿态插值：旋转矩阵先转四元数，再对相邻姿态做 SLERP。"""
-    if src_rotations is None:
-        return None
-    quats = matrix_to_quaternion(src_rotations)
-    src = np.asarray(src_stamps, dtype=float)
-    target = np.asarray(target_stamps, dtype=float)
-    insert = np.searchsorted(src, target, side="left")
-    out = np.empty((len(target), 4), dtype=float)
-    for i, pos in enumerate(insert):
-        if pos <= 0:
-            out[i] = quats[0]
-        elif pos >= len(src):
-            out[i] = quats[-1]
-        elif np.isclose(src[pos], target[i]):
-            out[i] = quats[pos]
-        else:
-            alpha = float((target[i] - src[pos - 1]) / (src[pos] - src[pos - 1]))
-            out[i] = slerp_quaternion(quats[pos - 1], quats[pos], alpha)
-    return quaternion_to_matrix(out[:, 0], out[:, 1], out[:, 2], out[:, 3])
-
-
 def interpolate_rotations_from_brackets(
     src_rotations: np.ndarray | None,
     left_indices: np.ndarray,
@@ -1347,7 +2441,7 @@ def associate_trajectories(
     指标对应：
     - report["association"]["matches"]：成功匹配数量。
     - max_time_diff_s / mean_time_diff_s：时间关联质量。
-    - summary 里的 GT/VO 覆盖率由这里返回的索引数量计算。
+    - summary 里的 GT/estimate 覆盖率由这里返回的索引数量计算。
 
     来源对应：
     - 直接对应 Sturm12 提供的 TUM RGB-D benchmark association 工具口径。
@@ -1421,16 +2515,16 @@ def compute_alignment(
     est_rot: np.ndarray | None = None,
     mode: str = "se3",
 ) -> dict[str, Any]:
-    """计算 VO 到 GT 的轨迹对齐变换。
+    """计算 estimate 到 GT 的轨迹对齐变换。
 
     指标对应：
     - SE3: 尺度固定为 1，适合双目/VIO/尺度已知。
-    - Sim3: 同时估计尺度，适合单目 VO/尺度未知。
+    - Sim3: 同时估计尺度，适合单目 VO 或其他尺度未知 estimate。
     - first_pose: 只把首帧对齐，用于观察误差随航程增长。
     - alignment["scale"] 最终显示为页面“对齐尺度”。
 
     实现细节：
-    - 位置对齐用 Umeyama SVD。输入 src=VO，dst=GT，输出 scale/rotation/translation。
+    - 位置对齐用 Umeyama SVD。输入 src=estimate，dst=GT，输出 scale/rotation/translation。
     - 姿态只在 first_pose 模式中用于首帧旋转对齐；SE3/Sim3 的旋转主要由位置轨迹估计。
     - 所有 ATE、RPE、segment_errors 都基于对齐后的 est_pos_aligned 计算。
 
@@ -1441,7 +2535,7 @@ def compute_alignment(
     """
     mode = mode.lower()
     if mode in {"none", "identity"}:
-        # 不对齐模式用于调试原始坐标系；如果 GT/VO 不在同一坐标系，误差会很大。
+        # 不对齐模式用于调试原始坐标系；如果 GT/estimate 不在同一坐标系，误差会很大。
         return _alignment_dict(mode, 1.0, np.eye(3), np.zeros(3))
     if mode in {"first_pose", "first", "origin"}:
         # 首帧对齐只消除起点坐标差，不用全局最小二乘消除后续漂移；
@@ -1454,12 +2548,12 @@ def compute_alignment(
         trans = gt_pos[0] - scale * (rot @ est_pos[0])
         return _alignment_dict("first_pose", scale, rot, trans)
     if mode in {"se3", "rigid"}:
-        # SE3 固定 scale=1。双目、VIO、带尺度传感器的 VO 应优先用它，
+        # SE3 固定 scale=1。双目、VIO、带尺度传感器的 estimate 应优先用它，
         # 因为它不会替算法隐藏尺度错误。
         scale, rot, trans = umeyama_alignment(est_pos, gt_pos, with_scale=False)
         return _alignment_dict("se3", scale, rot, trans)
     if mode in {"sim3", "similarity"}:
-        # Sim3 允许估计全局尺度。单目无尺度 VO 用它可以评估“轨迹形状”，
+        # Sim3 允许估计全局尺度。单目无尺度 VO 或其他无尺度 estimate 用它可以评估“轨迹形状”，
         # 但不能证明原始输出已经具备真实米制尺度。
         scale, rot, trans = umeyama_alignment(est_pos, gt_pos, with_scale=True)
         return _alignment_dict("sim3", scale, rot, trans)
@@ -1469,10 +2563,10 @@ def compute_alignment(
 def umeyama_alignment(src: np.ndarray, dst: np.ndarray, with_scale: bool) -> tuple[float, np.ndarray, np.ndarray]:
     """Umeyama SVD 对齐。
 
-    src 是 VO，dst 是 GT。with_scale=False 得到 SE3；with_scale=True 得到 Sim3。
+    src 是 estimate，dst 是 GT。with_scale=False 得到 SE3；with_scale=True 得到 Sim3。
 
     代码意义：
-    - 通过最小二乘求 R/t/s，使 s * R * VO + t 尽量贴近 GT。
+    - 通过最小二乘求 R/t/s，使 s * R * estimate + t 尽量贴近 GT。
     - 这是 evo、rpg_trajectory_evaluation、KITTI 类评估中常见的轨迹对齐口径。
     - det 修正用于避免 SVD 给出反射矩阵；轨迹对齐必须是合法旋转。
 
@@ -1497,7 +2591,7 @@ def umeyama_alignment(src: np.ndarray, dst: np.ndarray, with_scale: bool) -> tup
     src_centered = src - mu_src
     dst_centered = dst - mu_dst
 
-    # 2. 交叉协方差描述 VO 与 GT 的主方向关系，SVD 从中恢复最优旋转。
+    # 2. 交叉协方差描述 estimate 与 GT 的主方向关系，SVD 从中恢复最优旋转。
     cov = (dst_centered.T @ src_centered) / len(src)
     u, singular_values, vt = np.linalg.svd(cov)
     sign = np.ones(3)
@@ -1519,9 +2613,9 @@ def umeyama_alignment(src: np.ndarray, dst: np.ndarray, with_scale: bool) -> tup
 
 
 def apply_alignment(positions: np.ndarray, alignment: dict[str, Any]) -> np.ndarray:
-    """把 VO 位置应用到 GT 坐标系。
+    """把 estimate 位置应用到 GT 坐标系。
 
-    公式：p_aligned = scale * R * p_vo + t。
+    公式：p_aligned = scale * R * p_est + t。
     之后所有位置误差字段都基于这个结果：
     - per_pose.error_m / horizontal_error_m / vertical_error_m
     - ate_position_m / ate_horizontal_m / ate_vertical_m
@@ -1535,7 +2629,7 @@ def apply_alignment(positions: np.ndarray, alignment: dict[str, Any]) -> np.ndar
 
 
 def apply_rotation_alignment(rotations: np.ndarray | None, alignment: dict[str, Any]) -> np.ndarray | None:
-    """把 VO 姿态应用同一个对齐旋转。
+    """把 estimate 姿态应用同一个对齐旋转。
 
     只应用 rotation，不应用 scale/translation，因为姿态没有尺度和平移。
     结果用于姿态 ATE、yaw 误差、RPE 旋转误差和子轨迹旋转误差。
@@ -1575,7 +2669,7 @@ def aggregate_alignment(alignments: list[dict[str, Any]], mode: str) -> dict[str
     """聚合每个连续段的对齐信息。
 
     代码意义：
-    - 默认系统可以按 VO 时间戳统一评估，也可以按连续段分别对齐/评估。
+    - 默认系统可以按 estimate 时间戳统一评估，也可以按连续段分别对齐/评估。
     - 多段时每段都有自己的 scale/rotation/translation，这里把 scale 做 min/max/mean 汇总。
 
     指标对应：
@@ -1610,13 +2704,17 @@ def select_orientation_correction(
     eval_ranges: list[dict[str, int]],
     cfg: EvaluationConfig,
 ) -> dict[str, Any]:
-    """选择 VO 姿态修正方式。
+    """选择 estimate 姿态修正方式。
 
     指标对应：
-    - report["orientation_correction"]["selected"] 是最终应用到 VO 姿态上的修正。
+    - report["orientation_correction"]["selected"] 是最终应用到 estimate 姿态上的修正。
     - requested="auto" 时，系统会在 AUTO_ORIENTATION_CORRECTION_CANDIDATES 中逐个试算，
       根据姿态 RMSE、yaw RMSE、RPE 平移和 RPE 旋转组成的 score 选最优候选。
     - requested="ignore" 时，后续 RPE/子轨迹误差退化为 position-only 口径。
+
+    当前固定入口说明：
+    - sf_vloc 和 sf_vo 都会把 orientation_correction 固定成 none。
+    - 这段 auto/手动修正逻辑保留给 TUM/通用入口和历史数据复查，页面主流程不再暴露这个选项。
 
     来源对应：
     - 不是 5 篇论文里的标准指标，是为 ENU/NED、camera-to-body、旋转矩阵方向不一致增加的工程扩展。
@@ -1635,7 +2733,7 @@ def select_orientation_correction(
         # 但 rotation RPE、rotation_error_deg_per_m、ate_orientation_deg 会缺失或退化。
         return {**base, "uses_rotations": False, "note": "orientation fields ignored; RPE/segment errors use position-only relative motion"}
     if gt.rotations is None or est.rotations is None:
-        # 有些 VO 只输出 xyz，没有姿态。此时不能强行计算旋转误差，
+        # 有些 estimate 只输出 xyz，没有姿态。此时不能强行计算旋转误差，
         # 否则报告会给出没有物理意义的角度指标。
         return {**base, "selected": "none", "uses_rotations": False, "note": "GT or VO has no orientation; correction skipped"}
     if requested != "auto":
@@ -1820,7 +2918,7 @@ def validate_orientation_correction(mode: str) -> None:
 
 
 def apply_orientation_correction(rotations: np.ndarray | None, mode: str) -> np.ndarray | None:
-    """把 VO 姿态从其输出约定修正到评估使用的姿态约定。
+    """把 estimate 姿态从其输出约定修正到评估使用的姿态约定。
 
     left 表示 M @ R，常用于世界坐标轴转换；right 表示 R @ M，常用于相机系到机体系外参；
     both 表示 M @ R @ M.T，常用于同一个旋转矩阵两侧坐标基变换。
@@ -1882,65 +2980,6 @@ def axis_flip_matrix(axis: str) -> np.ndarray:
     if axis == "z":
         return np.diag([-1.0, -1.0, 1.0])
     raise ValueError(f"Unknown axis: {axis}")
-
-
-def rpe_error_arrays(
-    gt_pos: np.ndarray,
-    est_pos: np.ndarray,
-    gt_rot: np.ndarray | None,
-    est_rot: np.ndarray | None,
-    delta: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """固定帧间隔 RPE。
-
-    对每个 i 取 j=i+delta，比较 GT 相对运动和 VO 相对运动。
-    返回值对应 report["rpe_frame_delta"]["translation_m"] 和 rotation_deg。
-
-    与 ATE 的区别：
-    - ATE 看对齐后每一帧的绝对位置差。
-    - RPE 看 i->j 这段相对运动是否一致，更敏感于帧间估计稳定性。
-    - delta_frames 越大，越接近中短程累计漂移；越小，越接近单帧运动误差。
-
-    来源对应：
-    - 直接对应 Sturm12 的 Relative Pose Error。
-    - Zhang18 也把它作为相对轨迹误差解释；Schubert18/TUM VI 在 VIO 评估中使用固定时间间隔 RPE 语境。
-    """
-    n = len(gt_pos)
-    if n <= delta:
-        return np.asarray([], dtype=float), np.asarray([], dtype=float)
-    trans_errors: list[float] = []
-    rot_errors: list[float] = []
-    for i in range(n - delta):
-        j = i + delta
-        # relative_error() 同时支持有姿态和无姿态两种口径：
-        # 有姿态时在局部坐标系比较相对运动；无姿态时退化成世界系位移差。
-        terr, rerr = relative_error(gt_pos, est_pos, gt_rot, est_rot, i, j)
-        trans_errors.append(terr)
-        if rerr is not None:
-            rot_errors.append(rerr)
-    return np.asarray(trans_errors, dtype=float), np.asarray(rot_errors, dtype=float)
-
-
-def rpe_by_frame_delta(
-    gt_pos: np.ndarray,
-    est_pos: np.ndarray,
-    gt_rot: np.ndarray | None,
-    est_rot: np.ndarray | None,
-    delta: int,
-) -> dict[str, Any]:
-    """把 RPE 数组包装成 report["rpe_frame_delta"] 使用的统计结构。
-
-    来源对应：
-    - translation_m / rotation_deg 直接来自 Sturm12 的 RPE 平移和旋转误差。
-    - count/rmse/mean 等统计是报告层汇总，不改变 RPE 公式。
-    """
-    trans_errors, rot_errors = rpe_error_arrays(gt_pos, est_pos, gt_rot, est_rot, delta)
-    return {
-        "delta_frames": int(delta),
-        "count": int(len(trans_errors)),
-        "translation_m": describe(trans_errors),
-        "rotation_deg": describe(np.degrees(rot_errors)) if len(rot_errors) else None,
-    }
 
 
 def rpe_error_arrays_by_time(
@@ -2340,12 +3379,12 @@ def summarize_by_speed_bins(records: pd.DataFrame, bins: Iterable[float]) -> lis
 def summarize_runtime(est: Trajectory, est_idx: np.ndarray) -> dict[str, Any] | None:
     """运行资源统计。
 
-    如果 VO 输出 CSV 中包含 process_time_ms、fps、cpu_percent、memory_mb 等字段，
-    这里会按匹配到的 VO 帧做 describe() 汇总，对应 report["runtime"]。
+    如果 estimate extras 中包含 process_time_ms、fps、cpu_percent、memory_mb 等字段，
+    这里会按实际参与评估的 estimate 帧做 describe() 汇总，对应 report["runtime"]。
 
     代码意义：
     - runtime 字段不是轨迹格式必需字段，因此只在 extras 中存在时才统计。
-    - est_idx 只取实际参与评估的 VO 帧，避免把未匹配的开机/落地前后日志纳入运行统计。
+    - est_idx 只取实际参与评估的 estimate 帧，避免把未匹配的开机/落地前后日志纳入运行统计。
 
     指标解释：
     - process_time_ms / latency_ms 高：算法可能无法实时运行。
@@ -2505,23 +3544,27 @@ def detect_associated_discontinuities(
     est_pos: np.ndarray,
     step_threshold_m: float,
     time_gap_threshold_s: float,
+    forced_segment_ids: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """断点/重置诊断。
 
-    根据 GT 步长、VO 步长、时间间隔判断是否存在大跳变。
+    根据 GT 步长、estimate 步长、时间间隔判断是否存在大跳变。
+    如果传入 forced_segment_ids，则相邻样本的分段 id 变化也会被当作断点，
+    这用于 sf_vo reset_count 切段后的强制分段评估。
     默认评估策略不会丢弃这些点，只把信息放入 report["discontinuities"] 供诊断。
 
     断点来源：
     - gt_step: GT 自己相邻点跳得很远，可能是 GT 数据中断或坐标跳变。
-    - est_step: VO 相邻点跳得很远，可能是 VO 重置、丢跟踪后重新初始化。
+    - est_step: estimate 相邻点跳得很远，可能是 VO/VLOC 重置、丢跟踪后重新初始化或坐标系切换。
+    - evaluation_segment_id: sf_vo 的 reset_count 过滤后，不同 reset 段边界会被强制标成断点。
     - time_gap: 相邻评估时间差很大，可能是日志中断或算法停顿。
 
     指标/页面影响：
-    - break_count > 0 会触发“检测到 VO 重置或大跳变”提示。
+    - break_count > 0 会触发“检测到 reset/gap/大跳变”提示。
     - segment_ids 会写入 per_pose，让可视化在断点处断开，不错误连线。
 
     来源对应：
-    - 这是工程扩展，5 篇论文没有把“VO 重置断点”定义成标准数值指标。
+    - 这是工程扩展，5 篇论文没有把“reset 断点”定义成标准数值指标。
     - 目的在于保护 Geiger12/KITTI 风格的子轨迹统计，避免跨重定位/重置段计算相对误差。
     """
     n = len(stamps)
@@ -2533,10 +3576,15 @@ def detect_associated_discontinuities(
     gt_steps = np.linalg.norm(np.diff(gt_pos, axis=0), axis=1)
     est_steps = np.linalg.norm(np.diff(est_pos, axis=0), axis=1)
     time_gaps = np.diff(stamps)
+    forced_ids = np.asarray(forced_segment_ids).reshape(-1) if forced_segment_ids is not None else None
+    if forced_ids is not None and len(forced_ids) != n:
+        forced_ids = None
     break_after = np.zeros(n - 1, dtype=bool)
     breaks: list[dict[str, Any]] = []
     for idx, (gt_step, est_step, time_gap) in enumerate(zip(gt_steps, est_steps, time_gaps)):
         reasons: list[str] = []
+        if forced_ids is not None and forced_ids[idx] != forced_ids[idx + 1]:
+            reasons.append("evaluation_segment_id")
         if step_threshold_m > 0 and gt_step > step_threshold_m:
             reasons.append("gt_step")
         if step_threshold_m > 0 and est_step > step_threshold_m:
@@ -2666,8 +3714,8 @@ def select_evaluation_segments(segments: list[dict[str, int]], policy: str, tota
     """根据断点策略选择实际参与误差计算的连续段。
 
     三种策略：
-    - vo_timestamps/all: 默认策略。保留所有 VO 时间戳统一评估，断点只作为诊断提示。
-    - segments: 按检测出的连续段逐段评估，每段单独对齐，适合 VO 重置后局部坐标系变化的情况。
+    - vo_timestamps/all: 历史命名，表示保留所有 estimate 时间戳统一评估，断点只作为诊断提示。
+    - segments: 按检测出的连续段逐段评估，每段单独对齐，适合 sf_vo reset 后局部坐标系变化的情况。
     - longest: 只评估最长连续段，适合想排除重置前后不连续影响的情况。
 
     指标影响：
@@ -2752,7 +3800,7 @@ def relative_pose(r_i: np.ndarray, p_i: np.ndarray, r_j: np.ndarray, p_j: np.nda
     """计算从第 i 帧到第 j 帧的相对位姿。
 
     r_rel = R_i^T R_j，p_rel = R_i^T (p_j - p_i)。
-    这个局部坐标系表达会被 relative_error() 用来比较 GT 和 VO 的相对运动。
+    这个局部坐标系表达会被 relative_error() 用来比较 GT 和 estimate 的相对运动。
     """
     r_rel = r_i.T @ r_j
     p_rel = r_i.T @ (p_j - p_i)
@@ -2876,8 +3924,8 @@ def euler_yaw_pitch_roll_to_matrix(yaw: np.ndarray, pitch: np.ndarray, roll: np.
     """yaw-pitch-roll 欧拉角转旋转矩阵，使用 ZYX 顺序。
 
     代码意义：
-    - 用户的 imu.txt/vo.txt 可能只给 yaw/pitch/roll，而不是四元数。
-    - 单位已经在 _angle_unit_for_columns() 中统一成弧度。
+    - 当前 SF 固定格式的 imu.txt、vloc.txt、vo.txt 都给 yaw/pitch/roll，而不是四元数。
+    - 调用方必须先把输入角度统一成弧度；固定格式 parser 会在进入这里之前完成这一步。
 
     注意：
     - 这里默认列语义是 yaw, pitch, roll。
@@ -2907,7 +3955,7 @@ def euler_yaw_pitch_roll_to_matrix(yaw: np.ndarray, pitch: np.ndarray, roll: np.
 def matrix_to_quaternion(rot: np.ndarray) -> np.ndarray:
     """旋转矩阵转四元数。
 
-    主要用于姿态插值：interpolate_rotations() 先把矩阵转四元数，再做 SLERP。
+    主要用于姿态插值：先把矩阵转四元数，再在插值流程里做 SLERP。
     """
     out = []
     for r in rot:
@@ -2995,14 +4043,14 @@ def tum_dataframe_from_arrays(
 def trajectory_to_tum_dataframe(traj: Trajectory, extra: dict[str, Any] | None = None) -> pd.DataFrame:
     """把 Trajectory 转成 TUM 表格。
 
-    原始输入、插值后 GT、筛选后 VO 和 Sim3 输出都通过这个函数统一导出，
+    原始输入、插值后 GT、筛选后 estimate 和 Sim3 输出都通过这个函数统一导出，
     避免不同 sheet 的列顺序或四元数顺序不一致。
     """
     return tum_dataframe_from_arrays(traj.stamps, traj.positions, traj.rotations, extra=extra)
 
 
 def raw_numeric_table(traj: Trajectory) -> np.ndarray | None:
-    """取解析阶段保留的原始数字表，用于检测 VO 倒数第四列跳变。"""
+    """取解析阶段保留的原始数字表，用于导出时复查原始 estimate 列。"""
     table = traj.extras.get("raw_numeric_table")
     if table is None:
         return None
@@ -3017,13 +4065,15 @@ def jump_export_columns_from_source(
     source_indices: np.ndarray | None,
     prefix: str,
 ) -> dict[str, Any]:
-    """根据原始 VO 倒数第四列的 +1 变化生成导出分段列。
+    """根据原始 estimate 倒数第四列的 +1 变化生成导出分段列。
 
-    用户要求：如果 VO 输出文件倒数第四列出现 0->1、1->2 这类 +1 跳变，
+    历史需求：如果 estimate 输出文件倒数第四列出现 0->1、1->2 这类 +1 跳变，
     就把跳变后的数据视为新的 TUM 文件，例如 vo_tum_01、vo_tum_02。
+    当前固定 sf_vo 中倒数第四列正好是 reset_count；sf_vloc 也会保留该诊断列，
+    但主评估的 VLOC/VO 分段逻辑仍以各自固定流程为准，不依赖这里额外切 sheet。
 
-    Excel 只有 6 个固定 sheet，因此这里不额外创建无限多个 sheet，而是在相关 sheet 中写入：
-    - tum_file: 逻辑文件名，如 vo_tum_01。
+    Excel 当前是 9 个固定 sheet，因此这里不额外创建无限多个 sheet，而是在相关 sheet 中写入：
+    - tum_file: 逻辑文件名，如 vo_tum_01；这里的 vo_tum 是历史命名，实际代表 estimate_tum。
     - jump_segment_id: 从 0 开始的分段编号。
     - jump_source_value: 原始倒数第四列的值，方便复查跳变点。
     """
@@ -3321,8 +4371,8 @@ def scale_frame_dataframe(
     - local_sim3_scale = GT_window_length / VO_raw_window_length。
     - local_scale_drift_percent = (local_scale_ratio_est_over_gt - 1) * 100。
 
-    注意这里使用未对齐的 VO 位置 est_pos_raw。否则 Sim3 对齐后的轨迹已经被整体缩放，
-    会掩盖原始 VO 的局部尺度变化。
+    注意这里使用未对齐的 estimate 位置 est_pos_raw。否则 Sim3 对齐后的轨迹已经被整体缩放，
+    会掩盖原始 estimate 的局部尺度变化。
     """
     stamps = np.asarray(stamps, dtype=float)
     match_indices = np.asarray(match_indices, dtype=int)
@@ -3428,11 +4478,12 @@ def build_trajectory_export_sheets(
 
     Sheet 设计：
     1. input_gt_tum: 原始 GT 转 TUM。
-    2. input_vo_tum: 原始 VO 转 TUM，并按倒数第四列 +1 跳变标记 vo_tum_XX。
-    3. filtered_vo_tum: 时间同步后保留下来的 VO。
-    4. interpolated_gt_tum: 插值到 VO 时间戳后的 GT。
-    5. sim3_gt_tum: Sim3 评估时使用的 GT。
-    6. sim3_vo_tum: Sim3 对齐后的 VO。
+    2. input_vo_tum: 原始 estimate 转 TUM，并按倒数第四列 +1 跳变标记 vo_tum_XX。
+       这里保留 vo_tum 作为历史 sheet 名称；在 VLOC 模式下它代表 vloc estimate。
+    3. filtered_vo_tum: 时间同步后保留下来的 estimate。
+    4. interpolated_gt_tum: 插值到 estimate 时间戳后的 GT。
+    5. sim3_gt_tum: Sim3 评估时使用的 GT，VLOC 入口会移除这张表。
+    6. sim3_vo_tum: Sim3 对齐后的 estimate，VLOC 入口会移除这张表。
     7. ate_per_frame: 每个评估时间戳的 ATE 明细。
     8. rpe_per_frame: 每个评估时间戳起算的固定帧/距离 RPE 明细。
     9. scale_per_frame: 每个评估时间戳起算的局部尺度比例/尺度漂移明细。
@@ -3482,11 +4533,6 @@ def report_to_json(report: dict[str, Any]) -> str:
 def _jsonable_report(report: dict[str, Any]) -> dict[str, Any]:
     """report_to_json() 的入口包装，保持调用语义清晰。"""
     return _jsonable_value(report)
-
-
-def _jsonable_dict(data: dict[str, Any]) -> dict[str, Any]:
-    """兼容旧调用的 dict 转 JSON 工具。"""
-    return _jsonable_value(data)
 
 
 def _jsonable_value(value: Any) -> Any:
@@ -3603,30 +4649,6 @@ def _meaningful_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
 
 
-def _detect_format(lines: list[str]) -> str:
-    """根据第一行内容粗略识别无表头轨迹格式。
-
-    规则：
-    - 含字母/下划线：认为是 CSV 表头。
-    - 12 列数字：KITTI 3x4 pose。
-    - 8 列数字：TUM timestamp tx ty tz qx qy qz qw。
-    - 3/4 列数字：XYZ 或 timestamp XYZ。
-
-    只用第一行是为了快速分发；真正的宽度一致性和字段校验在后续 parser 中完成。
-    """
-    first = lines[0]
-    if re.search(r"[A-Za-z_]", first):
-        return "csv"
-    values = _parse_float_line(first)
-    if len(values) == 12:
-        return "kitti"
-    if len(values) == 8:
-        return "tum"
-    if len(values) in {3, 4}:
-        return "xyz"
-    return "csv"
-
-
 def _parse_float_line(line: str) -> list[float]:
     """解析一行纯数字，支持空格、逗号和分号分隔。"""
     tokens = re.split(r"[\s,;]+", line.strip())
@@ -3638,574 +4660,19 @@ def _parse_float_line(line: str) -> list[float]:
     return values
 
 
-def _parse_numeric_table(lines: list[str], name: str, fmt: str) -> Trajectory:
-    """解析无表头数字表。
-
-    TUM: timestamp tx ty tz qx qy qz qw。
-    KITTI: 每行 12 个数，表示 3x4 pose matrix。
-    XYZ: x y z 或 timestamp x y z。
-    TUM/XYZ 的 timestamp 会调用 _normalize_timestamps()，避免 ns 被当成秒。
-    """
+def _parse_tum_numeric_table(lines: list[str], name: str) -> Trajectory:
+    """解析无表头 TUM 数字表：timestamp tx ty tz qx qy qz qw。"""
     rows = [_parse_float_line(line) for line in lines]
     width = max(len(row) for row in rows)
     if any(len(row) != width for row in rows):
         raise ValueError(f"{name}: inconsistent number of columns")
     data = np.asarray(rows, dtype=float)
-    if fmt == "tum":
-        # TUM 口径保留论文/开源工具常用格式，姿态直接由四元数转矩阵。
-        if data.shape[1] < 8:
-            raise ValueError(f"{name}: TUM format needs at least 8 columns")
-        stamps = _normalize_timestamps(data[:, 0])
-        positions = data[:, 1:4]
-        rotations = quaternion_to_matrix(data[:, 4], data[:, 5], data[:, 6], data[:, 7])
-        return Trajectory(name, stamps, positions, rotations, extras={"raw_numeric_table": data}, source_format="tum")
-    if fmt == "kitti":
-        # KITTI odometry 文件通常没有时间戳；这里用行号当时间，适合按 index 或固定帧间隔评估。
-        if data.shape[1] != 12:
-            raise ValueError(f"{name}: KITTI format needs exactly 12 columns")
-        mats = data.reshape((-1, 3, 4))
-        rotations = mats[:, :, :3]
-        positions = mats[:, :, 3]
-        stamps = np.arange(len(positions), dtype=float)
-        return Trajectory(name, stamps, positions, rotations, extras={"raw_numeric_table": data}, source_format="kitti")
-    if fmt == "xyz":
-        # XYZ 只支持位置指标；没有姿态时 rotation RPE/姿态 ATE 不会生成。
-        if data.shape[1] == 3:
-            stamps = np.arange(len(data), dtype=float)
-            positions = data[:, 0:3]
-        elif data.shape[1] >= 4:
-            stamps = _normalize_timestamps(data[:, 0])
-            positions = data[:, 1:4]
-        else:
-            raise ValueError(f"{name}: XYZ format needs 3 or 4 columns")
-    return Trajectory(name, stamps, positions, None, extras={"raw_numeric_table": data}, source_format="xyz")
-    raise ValueError(fmt)
-
-
-SF_EXTRA_CANONICAL = {
-    "status": "status",
-    "flightmode": "flight_mode",
-    "vx": "vx",
-    "vy": "vy",
-    "vz": "vz",
-    "resetcount1": "reset_count1",
-    "resetcount2": "reset_count2",
-    "resetcount3": "reset_count3",
-    "lati": "lati",
-    "longi": "longi",
-    "alti": "alti",
-    "altimsl": "alti_msl",
-    "height": "height",
-    "numinliers": "num_inliers",
-    "iskeyframe": "is_keyframe",
-    "framecost": "frame_cost",
-    "resetcount": "reset_count",
-    "depthmean": "depth_mean",
-    "depthmin": "depth_min",
-    "depthmax": "depth_max",
-}
-
-
-VLOC_EXTRA_CANONICAL = {
-    "status": "status",
-    "numinliers": "num_inliers",
-    "resetcount": "reset_count",
-    "latitude": "latitude",
-    "longitude": "longitude",
-    "altitude": "altitude",
-}
-
-
-def _parse_sf(text: str, name: str) -> Trajectory:
-    """解析 SF 项目格式。
-
-    支持两种表头：
-    - GT: #ts1 ts2 status flight_mode x y z yaw pitch roll vx vy vz reset_count1 ...
-    - VO: # ts num_inliers tx ty tz yaw pitch roll(degree) is_keyframe ...
-
-    解析规则：
-    - GT 位置固定读取 x/y/z；VO 位置固定读取 tx/ty/tz。
-    - yaw/pitch/roll 固定按角度制读取，再转成内部统一的弧度旋转矩阵。
-    - GT 同时有 ts1/ts2 时优先把 ts2 当作与 VO 对齐的秒级时间戳；如果 ts2 不像独立时间轴，
-      则退回 ts1 + ts2 的秒/纳秒组合。
-    - reset、速度、深度等不参与几何误差，但会放入 extras 供导出和诊断使用。
-    """
-    frame = _read_dataframe(text)
-    if frame.empty:
-        raise ValueError(f"{name}: empty SF trajectory")
-    normalized = {_normalize_col(col): col for col in frame.columns}
-    numeric = frame.apply(pd.to_numeric, errors="coerce")
-
-    sf_kind = _detect_sf_kind_from_columns(normalized)
-    if sf_kind == "gt":
-        stamps = _sf_gt_stamps(numeric, normalized)
-        position_cols = [_required_col(normalized, col, name, "SF GT") for col in ["x", "y", "z"]]
-        source_format = "sf_gt"
-    elif sf_kind == "vo":
-        ts_col = _required_col(normalized, "ts", name, "SF VO")
-        stamps = _normalize_timestamps(numeric[ts_col].to_numpy(dtype=float), _timestamp_unit_hint(text, str(ts_col)))
-        position_cols = [_required_col(normalized, col, name, "SF VO") for col in ["tx", "ty", "tz"]]
-        source_format = "sf_vo"
-    else:
-        raise ValueError(f"{name}: SF format needs either GT or VO SF header columns")
-
-    positions = numeric[position_cols].to_numpy(dtype=float)
-    yaw_col = _required_col(normalized, "yaw", name, "SF")
-    pitch_col = _required_col(normalized, "pitch", name, "SF")
-    roll_col = _required_col(normalized, "roll", name, "SF")
-    angles = numeric[[yaw_col, pitch_col, roll_col]].to_numpy(dtype=float)
-    unit = _angle_unit_for_columns([yaw_col, pitch_col, roll_col], frame.attrs.get("angle_unit"), angles)
-    if unit == "deg":
-        angles = np.deg2rad(angles)
-    rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
-
-    valid = np.isfinite(stamps) & np.isfinite(positions).all(axis=1)
-    valid &= np.isfinite(rotations.reshape(len(rotations), -1)).all(axis=1)
-    stamps = stamps[valid]
-    positions = positions[valid]
-    rotations = rotations[valid]
-
-    extras: dict[str, np.ndarray] = {"raw_numeric_table": numeric.to_numpy(dtype=float)[valid]}
-    for norm_name, col in normalized.items():
-        canonical = SF_EXTRA_CANONICAL.get(norm_name)
-        if canonical is not None:
-            extras[canonical] = numeric[col].to_numpy(dtype=float)[valid]
-
-    return Trajectory(name, stamps, positions, rotations, extras=extras, source_format=source_format)
-
-
-def _parse_vloc(text: str, name: str) -> Trajectory:
-    """解析 VLOC VO 输出格式。
-
-    表头：
-    ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
-
-    解析规则：
-    - ts 是秒级或可由 _normalize_timestamps() 推断的时间戳。
-    - tx/ty 是 VO 水平位置。
-    - 如果 latitude/longitude/altitude 中存在有效 GPS 高度，则使用 -altitude 作为 z。
-      这和当前 SF IMU 的 z 轴方向一致；lat/lon/alt 为 0 的初始化/无效定位行会被过滤。
-    - 如果整份 VLOC 没有有效 GPS 高度，则退回旧行为，使用 tx/ty/tz。
-    - yaw/pitch/roll 按角度制读取，再转成内部统一的旋转矩阵。
-    - status、num_inliers、reset_count、latitude/longitude/altitude 存入 extras 供导出和诊断。
-    """
-    frame = _read_dataframe(text)
-    if frame.empty:
-        raise ValueError(f"{name}: empty VLOC trajectory")
-    normalized = {_normalize_col(col): col for col in frame.columns}
-    if not _is_vloc_columns(normalized):
-        raise ValueError(f"{name}: VLOC format needs ts/status/num_inliers/reset_count/tx/ty/tz/yaw/pitch/roll/latitude/longitude/altitude")
-    numeric = frame.apply(pd.to_numeric, errors="coerce")
-
-    ts_col = _required_col(normalized, "ts", name, "VLOC")
-    stamps = _normalize_timestamps(numeric[ts_col].to_numpy(dtype=float), _timestamp_unit_hint(text, str(ts_col)))
-    tx_col = _required_col(normalized, "tx", name, "VLOC")
-    ty_col = _required_col(normalized, "ty", name, "VLOC")
-    tz_col = _required_col(normalized, "tz", name, "VLOC")
-    positions = numeric[[tx_col, ty_col, tz_col]].to_numpy(dtype=float)
-
-    # VLOC 日志里同时有 tx/ty/tz 和 latitude/longitude/altitude。
-    # 当前 2839_traj 数据的 MATLAB 对比图使用的是 tx、ty、-altitude：
-    #   - tx/ty 与 IMU x/y 同坐标系；
-    #   - altitude 为向上为正，高度方向和 IMU z 相反，因此写入 z 时取负；
-    #   - latitude/longitude/altitude 为 0 的行是初始化或无效定位输出，不应纳入轨迹评估。
-    # 为了不破坏没有 GPS 高度的 VLOC 文件，只有当文件中确实存在足够的有效经纬高行时才启用该规则。
-    lat_col = _required_col(normalized, "latitude", name, "VLOC")
-    lon_col = _required_col(normalized, "longitude", name, "VLOC")
-    alt_col = _required_col(normalized, "altitude", name, "VLOC")
-    lat_values = numeric[lat_col].to_numpy(dtype=float)
-    lon_values = numeric[lon_col].to_numpy(dtype=float)
-    alt_values = numeric[alt_col].to_numpy(dtype=float)
-    gps_height_valid = (
-        np.isfinite(lat_values)
-        & np.isfinite(lon_values)
-        & np.isfinite(alt_values)
-        & (np.abs(lat_values) > 1e-9)
-        & (np.abs(lon_values) > 1e-9)
-        & (np.abs(alt_values) > 1e-9)
-    )
-    use_gps_height = int(np.count_nonzero(gps_height_valid)) >= 2
-    if use_gps_height:
-        positions[:, 2] = -alt_values
-
-    yaw_col = _required_col(normalized, "yaw", name, "VLOC")
-    pitch_col = _required_col(normalized, "pitch", name, "VLOC")
-    roll_col = _required_col(normalized, "roll", name, "VLOC")
-    angles = numeric[[yaw_col, pitch_col, roll_col]].to_numpy(dtype=float)
-    unit = _angle_unit_for_columns([yaw_col, pitch_col, roll_col], frame.attrs.get("angle_unit"), angles)
-    if unit == "deg":
-        angles = np.deg2rad(angles)
-    rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
-
-    valid = np.isfinite(stamps) & np.isfinite(positions).all(axis=1)
-    if use_gps_height:
-        valid &= gps_height_valid
-    valid &= np.isfinite(rotations.reshape(len(rotations), -1)).all(axis=1)
-    stamps = stamps[valid]
-    positions = positions[valid]
-    rotations = rotations[valid]
-
-    extras: dict[str, np.ndarray] = {"raw_numeric_table": numeric.to_numpy(dtype=float)[valid]}
-    for norm_name, col in normalized.items():
-        canonical = VLOC_EXTRA_CANONICAL.get(norm_name)
-        if canonical is not None:
-            extras[canonical] = numeric[col].to_numpy(dtype=float)[valid]
-
-    return Trajectory(name, stamps, positions, rotations, extras=extras, source_format="vloc")
-
-
-def _detect_sf_kind_from_columns(normalized: dict[str, Any]) -> str | None:
-    """根据归一化列名判断 SF 表头属于 GT 还是 VO。"""
-    keys = set(normalized)
-    has_gt_pose = {"ts1", "ts2", "x", "y", "z", "yaw", "pitch", "roll"}.issubset(keys)
-    has_gt_marker = bool({"flightmode", "resetcount1", "lati", "longi"} & keys)
-    if has_gt_pose and has_gt_marker:
-        return "gt"
-    has_vo_pose = {"ts", "tx", "ty", "tz", "yaw", "pitch", "roll"}.issubset(keys)
-    has_vo_marker = bool({"iskeyframe", "framecost", "depthmean", "depthmin", "depthmax"} & keys)
-    if has_vo_pose and has_vo_marker:
-        return "vo"
-    return None
-
-
-def _is_vloc_columns(normalized: dict[str, Any]) -> bool:
-    """判断表头是否满足 VLOC VO 输出格式。"""
-    keys = set(normalized)
-    return {
-        "ts",
-        "status",
-        "numinliers",
-        "resetcount",
-        "tx",
-        "ty",
-        "tz",
-        "yaw",
-        "pitch",
-        "roll",
-        "latitude",
-        "longitude",
-        "altitude",
-    }.issubset(keys)
-
-
-def _sf_gt_stamps(numeric: pd.DataFrame, normalized: dict[str, Any]) -> np.ndarray:
-    """读取 SF GT 时间戳。
-
-    ts2 在用户数据中通常是与 VO 对齐的秒级时间轴，因此优先使用；
-    如果 ts2 像纳秒/微秒余量，则使用 ts1 + ts2 组合，兼容 sec/nsec 拆分式日志。
-    """
-    ts1_col = _required_col(normalized, "ts1", "SF GT", "SF GT")
-    ts2_col = _required_col(normalized, "ts2", "SF GT", "SF GT")
-    ts1 = numeric[ts1_col].to_numpy(dtype=float)
-    ts2 = numeric[ts2_col].to_numpy(dtype=float)
-
-    finite_ts2 = ts2[np.isfinite(ts2)]
-    if len(finite_ts2):
-        ts2_duration = float(np.nanmax(finite_ts2) - np.nanmin(finite_ts2))
-        ts2_has_fraction = bool(np.any(np.abs(finite_ts2 - np.round(finite_ts2)) > 1e-9))
-        ts2_median_abs = float(np.nanmedian(np.abs(finite_ts2)))
-        if ts2_duration > 0 and (ts2_has_fraction or ts2_median_abs < 1e6):
-            return _normalize_timestamps(ts2, "s")
-
-    ts1_seconds = _normalize_timestamps(ts1)
-    ts2_seconds = _normalize_timestamps(ts2)
-    return ts1_seconds + ts2_seconds
-
-
-def _required_col(normalized: dict[str, Any], name: str, trajectory_name: str, fmt_name: str) -> Any:
-    """按归一化列名取必需列，缺失时给出清晰错误。"""
-    col = _pick(normalized, [name])
-    if col is None:
-        raise ValueError(f"{trajectory_name}: {fmt_name} format needs column {name}")
-    return col
-
-
-def _parse_csv(text: str, name: str) -> Trajectory:
-    """解析 CSV/TSV/空格表/注释表头。
-
-    这里做三件事：
-    1. 自动识别 time/x/y/z 列，兼容 EuRoC 的 p_RS_R_x/y/z。
-    2. 自动识别四元数 qx/qy/qz/qw 或 yaw/pitch/roll。
-    3. 抽取 runtime extras，供 summarize_runtime() 统计。
-    """
-    frame = _read_dataframe(text)
-    if frame.empty:
-        raise ValueError(f"{name}: empty CSV")
-    angle_unit_hint = frame.attrs.get("angle_unit")
-    timestamp_unit_hint = frame.attrs.get("timestamp_unit")
-    normalized = {_normalize_col(col): col for col in frame.columns}
-    numeric = frame.apply(pd.to_numeric, errors="coerce")
-
-    time_col = _pick(normalized, TIME_COLUMN_CANDIDATES)
-    x_col = _pick(normalized, X_COLUMN_CANDIDATES)
-    y_col = _pick(normalized, Y_COLUMN_CANDIDATES)
-    z_col = _pick(normalized, Z_COLUMN_CANDIDATES)
-
-    if x_col is None or y_col is None or z_col is None:
-        # 没有可靠列名时，退回到数字表解析，尽量支持老式无表头日志。
-        # 这个 fallback 仍然只读取轨迹需要的数据列，不会要求用户改原始文件。
-        numeric_values = numeric.dropna(axis=1, how="all").to_numpy(dtype=float)
-        numeric_values = numeric_values[~np.isnan(numeric_values).all(axis=1)]
-        if numeric_values.shape[1] == 12:
-            return _parse_numeric_table([" ".join(map(str, row)) for row in numeric_values], name, "kitti")
-        if numeric_values.shape[1] >= 8:
-            return _parse_numeric_table([" ".join(map(str, row[:8])) for row in numeric_values], name, "tum")
-        if numeric_values.shape[1] >= 3:
-            return _parse_numeric_table([" ".join(map(str, row[:4])) for row in numeric_values], name, "xyz")
-        raise ValueError(f"{name}: could not detect x/y/z columns")
-
-    positions = numeric[[x_col, y_col, z_col]].to_numpy(dtype=float)
-    if time_col is not None:
-        # 所有时间戳在进入 Trajectory 前统一转成秒；
-        # EuRoC 的 timestamp [ns] 和无表头 ns 时间戳都在这里处理。
-        stamps = _normalize_timestamps(
-            numeric[time_col].to_numpy(dtype=float),
-            timestamp_unit_hint or _timestamp_unit_hint("", str(time_col)),
-        )
-    else:
-        stamps = np.arange(len(frame), dtype=float)
-
-    qx_col = _pick(normalized, QX_COLUMN_CANDIDATES)
-    qy_col = _pick(normalized, QY_COLUMN_CANDIDATES)
-    qz_col = _pick(normalized, QZ_COLUMN_CANDIDATES)
-    qw_col = _pick(normalized, QW_COLUMN_CANDIDATES)
-    rotations = None
-    if all(col is not None for col in [qx_col, qy_col, qz_col, qw_col]):
-        # 四元数优先级最高，因为它比欧拉角少一个顺序歧义。
-        rotations = quaternion_to_matrix(
-            numeric[qx_col].to_numpy(dtype=float),
-            numeric[qy_col].to_numpy(dtype=float),
-            numeric[qz_col].to_numpy(dtype=float),
-            numeric[qw_col].to_numpy(dtype=float),
-        )
-    else:
-        matrix_cols = [_pick(normalized, [f"r{i}{j}", f"rot{i}{j}", f"rotation{i}{j}"]) for i in range(3) for j in range(3)]
-        if all(col is not None for col in matrix_cols):
-            # 如果日志直接给旋转矩阵，就按行展开的 r00...r22 读取。
-            rotations = numeric[matrix_cols].to_numpy(dtype=float).reshape((-1, 3, 3))
-        else:
-            yaw_col = _pick_angle_col(normalized, "yaw", ["heading", "psi"])
-            pitch_col = _pick_angle_col(normalized, "pitch", ["theta"])
-            roll_col = _pick_angle_col(normalized, "roll", ["row", "phi"])
-            if yaw_col is not None and pitch_col is not None and roll_col is not None:
-                angles = numeric[[yaw_col, pitch_col, roll_col]].to_numpy(dtype=float)
-                # 自动识别角度/弧度，兼容用户 IMU/VO 表头单位不同的情况。
-                unit = _angle_unit_for_columns([yaw_col, pitch_col, roll_col], angle_unit_hint, angles)
-                if unit == "deg":
-                    angles = np.deg2rad(angles)
-                rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
-
-    valid = np.isfinite(stamps) & np.isfinite(positions).all(axis=1)
-    if rotations is not None:
-        valid &= np.isfinite(rotations.reshape(len(rotations), -1)).all(axis=1)
-    # 只保留轨迹计算所需字段都有效的行；原文件不改动，坏行只是不进入统计。
-    stamps = stamps[valid]
-    positions = positions[valid]
-    if rotations is not None:
-        rotations = rotations[valid]
-
-    extras: dict[str, np.ndarray] = {}
-    extras["raw_numeric_table"] = numeric.to_numpy(dtype=float)[valid]
-    for col in frame.columns:
-        key = _normalize_col(col)
-        # extras 只收集 runtime/资源字段，不参与轨迹几何计算。
-        if key in {
-            "processtimems",
-            "processingtimems",
-            "frametimems",
-            "latencyms",
-            "cpupercent",
-            "memorypercent",
-            "memorymb",
-            "fps",
-        }:
-            canonical = {
-                "processtimems": "process_time_ms",
-                "processingtimems": "processing_time_ms",
-                "frametimems": "frame_time_ms",
-                "latencyms": "latency_ms",
-                "cpupercent": "cpu_percent",
-                "memorypercent": "memory_percent",
-                "memorymb": "memory_mb",
-                "fps": "fps",
-            }[key]
-            extras[canonical] = numeric[col].to_numpy(dtype=float)[valid]
-
-    return Trajectory(name, stamps, positions, rotations, extras=extras, source_format="csv")
-
-
-def _read_dataframe(text: str) -> pd.DataFrame:
-    """把文本读取为 DataFrame。
-
-    优先处理 # 开头的注释表头，例如 "# ts x y z yaw pitch roll ..."；
-    否则交给 pandas 尝试自动分隔符、空格分隔和逗号分隔。
-    """
-    header = _comment_header(text)
-    if header:
-        frame = _read_commented_header_table(text, header)
-        frame.attrs["angle_unit"] = _angle_unit_hint(text)
-        frame.attrs["timestamp_unit"] = _timestamp_unit_hint(text)
-        return frame
-
-    for kwargs in (
-        {"sep": None, "engine": "python"},
-        {"sep": r"\s+", "engine": "python"},
-        {"sep": ",", "engine": "python"},
-    ):
-        try:
-            # pandas 自动分隔符优先，其次强制空白分隔，再强制逗号分隔。
-            # 这样可以兼容 CSV、TSV、空格日志以及混合空白日志。
-            frame = pd.read_csv(io.StringIO(text), comment="#", **kwargs)
-            if len(frame.columns) > 1 or not frame.empty:
-                frame.attrs["timestamp_unit"] = _timestamp_unit_hint(text)
-                return frame
-        except Exception:
-            continue
-    raise ValueError("Could not parse CSV-like trajectory")
-
-
-def _detect_commented_format(text: str) -> str:
-    """识别带 # 注释表头的文本应走 SF、VLOC 还是通用 CSV。
-
-    SF 是项目内固定表头；一旦检测到 flight_mode/reset_count1 或 num_inliers/depth_* 等标记，
-    就走 _parse_sf()，让 ts1/ts2 和角度单位按 SF 规则处理。
-    """
-    header = _comment_header(text)
-    if not header:
-        return "csv"
-    normalized = {_normalize_col(token): token for token in header}
-    if _is_vloc_columns(normalized):
-        return "vloc"
-    return "sf" if _detect_sf_kind_from_columns(normalized) is not None else "csv"
-
-
-def _detect_plain_header_format(lines: list[str]) -> str | None:
-    """识别普通第一行表头的项目格式。
-
-    例如 VLOC 文件的第一行不是注释，而是：
-    ts status num_inliers reset_count tx ty tz yaw pitch roll latitude longitude altitude
-    """
-    if not lines:
-        return None
-    first = lines[0]
-    if not re.search(r"[A-Za-z_]", first):
-        return None
-    tokens = _comment_header_tokens(first)
-    normalized = {_normalize_col(token): token for token in tokens}
-    if _is_vloc_columns(normalized):
-        return "vloc"
-    return None
-
-
-def _comment_header(text: str) -> list[str] | None:
-    """从注释行中寻找表头。
-
-    例如：
-    # timestamp x y z yaw pitch roll
-    # ts [ns], p_x, p_y, p_z
-
-    只有当注释行里能识别到 x/y/z 时才认为它是轨迹表头。
-    """
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("#"):
-            continue
-        content = stripped.lstrip("#").strip()
-        tokens = _comment_header_tokens(content)
-        normalized = {_normalize_col(token): token for token in tokens}
-        if (
-            len(tokens) >= 3
-            and _pick(normalized, X_COLUMN_CANDIDATES) is not None
-            and _pick(normalized, Y_COLUMN_CANDIDATES) is not None
-            and _pick(normalized, Z_COLUMN_CANDIDATES) is not None
-        ):
-            return tokens
-    return None
-
-
-def _comment_header_tokens(content: str) -> list[str]:
-    """把注释表头内容拆成列名 token。
-
-    会去掉 [unit] 和 (unit)，比如 yaw[deg] -> yaw。
-    这样列名识别和单位识别可以分开处理。
-    """
-    if "," in content:
-        pieces = content.split(",")
-    else:
-        pieces = re.split(r"[\s,;]+", content)
-
-    tokens: list[str] = []
-    for piece in pieces:
-        token = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", piece).strip()
-        if not token:
-            continue
-        if not _is_column_token(token) and " " in token:
-            token = token.split()[0]
-        if _is_column_token(token):
-            tokens.append(token)
-    return tokens
-
-
-def _read_commented_header_table(text: str, header: list[str]) -> pd.DataFrame:
-    """按注释表头读取后续数字行。
-
-    只读取 header 长度以内的数字列；多余字段不影响轨迹解析。
-    非数字行、空行、Inf/NaN 行会被跳过。
-    """
-    rows: list[list[float]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        data_part = stripped.split("#", 1)[0].strip()
-        if not data_part:
-            continue
-        tokens = [token for token in re.split(r"[\s,;]+", data_part) if token]
-        if len(tokens) < len(header):
-            continue
-        try:
-            row = [float(token) for token in tokens[: len(header)]]
-        except ValueError:
-            continue
-        if any(math.isnan(value) or math.isinf(value) for value in row):
-            continue
-        rows.append(row)
-    return pd.DataFrame(rows, columns=header)
-
-
-def _is_column_token(token: str) -> bool:
-    """判断 token 是否像一个列名，而不是普通说明文字。"""
-    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token))
-
-
-def _timestamp_unit_hint(text: str, column: str | None = None) -> str | None:
-    """从表头/列名中提取时间单位提示：ns/us/ms/s。
-
-    代码意义：
-    - 很多数据会写 timestamp[ns]、time_ms 或中文“毫秒”。
-    - 如果能从文本中读到单位，就优先使用单位提示，而不是靠数量级猜。
-    """
-    snippets: list[str] = []
-    if column:
-        snippets.append(str(column))
-    for line in text.splitlines()[:50]:
-        lower = line.lower()
-        if any(marker in lower for marker in ["timestamp", "time", "stamp", "ts", "时间"]):
-            snippets.append(line)
-
-    scan = "\n".join(snippets).lower()
-    if not scan:
-        return None
-    if re.search(r"\[\s*ns\s*\]|(?:timestamp|time|stamp|ts)[_\-\s]*ns\b|nanosecond|nanoseconds|纳秒", scan):
-        return "ns"
-    if re.search(r"\[\s*us\s*\]|\[\s*µs\s*\]|(?:timestamp|time|stamp|ts)[_\-\s]*(?:us|µs)\b|microsecond|microseconds|微秒", scan):
-        return "us"
-    if re.search(r"\[\s*ms\s*\]|(?:timestamp|time|stamp|ts)[_\-\s]*ms\b|millisecond|milliseconds|毫秒", scan):
-        return "ms"
-    if re.search(r"\[\s*s\s*\]|(?:timestamp|time|stamp|ts)[_\-\s]*(?:s|sec|secs|second|seconds)\b", scan):
-        return "s"
-    return None
-
+    if data.shape[1] < 8:
+        raise ValueError(f"{name}: TUM format needs at least 8 columns")
+    stamps = _normalize_timestamps(data[:, 0])
+    positions = data[:, 1:4]
+    rotations = quaternion_to_matrix(data[:, 4], data[:, 5], data[:, 6], data[:, 7])
+    return Trajectory(name, stamps, positions, rotations, extras={"raw_numeric_table": data}, source_format="tum")
 
 def _normalize_timestamps(stamps: np.ndarray, unit_hint: str | None = None) -> np.ndarray:
     """时间戳统一换算到秒。
@@ -4247,83 +4714,3 @@ def _infer_timestamp_unit(stamps: np.ndarray) -> str:
     if median_abs >= 1e11:
         return "ms"
     return "s"
-
-
-def _angle_unit_hint(text: str) -> str | None:
-    """从注释行推断 yaw/pitch/roll 是角度制还是弧度制。
-
-    用户之前的数据里 GT 和 VO 的角度单位可能不同：
-    - yaw/pitch/roll[deg] -> 角度制。
-    - yaw/pitch/roll[rad] -> 弧度制。
-    这个函数只提供提示；最终仍由 _angle_unit_for_columns() 综合列名和数值范围判断。
-    """
-    for line in text.splitlines():
-        lower = line.lower()
-        if any(word in lower for word in ["角度", "degree", "degrees", " deg"]):
-            if any(axis in lower for axis in ["yaw", "pitch", "roll", "row", "heading"]):
-                return "deg"
-        if any(word in lower for word in ["弧度", "radian", "radians", " rad"]):
-            if any(axis in lower for axis in ["yaw", "pitch", "roll", "row", "heading"]):
-                return "rad"
-    return None
-
-
-def _pick_angle_col(normalized: dict[str, Any], base: str, aliases: list[str]) -> Any | None:
-    """查找 yaw/pitch/roll 列，兼容带单位后缀的列名。"""
-    candidates: list[str] = []
-    for name in [base, *aliases]:
-        candidates.extend(
-            [
-                name,
-                f"{name}_rad",
-                f"{name}_radian",
-                f"{name}_radians",
-                f"{name}_deg",
-                f"{name}_degree",
-                f"{name}_degrees",
-            ]
-        )
-    return _pick(normalized, candidates)
-
-
-def _angle_unit_for_columns(cols: list[Any], hint: str | None, values: np.ndarray) -> str:
-    """确定欧拉角单位。
-
-    优先级：列名 > 注释提示 > 数值范围启发式。
-
-    数值范围启发：
-    - 如果最大绝对值明显超过 2*pi，基本可以判定为角度制。
-    - 否则默认弧度制，避免把小角度度数误判成弧度造成过大旋转。
-    """
-    col_text = " ".join(str(col).lower() for col in cols)
-    if any(marker in col_text for marker in ["deg", "degree", "degrees"]):
-        return "deg"
-    if any(marker in col_text for marker in ["rad", "radian", "radians"]):
-        return "rad"
-    if hint in {"deg", "rad"}:
-        return hint
-    finite = values[np.isfinite(values)]
-    if len(finite) and np.nanmax(np.abs(finite)) > 2.0 * np.pi + 1e-6:
-        return "deg"
-    return "rad"
-
-
-def _normalize_col(col: Any) -> str:
-    """列名归一化。
-
-    去掉单位、括号、大小写和非字母数字字符：
-    - "p_RS_R_x [m]" -> "prsrx"
-    - "timestamp(ns)" -> "timestamp"
-    这样候选列名匹配更稳。
-    """
-    text = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", str(col).strip().lower())
-    return re.sub(r"[^a-z0-9]", "", text)
-
-
-def _pick(normalized: dict[str, Any], names: list[str]) -> Any | None:
-    """从 normalized 列名字典中按候选名寻找真实列名。"""
-    normalized_names = [_normalize_col(name) for name in names]
-    for name in normalized_names:
-        if name in normalized:
-            return normalized[name]
-    return None

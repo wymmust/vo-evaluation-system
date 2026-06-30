@@ -1,18 +1,48 @@
 const state = {
-  pyodide: null,
-  evaluateJson: null,
+  worker: null,
+  workerReady: false,
+  workerRequestId: 0,
+  workerRequests: new Map(),
   report: null,
   loadingStep: "",
+  chartRenderToken: 0,
+  activePointSelectionChartId: null,
+  focusedPointSelectionId: null,
+  pointSelectionSequence: 0,
+  pointSelections: [],
 };
 
-const PYODIDE_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
+const PYODIDE_INDEX_URL = "./vendor/pyodide/v0.26.4/full/";
+const PLOTLY_SCRIPT_URL = "./vendor/plotly/plotly-2.35.2.min.js";
 
 const els = {
   status: document.getElementById("runtimeStatus"),
   message: document.getElementById("message"),
   runButton: document.getElementById("runButton"),
-  gtFile: document.getElementById("gtFile"),
-  estFile: document.getElementById("estFile"),
+  metrics: document.getElementById("metrics"),
+  entryMode: document.getElementById("entryMode"),
+  entryModeHint: document.getElementById("entryModeHint"),
+  summaryKicker: document.getElementById("summaryKicker"),
+  summaryTitle: document.getElementById("summaryTitle"),
+  visualKicker: document.getElementById("visualKicker"),
+  visualTitle: document.getElementById("visualTitle"),
+  dataDirFiles: document.getElementById("dataDirFiles"),
+  logDirFiles: document.getElementById("logDirFiles"),
+  dataDirButton: document.getElementById("dataDirButton"),
+  logDirButton: document.getElementById("logDirButton"),
+  dataDirStatus: document.getElementById("dataDirStatus"),
+  logDirStatus: document.getElementById("logDirStatus"),
+  vlocChartDirectorySection: document.getElementById("vlocChartDirectorySection"),
+  vlocChartList: document.getElementById("vlocChartList"),
+  vlocChartSelectAll: document.getElementById("vlocChartSelectAll"),
+  vlocChartClear: document.getElementById("vlocChartClear"),
+  voChartDirectorySection: document.getElementById("voChartDirectorySection"),
+  voChartList: document.getElementById("voChartList"),
+  voChartSelectAll: document.getElementById("voChartSelectAll"),
+  voChartClear: document.getElementById("voChartClear"),
+  pointSelectionOutputSection: document.getElementById("pointSelectionOutputSection"),
+  pointSelectionOutput: document.getElementById("pointSelectionOutput"),
+  clearAllPointSelections: document.getElementById("clearAllPointSelections"),
   downloadJson: document.getElementById("downloadJson"),
   downloadPoseCsv: document.getElementById("downloadPoseCsv"),
   downloadSegmentCsv: document.getElementById("downloadSegmentCsv"),
@@ -26,25 +56,71 @@ const chartIds = [
   "trajectory3d",
   "trajectoryXY",
   "errorDistance",
-  "altitudeDistance",
-  "segmentError",
-  "speedError",
-  "sim3ScaleTime",
-  "seriesXTime",
-  "seriesYTime",
-  "seriesZTime",
-  "seriesYawTime",
-  "seriesPitchTime",
-  "seriesRollTime",
-  "errorXTime",
-  "errorYTime",
-  "errorZTime",
-  "errorYawTime",
-  "errorPitchTime",
-  "errorRollTime",
+  "heightComparison",
+  "navStatusModes",
+  "navVelocity",
+  "navResetCounts",
+  "vlocStatus",
+  "voStatus",
+  "positionCompareComposite",
+  "attitudeCompareComposite",
+  "positionErrorComposite",
+  "attitudeErrorComposite",
   "rpeTranslationTime",
   "rpeRotationTime",
+  "scaleFrameTime",
 ];
+
+const VLOC_CHART_OPTIONS = [
+  { id: "trajectory3d", label: "3D 轨迹" },
+  { id: "trajectoryXY", label: "俯视 NE 轨迹" },
+  { id: "errorDistance", label: "误差随路程变化" },
+  { id: "heightComparison", label: "对地高随时间变化" },
+  { id: "navStatusModes", label: "导航状态信息" },
+  { id: "navVelocity", label: "导航速度信息" },
+  { id: "navResetCounts", label: "导航 reset 计数" },
+  { id: "vlocStatus", label: "VLOC 状态信息" },
+  { id: "positionCompareComposite", label: "NED 随时间变化" },
+  { id: "attitudeCompareComposite", label: "YPR 随时间变化" },
+  { id: "positionErrorComposite", label: "NED 误差随时间变化" },
+  { id: "attitudeErrorComposite", label: "YPR 误差随时间变化" },
+];
+
+const VO_CHART_OPTIONS = [
+  { id: "trajectory3d", label: "3D 轨迹" },
+  { id: "errorDistance", label: "ATE 绝对位姿误差" },
+  { id: "navStatusModes", label: "导航状态信息" },
+  { id: "navVelocity", label: "导航速度信息" },
+  { id: "navResetCounts", label: "导航 reset 计数" },
+  { id: "voStatus", label: "VO 状态信息" },
+  { id: "positionCompareComposite", label: "位置随时间变化" },
+  { id: "attitudeCompareComposite", label: "姿态随时间变化" },
+  { id: "positionErrorComposite", label: "位置误差随时间变化" },
+  { id: "attitudeErrorComposite", label: "姿态误差随时间变化" },
+  { id: "rpeTranslationTime", label: "RPE 平移误差" },
+  { id: "rpeRotationTime", label: "RPE 旋转误差" },
+  { id: "scaleFrameTime", label: "局部 Sim3 尺度" },
+];
+
+const VLOC_VISIBLE_CHART_IDS = VLOC_CHART_OPTIONS.map((option) => option.id);
+const VO_VISIBLE_CHART_IDS = VO_CHART_OPTIONS.map((option) => option.id);
+const PICKABLE_VLOC_CHART_IDS = VLOC_VISIBLE_CHART_IDS.filter((id) => id !== "trajectory3d");
+const PICKABLE_VO_CHART_IDS = VO_VISIBLE_CHART_IDS.filter((id) => id !== "trajectory3d");
+const POINT_SELECTION_COLORS = [
+  "#000000",
+  "#ff00ff",
+  "#ffd700",
+  "#00ffff",
+  "#ff1493",
+  "#7fff00",
+  "#8b4513",
+  "#ff69b4",
+  "#4b0082",
+  "#00ff7f",
+];
+
+state.vlocSelectedChartIds = new Set(VLOC_VISIBLE_CHART_IDS);
+state.voSelectedChartIds = new Set(VO_VISIBLE_CHART_IDS);
 
 init();
 
@@ -62,69 +138,82 @@ async function init() {
 }
 
 function wireEvents() {
-  [els.gtFile, els.estFile].forEach((input) => input.addEventListener("change", updateRunButton));
-  document.getElementById("interpolationPreset").addEventListener("change", applyInterpolationPreset);
+  [els.entryMode, els.dataDirFiles, els.logDirFiles].forEach((input) => input.addEventListener("change", updateRunButton));
+  els.dataDirFiles.addEventListener("change", () => updateDirectoryStatus("data"));
+  els.logDirFiles.addEventListener("change", () => updateDirectoryStatus("log"));
+  els.entryMode.addEventListener("change", handleEntryModeChange);
+  els.dataDirButton.addEventListener("click", () => els.dataDirFiles.click());
+  els.logDirButton.addEventListener("click", () => els.logDirFiles.click());
+  els.vlocChartList?.addEventListener("change", handleVlocChartDirectoryChange);
+  els.vlocChartSelectAll?.addEventListener("click", selectAllVlocChartDirectory);
+  els.vlocChartClear?.addEventListener("click", clearVlocChartDirectory);
+  els.voChartList?.addEventListener("change", handleVoChartDirectoryChange);
+  els.voChartSelectAll?.addEventListener("click", selectAllVoChartDirectory);
+  els.voChartClear?.addEventListener("click", clearVoChartDirectory);
+  els.clearAllPointSelections?.addEventListener("click", clearAllPointSelections);
+  document.addEventListener("keydown", handlePointSelectionKeydown);
   els.runButton.addEventListener("click", runEvaluation);
-  els.downloadJson.addEventListener("click", () => downloadText("vo_evaluation_metrics.json", JSON.stringify(state.report, null, 2), "application/json"));
-  els.downloadPoseCsv.addEventListener("click", () => downloadText("vo_per_pose_errors.csv", toCsv(state.report?.per_pose || []), "text/csv"));
-  els.downloadSegmentCsv.addEventListener("click", () => downloadText("vo_segment_errors.csv", toCsv(state.report?.segment_records || []), "text/csv"));
-  els.downloadWorstCsv.addEventListener("click", () => downloadText("vo_worst_segments.csv", toCsv(state.report?.worst_segments || []), "text/csv"));
+  els.downloadJson.addEventListener("click", downloadReportJson);
+  els.downloadPoseCsv.addEventListener("click", () => downloadReportCsvSlice("per_pose", "vo_per_pose_errors.csv"));
+  els.downloadSegmentCsv.addEventListener("click", () => downloadReportCsvSlice("segment_records", "vo_segment_errors.csv"));
+  els.downloadWorstCsv.addEventListener("click", () => downloadReportCsvSlice("worst_segments", "vo_worst_segments.csv"));
   els.downloadConfigJson.addEventListener("click", () => downloadText("vo_evaluation_config.json", JSON.stringify(state.report?.config || {}, null, 2), "application/json"));
-  els.downloadTrajectoryExcel.addEventListener("click", () => downloadBytes(
-    "vo_trajectory_exports.xlsx",
-    buildTrajectoryWorkbook(state.report?.trajectory_exports || {}),
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ));
-  els.downloadHtml.addEventListener("click", () => downloadText("vo_evaluation_report.html", buildHtmlReport(), "text/html"));
+  els.downloadTrajectoryExcel.addEventListener("click", downloadTrajectoryExcel);
+  els.downloadHtml.addEventListener("click", downloadHtmlReport);
+  updateEntryModeUi();
+  renderVlocChartDirectory();
+  renderVoChartDirectory();
+  updateDirectoryStatus("data");
+  updateDirectoryStatus("log");
 }
 
 async function initPyodide() {
   if (window.location.protocol === "file:") {
     throw new Error("local_file_protocol");
   }
-  if (typeof loadPyodide !== "function") {
-    throw new Error("pyodide_script_missing");
-  }
-
-  state.loadingStep = "pyodide";
-  els.status.textContent = "加载 Pyodide...";
-  state.pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX_URL });
-
+  state.loadingStep = "worker";
+  els.status.textContent = "加载后台运行环境...";
+  state.worker = new Worker("./worker.js");
+  state.worker.addEventListener("message", handleWorkerMessage);
+  state.worker.addEventListener("error", (event) => {
+    rejectPendingWorkerRequests(event.message || "worker_error");
+  });
   state.loadingStep = "packages";
-  els.status.textContent = "加载 numpy/pandas...";
-  await state.pyodide.loadPackage(["numpy", "pandas"]);
-
-  state.loadingStep = "local_python";
-  const [evaluatorCode, runnerCode] = await Promise.all([
-    fetchText("./py/evaluator.py"),
-    fetchText("./py/browser_runner.py"),
-  ]);
-
-  state.pyodide.FS.mkdirTree("/vo_eval");
-  state.pyodide.FS.writeFile("/vo_eval/__init__.py", "");
-  state.pyodide.FS.writeFile("/vo_eval/evaluator.py", evaluatorCode);
-  state.pyodide.FS.writeFile("/browser_runner.py", runnerCode);
-  state.pyodide.runPython(`
-import sys
-sys.path.insert(0, "/")
-from browser_runner import evaluate_json
-`);
-  state.evaluateJson = state.pyodide.globals.get("evaluate_json");
+  els.status.textContent = "后台加载 Pyodide/numpy/pandas...";
+  await workerRequest("init", { pyodideIndexUrl: PYODIDE_INDEX_URL });
+  state.workerReady = true;
 }
 
-async function fetchText(url) {
-  let response;
-  const cacheBust = `cache_bust=${Date.now()}`;
-  const requestUrl = `${url}${url.includes("?") ? "&" : "?"}${cacheBust}`;
-  try {
-    response = await fetch(requestUrl, { cache: "no-store" });
-  } catch (error) {
-    throw new Error(`local_fetch_failed:${url}:${error.message}`);
+function handleWorkerMessage(event) {
+  const { id, ok, result, error } = event.data || {};
+  const request = state.workerRequests.get(id);
+  if (!request) {
+    return;
   }
-  if (!response.ok) {
-    throw new Error(`local_fetch_status:${url}:${response.status}`);
+  state.workerRequests.delete(id);
+  if (ok) {
+    request.resolve(result);
+  } else {
+    request.reject(new Error(error || "worker_request_failed"));
   }
-  return response.text();
+}
+
+function workerRequest(type, payload = {}) {
+  if (!state.worker) {
+    return Promise.reject(new Error("worker_not_created"));
+  }
+  const id = ++state.workerRequestId;
+  return new Promise((resolve, reject) => {
+    state.workerRequests.set(id, { resolve, reject });
+    state.worker.postMessage({ id, type, payload });
+  });
+}
+
+function rejectPendingWorkerRequests(message) {
+  for (const request of state.workerRequests.values()) {
+    request.reject(new Error(message));
+  }
+  state.workerRequests.clear();
 }
 
 function describeRuntimeError(error) {
@@ -132,47 +221,50 @@ function describeRuntimeError(error) {
   if (message === "local_file_protocol") {
     return "当前页面是直接打开的本地 index.html。请进入 static_web 目录后运行 python3 -m http.server 8765，再访问 http://localhost:8765/；公网部署时也必须通过 http/https URL 访问。";
   }
-  if (message === "pyodide_script_missing") {
-    return "Pyodide 脚本没有加载成功。请检查网络是否能访问 cdn.jsdelivr.net，或部署时改用可访问的 Pyodide CDN/本地镜像。";
-  }
   if (message.startsWith("local_fetch_failed:")) {
     const [, url] = message.split(":");
-    return `无法读取静态资源 ${url}。如果你打开的是 localhost，请确认静态服务器还在运行；如果是公网部署，请确认 static_web/py 目录也一起上传了。`;
+    return `无法读取静态资源 ${url}。如果你打开的是 localhost，请确认静态服务器还在运行；如果是公网部署，请确认 static_web/py 和 static_web/vendor 目录也一起上传了。`;
   }
   if (message.startsWith("local_fetch_status:")) {
     const [, url, status] = message.split(":");
-    return `无法读取静态资源 ${url}，HTTP 状态码 ${status}。请确认 static_web/py 目录已经和 index.html 一起部署。`;
+    return `无法读取静态资源 ${url}，HTTP 状态码 ${status}。请确认 static_web/py 和 static_web/vendor 目录已经和 index.html 一起部署。`;
   }
   if (message.includes("Failed to fetch") && state.loadingStep === "packages") {
-    return "无法下载 numpy/pandas 运行包。请检查当前网络是否能访问 Pyodide CDN，或部署时使用可访问的镜像资源。";
+    return "无法读取本地 Pyodide/numpy/pandas 运行包。请确认 static_web/vendor/pyodide 已经和页面一起部署。";
   }
   if (message.includes("Failed to fetch")) {
-    return "浏览器无法获取运行资源。请确认页面是通过 http/https 打开的、静态服务器没有停止，并且 CDN 网络可访问。";
+    return "浏览器无法获取运行资源。请确认页面是通过 http/https 打开的、静态服务器没有停止，并且 static_web/vendor 目录已经一起部署。";
   }
   return message;
 }
 
 function updateRunButton() {
-  els.runButton.disabled = !(state.evaluateJson && els.gtFile.files.length && els.estFile.files.length);
+  const hasRuntime = Boolean(state.workerReady);
+  const missing = missingBundleFiles();
+  els.runButton.disabled = !(hasRuntime && missing.length === 0);
 }
 
 async function runEvaluation() {
   clearMessage();
   setBusy(true);
   try {
-    const gtFile = els.gtFile.files[0];
-    const estFile = els.estFile.files[0];
-    const [gtText, estText] = await Promise.all([gtFile.text(), estFile.text()]);
+    const entryMode = valueOf("entryMode");
+    const payload = await buildBundlePayload(entryMode);
     const config = buildConfig();
-    const reportJson = state.evaluateJson(
-      gtText,
-      estText,
-      valueOf("gtFormat"),
-      valueOf("estFormat"),
-      JSON.stringify(config),
-      gtFile.name,
-      estFile.name,
-    );
+    const reportJson = await workerRequest("evaluate", {
+      entryMode,
+      imuText: payload.imuText,
+      estimateText: payload.estimateText,
+      homePointText: payload.homePointText,
+      calibRawText: payload.calibRawText,
+      configJson: JSON.stringify(config),
+      imuName: payload.imuName,
+      estimateName: payload.estimateName,
+      homePointName: payload.homePointName,
+      calibRawName: payload.calibRawName,
+      dataDirName: payload.dataDirName,
+      logDirName: payload.logDirName,
+    });
     state.report = JSON.parse(String(reportJson));
     renderReport(state.report);
     enableDownloads(true);
@@ -185,24 +277,25 @@ async function runEvaluation() {
 }
 
 function buildConfig() {
-  const maxTimeDiff = numberOf("maxTimeDiff");
-  const maxInterpolationGap = numberOf("maxInterpolationGap");
-  const rpeDeltaValue = numberOf("rpeDeltaValue");
-  const rpeDeltaUnit = valueOf("rpeDeltaUnit");
-  const scaleDeltaValue = numberOf("scaleDeltaValue");
-  const scaleDeltaUnit = valueOf("scaleDeltaUnit");
+  const entryMode = valueOf("entryMode");
+  const isVloc = entryMode === "vloc";
+  const rpeDeltaValue = isVloc ? 1.0 : numberOf("rpeDeltaValue");
+  const rpeDeltaUnit = isVloc ? "frames" : valueOf("rpeDeltaUnit");
+  const scaleDeltaValue = isVloc ? 1.0 : numberOf("scaleDeltaValue");
+  const scaleDeltaUnit = isVloc ? "frames" : valueOf("scaleDeltaUnit");
+  const defaultSegmentLengthsM = [50, 100, 200, 500, 1000, 2000, 5000];
   return {
     profile: "monocular_long_range_uav",
-    alignment: valueOf("alignment"),
-    orientation_correction: valueOf("orientationCorrection"),
-    association_mode: valueOf("associationMode"),
-    max_time_diff_s: maxTimeDiff < 0 ? null : maxTimeDiff,
-    max_interpolation_gap_s: maxInterpolationGap < 0 ? null : maxInterpolationGap,
-    allow_extrapolation: boolOf("allowExtrapolation"),
-    interpolate_rotation: boolOf("interpolateRotation"),
+    alignment: isVloc ? "none" : "sim3",
+    orientation_correction: "none",
+    association_mode: "interpolate_gt",
+    max_time_diff_s: null,
+    max_interpolation_gap_s: 1.0,
+    allow_extrapolation: false,
+    interpolate_rotation: true,
     interpolation_position_method: "linear",
     interpolation_rotation_method: "slerp",
-    time_offset_s: numberOf("timeOffset"),
+    time_offset_s: 0.0,
     rpe_delta_frames: rpeDeltaUnit === "frames" ? Math.max(1, Math.round(rpeDeltaValue)) : 1,
     rpe_delta_value: rpeDeltaValue,
     rpe_delta_unit: rpeDeltaUnit,
@@ -211,27 +304,834 @@ function buildConfig() {
     scale_delta_unit: scaleDeltaUnit,
     scale_distance_tolerance_ratio: 0.05,
     rpe_delta_seconds: [1, 5, 10],
-    segment_lengths_m: parseFloatList(valueOf("segmentLengths")),
-    max_segments_per_length: integerOf("maxSegments"),
-    segment_step_frames: integerOf("segmentStep"),
-    max_segment_length_diff_ratio: numberOf("lengthTolerance"),
-    continuous_segment_policy: valueOf("segmentPolicy"),
-    discontinuity_step_m: numberOf("discontinuityStep"),
-    discontinuity_time_gap_s: numberOf("discontinuityGap"),
-    divergence_abs_m: numberOf("divergenceAbs"),
-    divergence_rel_percent: numberOf("divergenceRel"),
+    segment_lengths_m: defaultSegmentLengthsM,
+    max_segments_per_length: 10000,
+    segment_step_frames: 10,
+    max_segment_length_diff_ratio: 0.05,
+    continuous_segment_policy: isVloc ? "vo_timestamps" : "segments",
+    discontinuity_step_m: 100,
+    discontinuity_time_gap_s: 5,
+    divergence_abs_m: 30,
+    divergence_rel_percent: 3,
     divergence_min_distance_m: 100,
     divergence_min_time_s: 5,
     top_k_worst_segments: 10,
   };
 }
 
-function applyInterpolationPreset() {
-  const preset = valueOf("interpolationPreset");
-  if (preset === "custom") {
+function requiredBundleFiles(entryMode) {
+  const estimateName = entryMode === "vloc" ? "vloc.txt" : "vo.txt";
+  return {
+    data: ["imu.txt"],
+    log: [estimateName, "home_point.txt", "calib_raw.yaml"],
+  };
+}
+
+function selectedFiles(input) {
+  return Array.from(input?.files || []);
+}
+
+function directoryFileMap(input) {
+  const files = selectedFiles(input);
+  const out = new Map();
+  for (const file of files) {
+    const relative = file.webkitRelativePath || file.name;
+    const parts = relative.split("/");
+    const basename = parts[parts.length - 1];
+    if (!out.has(basename)) {
+      out.set(basename, file);
+    }
+  }
+  return out;
+}
+
+function directoryNameFromFiles(files) {
+  if (!files.length) {
+    return "";
+  }
+  const relative = files[0].webkitRelativePath || "";
+  if (relative.includes("/")) {
+    return relative.split("/")[0];
+  }
+  return files[0].name || "";
+}
+
+function updateDirectoryStatus(kind) {
+  const isData = kind === "data";
+  const input = isData ? els.dataDirFiles : els.logDirFiles;
+  const target = isData ? els.dataDirStatus : els.logDirStatus;
+  const files = selectedFiles(input);
+  if (!files.length) {
+    target.textContent = "未选择目录";
     return;
   }
-  document.getElementById("maxInterpolationGap").value = preset;
+  const name = directoryNameFromFiles(files) || (isData ? "data_dir" : "log_dir");
+  target.textContent = `${name} · ${files.length} 个文件`;
+}
+
+function missingBundleFiles() {
+  const entryMode = valueOf("entryMode");
+  const required = requiredBundleFiles(entryMode);
+  const dataFiles = directoryFileMap(els.dataDirFiles);
+  const logFiles = directoryFileMap(els.logDirFiles);
+  const missing = [];
+  for (const name of required.data) {
+    if (!dataFiles.has(name)) {
+      missing.push(`data_dir/${name}`);
+    }
+  }
+  for (const name of required.log) {
+    if (!logFiles.has(name)) {
+      missing.push(`log_dir/${name}`);
+    }
+  }
+  return missing;
+}
+
+async function buildBundlePayload(entryMode) {
+  const missing = missingBundleFiles();
+  if (missing.length) {
+    throw new Error(`缺少必需文件：${missing.join("，")}`);
+  }
+  const required = requiredBundleFiles(entryMode);
+  const dataFiles = directoryFileMap(els.dataDirFiles);
+  const logFiles = directoryFileMap(els.logDirFiles);
+  const imuFile = dataFiles.get(required.data[0]);
+  const estimateFile = logFiles.get(required.log[0]);
+  const homePointFile = logFiles.get("home_point.txt");
+  const calibRawFile = logFiles.get("calib_raw.yaml");
+  const [imuText, estimateText, homePointText, calibRawText] = await Promise.all([
+    imuFile.text(),
+    estimateFile.text(),
+    homePointFile.text(),
+    calibRawFile.text(),
+  ]);
+  return {
+    imuText,
+    estimateText,
+    homePointText,
+    calibRawText,
+    dataDirName: directoryNameFromFiles(selectedFiles(els.dataDirFiles)) || "data_dir",
+    logDirName: directoryNameFromFiles(selectedFiles(els.logDirFiles)) || "log_dir",
+    imuName: imuFile.name,
+    estimateName: estimateFile.name,
+    homePointName: homePointFile.name,
+    calibRawName: calibRawFile.name,
+  };
+}
+
+function updateEntryModeHint() {
+  const entryMode = valueOf("entryMode");
+  const estimateName = entryMode === "vloc" ? "vloc.txt" : "vo.txt";
+  els.entryModeHint.innerHTML = `当前模式会读取 <code>log_dir/${estimateName}</code>、<code>home_point.txt</code> 和 <code>calib_raw.yaml</code>。`;
+}
+
+function reportEntryMode(report = null) {
+  return report?.inputs?.entry_mode || valueOf("entryMode") || "vloc";
+}
+
+function visibleChartIdsForEntryMode(entryMode) {
+  return entryMode === "vloc" ? VLOC_VISIBLE_CHART_IDS : VO_VISIBLE_CHART_IDS;
+}
+
+function selectedChartIdsForEntryMode(entryMode) {
+  if (entryMode === "vloc") {
+    return selectedVlocChartIds();
+  }
+  if (entryMode === "vo") {
+    return selectedVoChartIds();
+  }
+  return new Set();
+}
+
+function selectedVlocChartIds() {
+  if (!(state.vlocSelectedChartIds instanceof Set)) {
+    state.vlocSelectedChartIds = new Set(VLOC_VISIBLE_CHART_IDS);
+  }
+  return state.vlocSelectedChartIds;
+}
+
+function selectedVoChartIds() {
+  if (!(state.voSelectedChartIds instanceof Set)) {
+    state.voSelectedChartIds = new Set(VO_VISIBLE_CHART_IDS);
+  }
+  return state.voSelectedChartIds;
+}
+
+function resetVlocChartDirectorySelection() {
+  state.vlocSelectedChartIds = new Set(VLOC_VISIBLE_CHART_IDS);
+}
+
+function resetVoChartDirectorySelection() {
+  state.voSelectedChartIds = new Set(VO_VISIBLE_CHART_IDS);
+}
+
+function renderChartDirectory(listNode, options, selected) {
+  if (!listNode) {
+    return;
+  }
+  listNode.innerHTML = options.map((option) => `
+    <label class="chart-directory-item">
+      <input type="checkbox" data-chart-id="${escapeHtml(option.id)}" ${selected.has(option.id) ? "checked" : ""} />
+      <span>${escapeHtml(option.label)}</span>
+    </label>
+  `).join("");
+}
+
+function renderVlocChartDirectory() {
+  renderChartDirectory(els.vlocChartList, VLOC_CHART_OPTIONS, selectedVlocChartIds());
+}
+
+function renderVoChartDirectory() {
+  renderChartDirectory(els.voChartList, VO_CHART_OPTIONS, selectedVoChartIds());
+}
+
+function handleVlocChartDirectoryChange(event) {
+  const target = event.target;
+  const chartId = target?.dataset?.chartId;
+  if (!chartId || !VLOC_VISIBLE_CHART_IDS.includes(chartId)) {
+    return;
+  }
+  const selected = selectedVlocChartIds();
+  if (target.checked) {
+    selected.add(chartId);
+  } else {
+    selected.delete(chartId);
+    purgeChart(chartId);
+  }
+  applyEntryModeChartVisibility(reportEntryMode(state.report));
+  scheduleRenderCharts(state.report);
+}
+
+function handleVoChartDirectoryChange(event) {
+  const target = event.target;
+  const chartId = target?.dataset?.chartId;
+  if (!chartId || !VO_VISIBLE_CHART_IDS.includes(chartId)) {
+    return;
+  }
+  const selected = selectedVoChartIds();
+  if (target.checked) {
+    selected.add(chartId);
+  } else {
+    selected.delete(chartId);
+    purgeChart(chartId);
+  }
+  applyEntryModeChartVisibility(reportEntryMode(state.report));
+  scheduleRenderCharts(state.report);
+}
+
+function setVlocChartDirectorySelection(chartIdsToShow) {
+  state.vlocSelectedChartIds = new Set(chartIdsToShow);
+  renderVlocChartDirectory();
+  applyEntryModeChartVisibility(reportEntryMode(state.report));
+  purgeUnselectedCharts(reportEntryMode(state.report));
+  scheduleRenderCharts(state.report);
+}
+
+function setVoChartDirectorySelection(chartIdsToShow) {
+  state.voSelectedChartIds = new Set(chartIdsToShow);
+  renderVoChartDirectory();
+  applyEntryModeChartVisibility(reportEntryMode(state.report));
+  purgeUnselectedCharts(reportEntryMode(state.report));
+  scheduleRenderCharts(state.report);
+}
+
+function selectAllVlocChartDirectory() {
+  setVlocChartDirectorySelection(VLOC_VISIBLE_CHART_IDS);
+}
+
+function clearVlocChartDirectory() {
+  setVlocChartDirectorySelection([]);
+}
+
+function selectAllVoChartDirectory() {
+  setVoChartDirectorySelection(VO_VISIBLE_CHART_IDS);
+}
+
+function clearVoChartDirectory() {
+  setVoChartDirectorySelection([]);
+}
+
+function chartTitleById(chartId, entryMode = reportEntryMode(state.report)) {
+  const primaryOptions = entryMode === "vo" ? VO_CHART_OPTIONS : VLOC_CHART_OPTIONS;
+  const fallbackOptions = entryMode === "vo" ? VLOC_CHART_OPTIONS : VO_CHART_OPTIONS;
+  return [...primaryOptions, ...fallbackOptions].find((option) => option.id === chartId)?.label || chartId;
+}
+
+function isPointSelectableChart(chartId) {
+  if (!state.report) {
+    return false;
+  }
+  const entryMode = reportEntryMode(state.report);
+  if (entryMode === "vloc") {
+    return PICKABLE_VLOC_CHART_IDS.includes(chartId);
+  }
+  if (entryMode === "vo") {
+    return PICKABLE_VO_CHART_IDS.includes(chartId);
+  }
+  return false;
+}
+
+function pointColorMeta(sequence) {
+  const zeroIndex = Math.max(0, sequence - 1);
+  const colorIndex = zeroIndex % POINT_SELECTION_COLORS.length;
+  const cycle = Math.floor(zeroIndex / POINT_SELECTION_COLORS.length);
+  return {
+    color: POINT_SELECTION_COLORS[colorIndex],
+    text: cycle > 0 ? String(cycle) : "",
+  };
+}
+
+function nextPointSelectionColorSlot() {
+  const usedSlots = new Set(state.pointSelections.map((selection) => selection.colorSlot).filter(Number.isFinite));
+  let slot = 1;
+  while (usedSlots.has(slot)) {
+    slot += 1;
+  }
+  return slot;
+}
+
+function resetPointSelectionState() {
+  state.activePointSelectionChartId = null;
+  state.focusedPointSelectionId = null;
+  state.pointSelectionSequence = 0;
+  state.pointSelections = [];
+  renderPointSelectionOutput();
+  refreshAllPointSelectionTools();
+}
+
+function ensurePointSelectionTools(chartId) {
+  const chart = document.getElementById(chartId);
+  if (!chart) {
+    return;
+  }
+  if (!isPointSelectableChart(chartId)) {
+    removePointSelectionTools(chartId);
+    return;
+  }
+  let tools = chart.querySelector?.(".chart-point-tools");
+  if (!tools && typeof chart.appendChild === "function") {
+    tools = document.createElement("div");
+    tools.className = "chart-point-tools";
+    tools.innerHTML = `
+      <button type="button" class="chart-point-tool pick" title="选取当前图的点" aria-label="选取当前图的点">⌖</button>
+      <button type="button" class="chart-point-tool clear" title="清除当前图的点" aria-label="清除当前图的点">⌫</button>
+    `;
+    chart.appendChild(tools);
+    tools.querySelector(".pick")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      togglePointSelectionMode(chartId);
+    });
+    tools.querySelector(".clear")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      clearPointSelectionsForChart(chartId);
+    });
+  }
+  if (!chart._pointSelectionClickBound && typeof chart.on === "function") {
+    chart.on("plotly_click", (eventData) => handlePlotPointClick(chartId, eventData));
+    chart._pointSelectionClickBound = true;
+  }
+  if (!chart._pointSelectionHoverBound && typeof chart.on === "function") {
+    chart.on("plotly_hover", (eventData) => handlePlotPointHover(chartId, eventData));
+    chart._pointSelectionHoverBound = true;
+  }
+  refreshPointSelectionToolState(chartId);
+  refreshChartSelectionMarkers(chartId);
+}
+
+function removePointSelectionTools(chartId) {
+  const chart = document.getElementById(chartId);
+  const tools = chart?.querySelector?.(".chart-point-tools");
+  if (tools) {
+    tools.remove();
+  }
+  if (chart) {
+    chart.classList?.remove?.("point-selection-active");
+  }
+}
+
+function refreshPointSelectionToolState(chartId) {
+  const chart = document.getElementById(chartId);
+  if (!chart) {
+    return;
+  }
+  const active = state.activePointSelectionChartId === chartId;
+  chart.classList?.toggle?.("point-selection-active", active);
+  const pickButton = chart.querySelector?.(".chart-point-tool.pick");
+  if (pickButton) {
+    pickButton.classList?.toggle?.("active", active);
+  }
+}
+
+function refreshAllPointSelectionTools() {
+  for (const chartId of chartIds) {
+    if (isPointSelectableChart(chartId)) {
+      ensurePointSelectionTools(chartId);
+    } else {
+      removePointSelectionTools(chartId);
+    }
+  }
+}
+
+function togglePointSelectionMode(chartId) {
+  if (!isPointSelectableChart(chartId)) {
+    return;
+  }
+  state.activePointSelectionChartId = state.activePointSelectionChartId === chartId ? null : chartId;
+  refreshAllPointSelectionTools();
+}
+
+function isSelectionMarkerTrace(trace) {
+  return Boolean(trace?.meta?.pointSelectionMarker || trace?.meta?.pointSelectionHitTarget);
+}
+
+function pointTimestamp(point) {
+  const custom = Array.isArray(point?.data?.customdata) ? point.data.customdata[point.pointNumber] : undefined;
+  const customTimestamp = typeof custom === "object" && custom !== null ? custom.timestamp : custom;
+  const timestamp = Number(customTimestamp);
+  if (Number.isFinite(timestamp)) {
+    return timestamp;
+  }
+  const x = Number(point?.x);
+  return Number.isFinite(x) ? x : null;
+}
+
+function pointValueText(chartId, point) {
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  if (chartId === "trajectoryXY") {
+    return `north=${formatPointNumber(x)}, east=${formatPointNumber(y)}`;
+  }
+  return formatPointNumber(y);
+}
+
+function formatPointNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "N/A";
+  }
+  return number.toFixed(3);
+}
+
+function numbersNearlyEqual(left, right, tolerance = 1e-9) {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  return Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && Math.abs(leftNumber - rightNumber) <= tolerance;
+}
+
+function existingPointSelectionForPoint(chartId, point) {
+  const traceName = point?.data?.name || `trace ${Number(point?.curveNumber) + 1}`;
+  const timestamp = pointTimestamp(point);
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  return state.pointSelections.find((selection) => {
+    if (selection.chartId !== chartId) {
+      return false;
+    }
+    if (selection.traceName !== traceName) {
+      return false;
+    }
+    const sameVisiblePoint = numbersNearlyEqual(selection.x, x) && numbersNearlyEqual(selection.y, y);
+    if (Number.isFinite(timestamp) && Number.isFinite(selection.timestamp)) {
+      return numbersNearlyEqual(selection.timestamp, timestamp) && sameVisiblePoint;
+    }
+    return sameVisiblePoint;
+  });
+}
+
+function focusPointSelection(selection) {
+  if (!selection) {
+    return false;
+  }
+  if (state.focusedPointSelectionId === selection.id) {
+    return true;
+  }
+  state.focusedPointSelectionId = selection.id;
+  return true;
+}
+
+function selectionFromMarkerPoint(point) {
+  if (!isSelectionMarkerTrace(point?.data)) {
+    return null;
+  }
+  const markerData = Array.isArray(point.data.customdata) ? point.data.customdata[point.pointNumber] : null;
+  const selectionId = markerData?.selectionId || point.data?.meta?.selectionId;
+  return state.pointSelections.find((selection) => selection.id === selectionId) || null;
+}
+
+function eventPoints(eventData) {
+  return Array.isArray(eventData?.points) ? eventData.points.filter(Boolean) : [];
+}
+
+function pointSelectionFromEventPoints(chartId, eventData) {
+  const points = eventPoints(eventData);
+  for (const point of points) {
+    const selection = selectionFromMarkerPoint(point);
+    if (selection) {
+      return selection;
+    }
+  }
+  for (const point of points) {
+    const selection = existingPointSelectionForPoint(chartId, point);
+    if (selection) {
+      return selection;
+    }
+  }
+  return null;
+}
+
+function focusPointSelectionFromEvent(chartId, eventData) {
+  return focusPointSelection(pointSelectionFromEventPoints(chartId, eventData));
+}
+
+function firstSelectablePlotPoint(eventData) {
+  return eventPoints(eventData).find((point) => !isSelectionMarkerTrace(point.data)) || null;
+}
+
+function addPointSelectionFromEvent(chartId, eventData) {
+  const point = firstSelectablePlotPoint(eventData);
+  if (!point) {
+    return;
+  }
+  if (focusPointSelectionFromEvent(chartId, eventData)) {
+    return;
+  }
+  state.pointSelectionSequence += 1;
+  const sequence = state.pointSelectionSequence;
+  const colorSlot = nextPointSelectionColorSlot();
+  const colorMeta = pointColorMeta(colorSlot);
+  const selection = {
+    id: `picked-${Date.now()}-${sequence}`,
+    order: sequence,
+    colorSlot,
+    chartId,
+    chartTitle: chartTitleById(chartId),
+    traceName: point.data?.name || `trace ${Number(point.curveNumber) + 1}`,
+    markerColor: colorMeta.color,
+    markerText: colorMeta.text,
+    timestamp: pointTimestamp(point),
+    value: pointValueText(chartId, point),
+    x: Number(point.x),
+    y: Number(point.y),
+    xaxis: point.data?.xaxis || "x",
+    yaxis: point.data?.yaxis || "y",
+  };
+  state.pointSelections.push(selection);
+  state.focusedPointSelectionId = selection.id;
+  refreshChartSelectionMarkers(chartId);
+  renderPointSelectionOutput();
+}
+
+function handlePlotPointClick(chartId, eventData) {
+  if (!eventPoints(eventData).length) {
+    return;
+  }
+  if (focusPointSelectionFromEvent(chartId, eventData)) {
+    return;
+  }
+  if (state.activePointSelectionChartId !== chartId || !isPointSelectableChart(chartId)) {
+    return;
+  }
+  addPointSelectionFromEvent(chartId, eventData);
+}
+
+function handlePlotPointHover(chartId, eventData) {
+  if (!eventPoints(eventData).length || !isPointSelectableChart(chartId)) {
+    return;
+  }
+  focusPointSelectionFromEvent(chartId, eventData);
+}
+
+function selectionMarkerTrace(selection) {
+  return {
+    x: [selection.x],
+    y: [selection.y],
+    mode: selection.markerText ? "markers+text" : "markers",
+    type: "scatter",
+    name: `选点 ${selection.order}`,
+    showlegend: false,
+    hovertemplate: `${escapeHtml(selection.traceName)}<br>timestamp=%{customdata.timestamp:.3f}<br>value=${escapeHtml(selection.value)}<extra></extra>`,
+    marker: {
+      color: selection.markerColor,
+      size: 10,
+      symbol: "circle",
+      line: { width: 0 },
+    },
+    text: selection.markerText ? [selection.markerText] : [""],
+    textposition: "middle center",
+    textfont: { color: "#ffffff", size: 9, family: "Arial, sans-serif" },
+    customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }],
+    meta: { pointSelectionMarker: true, selectionId: selection.id },
+    xaxis: selection.xaxis,
+    yaxis: selection.yaxis,
+  };
+}
+
+function selectionHitTargetTrace(selection) {
+  return {
+    x: [selection.x],
+    y: [selection.y],
+    mode: "markers",
+    type: "scatter",
+    name: `选点命中 ${selection.order}`,
+    showlegend: false,
+    hoverinfo: "none",
+    marker: {
+      color: selection.markerColor,
+      size: 24,
+      opacity: 0.04,
+      symbol: "circle",
+      line: { width: 0 },
+    },
+    customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }],
+    meta: { pointSelectionHitTarget: true, selectionId: selection.id },
+    xaxis: selection.xaxis,
+    yaxis: selection.yaxis,
+  };
+}
+
+function selectionMarkerTraceIndices(chartId) {
+  const chart = document.getElementById(chartId);
+  const data = Array.isArray(chart?.data) ? chart.data : [];
+  return data
+    .map((trace, index) => (isSelectionMarkerTrace(trace) ? index : -1))
+    .filter((index) => index >= 0);
+}
+
+function removeSelectionMarkerTraces(chartId) {
+  const indices = selectionMarkerTraceIndices(chartId);
+  if (!indices.length || typeof Plotly === "undefined" || typeof Plotly.deleteTraces !== "function") {
+    return;
+  }
+  Plotly.deleteTraces(chartId, indices);
+}
+
+function refreshChartSelectionMarkers(chartId) {
+  if (!document.getElementById(chartId)) {
+    return;
+  }
+  removeSelectionMarkerTraces(chartId);
+  const selections = state.pointSelections.filter((selection) => selection.chartId === chartId);
+  if (!selections.length || typeof Plotly === "undefined" || typeof Plotly.addTraces !== "function") {
+    return;
+  }
+  Plotly.addTraces(chartId, selections.flatMap((selection) => [selectionHitTargetTrace(selection), selectionMarkerTrace(selection)]));
+}
+
+function refreshAllSelectionMarkers() {
+  for (const chartId of new Set([...PICKABLE_VLOC_CHART_IDS, ...PICKABLE_VO_CHART_IDS])) {
+    refreshChartSelectionMarkers(chartId);
+  }
+}
+
+function clearPointSelectionsForChart(chartId) {
+  state.pointSelections = state.pointSelections.filter((selection) => selection.chartId !== chartId);
+  if (state.activePointSelectionChartId === chartId) {
+    state.activePointSelectionChartId = null;
+  }
+  if (!state.pointSelections.some((selection) => selection.id === state.focusedPointSelectionId)) {
+    state.focusedPointSelectionId = null;
+  }
+  refreshChartSelectionMarkers(chartId);
+  refreshPointSelectionToolState(chartId);
+  renderPointSelectionOutput();
+}
+
+function clearAllPointSelections() {
+  state.pointSelections = [];
+  state.focusedPointSelectionId = null;
+  state.activePointSelectionChartId = null;
+  state.pointSelectionSequence = 0;
+  refreshAllSelectionMarkers();
+  refreshAllPointSelectionTools();
+  renderPointSelectionOutput();
+}
+
+function deleteFocusedPointSelection() {
+  if (!state.focusedPointSelectionId) {
+    return;
+  }
+  const target = state.pointSelections.find((selection) => selection.id === state.focusedPointSelectionId);
+  state.pointSelections = state.pointSelections.filter((selection) => selection.id !== state.focusedPointSelectionId);
+  state.focusedPointSelectionId = null;
+  if (target) {
+    refreshChartSelectionMarkers(target.chartId);
+  }
+  renderPointSelectionOutput();
+}
+
+function isTextEditingTarget(target) {
+  const tag = target?.tagName?.toLowerCase();
+  if (!tag) {
+    return false;
+  }
+  if (target?.isContentEditable) {
+    return true;
+  }
+  if (tag === "textarea" || tag === "select") {
+    return true;
+  }
+  if (tag !== "input") {
+    return false;
+  }
+  const type = String(target.type || "text").toLowerCase();
+  return !["button", "checkbox", "color", "file", "radio", "range", "reset", "submit"].includes(type);
+}
+
+function handlePointSelectionKeydown(event) {
+  if (event.key !== "Delete" && event.key !== "Backspace") {
+    return;
+  }
+  if (isTextEditingTarget(event.target)) {
+    return;
+  }
+  if (state.focusedPointSelectionId) {
+    event.preventDefault();
+    deleteFocusedPointSelection();
+  }
+}
+
+function groupedSelectionsForChart(selections) {
+  const groupOrder = new Map();
+  for (const selection of selections) {
+    if (!groupOrder.has(selection.traceName)) {
+      groupOrder.set(selection.traceName, groupOrder.size);
+    }
+  }
+  return [...selections].sort((left, right) => {
+    const groupDiff = groupOrder.get(left.traceName) - groupOrder.get(right.traceName);
+    return groupDiff || left.order - right.order;
+  });
+}
+
+function renderPointSelectionOutput() {
+  if (!els.pointSelectionOutputSection || !els.pointSelectionOutput) {
+    return;
+  }
+  const entryMode = reportEntryMode(state.report);
+  const pickableIds = entryMode === "vo" ? PICKABLE_VO_CHART_IDS : entryMode === "vloc" ? PICKABLE_VLOC_CHART_IDS : [];
+  const selections = state.pointSelections.filter((selection) => pickableIds.includes(selection.chartId));
+  els.pointSelectionOutputSection.hidden = selections.length === 0;
+  if (!selections.length) {
+    els.pointSelectionOutput.innerHTML = "";
+    return;
+  }
+  const chartOrder = [];
+  for (const selection of selections) {
+    if (!chartOrder.includes(selection.chartId)) {
+      chartOrder.push(selection.chartId);
+    }
+  }
+  els.pointSelectionOutput.innerHTML = chartOrder.map((chartId) => {
+    const chartSelections = groupedSelectionsForChart(selections.filter((selection) => selection.chartId === chartId));
+    const title = chartSelections[0]?.chartTitle || chartTitleById(chartId);
+    const rows = chartSelections.map((selection) => `
+      <tr data-selection-id="${escapeHtml(selection.id)}">
+        <td>${escapeHtml(selection.traceName)}</td>
+        <td><span class="selection-point-token" style="background:${escapeHtml(selection.markerColor)}">${escapeHtml(selection.markerText)}</span></td>
+        <td>${selection.timestamp === null ? "N/A" : formatPointNumber(selection.timestamp)}</td>
+        <td>${escapeHtml(selection.value)}</td>
+      </tr>
+    `).join("");
+    return `
+      <div class="point-selection-card">
+        <h3>${escapeHtml(title)}</h3>
+        <table class="point-selection-table">
+          <thead>
+            <tr><th>线</th><th>点</th><th>时间戳</th><th>值</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }).join("");
+}
+
+function applyEntryModeTitles(entryMode) {
+  const isVloc = entryMode === "vloc";
+  if (els.summaryKicker) {
+    els.summaryKicker.textContent = isVloc ? "VLOC Evaluation Summary" : "VO Evaluation Summary";
+  }
+  if (els.summaryTitle) {
+    els.summaryTitle.textContent = isVloc ? "VLOC 运行结果" : "VO 运行结果";
+  }
+  if (els.visualKicker) {
+    els.visualKicker.textContent = isVloc ? "Navigation & Estimation" : "Trajectory & Drift";
+  }
+  if (els.visualTitle) {
+    els.visualTitle.textContent = isVloc ? "VLOC 可视化" : "VO 可视化";
+  }
+}
+
+function applyEntryModeChartVisibility(entryMode) {
+  const modeVisibleIds = new Set(visibleChartIdsForEntryMode(entryMode));
+  const selectedChartIds = entryMode === "vloc"
+    ? selectedVlocChartIds()
+    : entryMode === "vo"
+      ? selectedVoChartIds()
+      : null;
+  for (const id of chartIds) {
+    const node = document.getElementById(id);
+    if (!node) continue;
+    const belongsToMode = modeVisibleIds.has(id);
+    const shouldShow = belongsToMode && (!selectedChartIds || selectedChartIds.has(id));
+    node.hidden = !shouldShow;
+    if (!belongsToMode && typeof Plotly !== "undefined" && typeof Plotly.purge === "function") {
+      Plotly.purge(id);
+    }
+  }
+  renderPointSelectionOutput();
+  refreshAllPointSelectionTools();
+}
+
+function resetRenderedReport() {
+  state.report = null;
+  state.chartRenderToken += 1;
+  resetPointSelectionState();
+  clearMessage();
+  if (els.metrics) {
+    const label = valueOf("entryMode") === "vloc" ? "VLOC" : "VO";
+    els.metrics.innerHTML = `<div class="empty-state">已切换到 ${label} 评估，请重新导入目录并运行评估。</div>`;
+  }
+  for (const id of chartIds) {
+    const node = document.getElementById(id);
+    if (!node) continue;
+    if (typeof Plotly !== "undefined" && typeof Plotly.purge === "function") {
+      Plotly.purge(id);
+    }
+    node.innerHTML = "";
+  }
+  enableDownloads(false);
+}
+
+function handleEntryModeChange() {
+  updateEntryModeUi();
+  if (state.report) {
+    resetRenderedReport();
+  }
+}
+
+function updateEntryModeUi() {
+  const entryMode = valueOf("entryMode");
+  document.querySelectorAll("[data-entry-hide]").forEach((node) => {
+    node.hidden = entryModeMatchesRule(node.dataset.entryHide, entryMode);
+  });
+  document.querySelectorAll("[data-entry-show]").forEach((node) => {
+    node.hidden = !entryModeMatchesRule(node.dataset.entryShow, entryMode);
+  });
+  applyEntryModeTitles(entryMode);
+  renderVlocChartDirectory();
+  renderVoChartDirectory();
+  applyEntryModeChartVisibility(entryMode);
+  updateEntryModeHint();
+  updateRunButton();
+}
+
+function entryModeMatchesRule(rule, entryMode) {
+  return String(rule || "")
+    .split(/[,\s]+/)
+    .filter(Boolean)
+    .includes(entryMode);
 }
 
 function valueOf(id) {
@@ -246,67 +1146,71 @@ function numberOf(id) {
   return value;
 }
 
-function integerOf(id) {
-  return Math.trunc(numberOf(id));
-}
-
-function boolOf(id) {
-  return valueOf(id) === "true";
-}
-
-function parseFloatList(text) {
-  const values = text
-    .replaceAll(";", ",")
-    .split(",")
-    .map((item) => Number(item.trim()))
-    .filter((value) => Number.isFinite(value) && value > 0);
-  if (!values.length) {
-    throw new Error("至少需要一个子轨迹长度");
-  }
-  return values;
-}
-
 function setBusy(isBusy) {
-  els.runButton.disabled = isBusy || !(els.gtFile.files.length && els.estFile.files.length && state.evaluateJson);
+  const hasRuntime = Boolean(state.workerReady);
+  els.runButton.disabled = isBusy || !hasRuntime || missingBundleFiles().length > 0;
   els.runButton.textContent = isBusy ? "计算中..." : "运行评估";
 }
 
 function renderReport(report) {
+  if (reportEntryMode(report) === "vloc") {
+    resetVlocChartDirectorySelection();
+    resetPointSelectionState();
+    renderVlocChartDirectory();
+  } else if (reportEntryMode(report) === "vo") {
+    resetVoChartDirectorySelection();
+    resetPointSelectionState();
+    renderVoChartDirectory();
+  }
+  updateEntryModeUi();
   renderMetrics(report);
   renderMessages(report);
-  renderCharts(report);
+  scheduleRenderCharts(report);
 }
 
 function renderMetrics(report) {
+  const entryMode = reportEntryMode(report);
   const summary = report.summary || {};
   const ate = report.ate_position_m || {};
   const vertical = report.ate_vertical_m || {};
   const rpe = report.rpe_frame_delta?.translation_m || {};
-  const divergence = report.divergence || {};
-  const association = report.association || {};
+  const vlocSummary = report.vloc_details?.summary || {};
   const path = summary.gt_path_length_m || 0;
   const ateRel = path > 0 && Number.isFinite(ate.rmse) ? (100 * ate.rmse / path) : NaN;
-  const endpointRel = summary.endpoint_error_percent_of_path;
   const rawRatio = summary.raw_path_scale_ratio_est_over_gt;
   const breakCount = report.discontinuities?.all_matches?.break_count || 0;
   const estCoverage = 100 * summary.est_pose_coverage_ratio;
-  const metrics = [
+  const voMetrics = [
     { label: "ATE RMSE", value: ate.rmse, unit: "m", note: Number.isFinite(ateRel) ? `${formatNumber(ateRel)} % 路程` : "全局位置一致性", status: ateRel > 2 ? "high" : ateRel > 1 ? "warning" : "good" },
     { label: "RPE RMSE", value: rpe.rmse, unit: "m", note: rpeDeltaLabel(report.rpe_frame_delta), status: Number.isFinite(rpe.rmse) && Number.isFinite(ate.rmse) && rpe.rmse > ate.rmse ? "warning" : "neutral" },
-    { label: "终点漂移", value: summary.endpoint_error_m, unit: "m", note: Number.isFinite(endpointRel) ? `${formatNumber(endpointRel)} % 路程` : "最终定位偏差", status: endpointRel > 2 ? "high" : endpointRel > 1 ? "warning" : "neutral" },
     { label: "长航程路程", value: summary.gt_path_length_m, unit: "m", note: `${formatValue(summary.duration_s, "s")} / ${summary.matched_poses ?? "N/A"} 帧`, status: "neutral" },
     { label: "垂直 RMSE", value: vertical.rmse, unit: "m", note: "高度方向误差", status: Number.isFinite(vertical.rmse) && Number.isFinite(ate.rmse) && Math.abs(vertical.rmse) > ate.rmse ? "warning" : "neutral" },
-    { label: "发散状态", value: divergence.diverged ? "是" : "否", unit: "", note: divergence.diverged ? `首次 ${formatValue(divergence.first_divergence_distance_m, "m")}` : "未触发阈值", status: divergence.diverged ? "high" : "good" },
     { label: "GT 覆盖率", value: 100 * (summary.gt_pose_coverage_ratio ?? summary.coverage_ratio), unit: "%", note: "评估覆盖的 GT 范围", status: "neutral" },
     { label: "Raw 尺度比", value: rawRatio, unit: "", note: "VO 原始路程 / GT 路程", status: Number.isFinite(rawRatio) && (rawRatio < 0.8 || rawRatio > 1.25) ? "warning" : "neutral" },
     { label: "对齐尺度", value: report.alignment?.scale, unit: "", note: scaleRangeText(report.alignment || {}) || "全局对齐因子", status: "neutral" },
     { label: "匹配位姿", value: summary.matched_poses, unit: "", note: `${summary.original_matched_poses ?? "N/A"} 原始匹配`, status: "neutral" },
     { label: "VO 匹配率", value: estCoverage, unit: "%", note: `${summary.est_poses ?? "N/A"} 个 VO 位姿`, status: estCoverage < 90 ? "warning" : "neutral" },
     { label: "断点数量", value: breakCount, unit: "", note: report.discontinuities?.selected_segment?.policy || "vo_timestamps", status: breakCount > 0 ? "warning" : "good" },
-    { label: "时间同步", value: associationLabel(association), unit: "", note: `最大间隔 ${formatValue(association.max_interpolation_gap_s, "s")}`, status: "neutral" },
     { label: "姿态修正", value: orientationCorrectionLabel(report.orientation_correction || {}), unit: "", note: report.orientation_correction?.auto ? "自动选择" : "手动/默认", status: report.orientation_correction?.selected && report.orientation_correction.selected !== "none" ? "warning" : "neutral" },
     { label: "耗时", value: summary.duration_s, unit: "s", note: "有效评估窗口", status: "neutral" },
   ];
+  const vlocMetrics = [
+    { label: "ATE RMSE", value: ate.rmse, unit: "m", note: Number.isFinite(ateRel) ? `${formatNumber(ateRel)} % 路程` : "整体位置一致性", status: ateRel > 2 ? "high" : ateRel > 1 ? "warning" : "good" },
+    { label: "长航程路程", value: summary.gt_path_length_m, unit: "m", note: `${formatValue(summary.duration_s, "s")} / ${summary.matched_poses ?? "N/A"} 帧`, status: "neutral" },
+    { label: "垂直 RMSE", value: vertical.rmse, unit: "m", note: "高度方向误差", status: Number.isFinite(vertical.rmse) && Number.isFinite(ate.rmse) && Math.abs(vertical.rmse) > ate.rmse ? "warning" : "neutral" },
+    { label: "GT 覆盖率", value: 100 * (summary.gt_pose_coverage_ratio ?? summary.coverage_ratio), unit: "%", note: "评估覆盖的 GT 范围", status: "neutral" },
+    { label: "匹配位姿", value: summary.matched_poses, unit: "", note: `${summary.original_matched_poses ?? "N/A"} 原始匹配`, status: "neutral" },
+    { label: "VLOC 匹配率", value: estCoverage, unit: "%", note: `${summary.est_poses ?? "N/A"} 个 VLOC 位姿`, status: estCoverage < 90 ? "warning" : "neutral" },
+    { label: "断点数量", value: breakCount, unit: "", note: report.discontinuities?.selected_segment?.policy || "vo_timestamps", status: breakCount > 0 ? "warning" : "good" },
+    { label: "mean_error_pos_xy", value: vlocSummary.mean_error_pos_xy, unit: "m", note: "逐帧水平位置误差范数的平均值", status: "neutral" },
+    { label: "mean_error_pos_z", value: vlocSummary.mean_error_pos_z, unit: "m", note: "逐帧垂直位置误差绝对值的平均值", status: "neutral" },
+    { label: "mean_error_euler", value: vlocSummary.mean_error_euler, unit: "deg", note: "逐帧欧拉角误差范数的平均值", status: "neutral" },
+    { label: "max_error_pos_xy", value: vlocSummary.max_error_pos_xy, unit: "m", note: "逐帧水平位置误差范数的最大值", status: "warning" },
+    { label: "max_error_pos_z", value: vlocSummary.max_error_pos_z, unit: "m", note: "逐帧垂直位置误差绝对值的最大值", status: "warning" },
+    { label: "max_error_euler", value: vlocSummary.max_error_euler, unit: "deg", note: "逐帧欧拉角误差范数的最大值", status: "warning" },
+    { label: "耗时", value: summary.duration_s, unit: "s", note: "有效评估窗口", status: "neutral" },
+  ];
+  const metrics = entryMode === "vloc" ? vlocMetrics : voMetrics;
 
   document.getElementById("metrics").innerHTML = metrics.map((item, index) => `
     <div class="metric ${metricStatusClass(item.status)}">
@@ -327,20 +1231,6 @@ function metricStatusClass(status) {
   return "";
 }
 
-function associationLabel(association) {
-  const mode = association.mode || association.method;
-  if (mode === "interpolate_gt") {
-    return "GT插值到VO";
-  }
-  if (mode === "nearest") {
-    return "最近邻";
-  }
-  if (mode === "index") {
-    return "按索引";
-  }
-  return mode || "N/A";
-}
-
 function orientationCorrectionLabel(info) {
   const selected = info.selected || "none";
   const requested = info.requested || selected;
@@ -351,15 +1241,16 @@ function orientationCorrectionLabel(info) {
 }
 
 function renderMessages(report) {
+  const entryMode = reportEntryMode(report);
   const messages = [];
   const summary = report.summary || {};
   const orientationInfo = report.orientation_correction || {};
-  if (orientationInfo.auto && orientationInfo.selected) {
+  if (entryMode === "vo" && orientationInfo.auto && orientationInfo.selected) {
     messages.push(`自动姿态修正选择：${orientationInfo.selected}，score=${formatNumber(orientationInfo.best_score)}。该选择只用于评估坐标系/外参修正，不会改变原始数据。`);
   }
   const rawRatio = summary.raw_path_scale_ratio_est_over_gt;
   const alignMode = report.alignment?.base_mode || report.alignment?.mode;
-  if (Number.isFinite(rawRatio) && alignMode === "se3" && (rawRatio < 0.8 || rawRatio > 1.25)) {
+  if (entryMode === "vo" && Number.isFinite(rawRatio) && alignMode === "se3" && (rawRatio < 0.8 || rawRatio > 1.25)) {
     messages.push(`当前使用 SE3 刚体对齐，但 VO/GT 原始路程比例为 ${rawRatio.toFixed(3)}，尺度明显不一致。若 VO 是单目或尺度未知，请改用 Sim3。`);
   }
 
@@ -392,114 +1283,741 @@ function renderMessages(report) {
   }
 }
 
-function renderCharts(report) {
-  const perPose = report.per_pose || [];
-  const segmentSummary = report.segment_errors || [];
-  const speedBins = report.speed_bins || [];
-  const sim3Rows = report.trajectory_exports?.scale_per_frame || report.trajectory_exports?.sim3_vo_tum || [];
+function scheduleRenderCharts(report) {
+  if (!report) {
+    return;
+  }
+  const entryMode = reportEntryMode(report);
+  applyEntryModeChartVisibility(entryMode);
+  purgeUnselectedCharts(entryMode);
+  const token = ++state.chartRenderToken;
+  const selectedIds = Array.from(selectedChartIdsForEntryMode(entryMode)).filter((id) => visibleChartIdsForEntryMode(entryMode).includes(id));
+  (async () => {
+    for (const chartId of selectedIds) {
+      if (token !== state.chartRenderToken) {
+        return;
+      }
+      await nextRenderFrame();
+      if (token !== state.chartRenderToken) {
+        return;
+      }
+      renderCharts(report, chartId);
+    }
+  })();
+}
+
+function nextRenderFrame() {
+  if (typeof requestAnimationFrame === "function") {
+    return new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  if (typeof setTimeout === "function") {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return Promise.resolve();
+}
+
+function purgeChart(chartId) {
+  const node = document.getElementById(chartId);
+  if (!node) {
+    return;
+  }
+  if (typeof Plotly !== "undefined" && typeof Plotly.purge === "function") {
+    Plotly.purge(chartId);
+  }
+  node.innerHTML = "";
+}
+
+function purgeUnselectedCharts(entryMode) {
+  const selectedIds = selectedChartIdsForEntryMode(entryMode);
+  const visibleIds = new Set(visibleChartIdsForEntryMode(entryMode));
+  for (const chartId of chartIds) {
+    if (!visibleIds.has(chartId) || selectedIds.has(chartId)) {
+      continue;
+    }
+    purgeChart(chartId);
+  }
+}
+
+function shouldRenderChart(chartId, onlyChartId, selectedIds) {
+  return (!onlyChartId || onlyChartId === chartId) && selectedIds.has(chartId);
+}
+
+function renderCharts(report, onlyChartId = null) {
+  const entryMode = reportEntryMode(report);
+  const isVloc = entryMode === "vloc";
+  applyEntryModeChartVisibility(entryMode);
+  const selectedIds = selectedChartIdsForEntryMode(entryMode);
+  if (isVloc) {
+    renderVlocCharts(report, onlyChartId, selectedIds);
+    return;
+  }
+
+  const details = report.vo_details || {};
+  const comparison = details.comparison || [];
+  const perPose = comparison.length ? comparison : (report.per_pose || []);
+  const isComparisonRows = comparison.length > 0;
+  const navStatus = details.nav_status || [];
+  const voStatus = details.vo_status || [];
   const rpeRows = report.trajectory_exports?.rpe_per_frame || [];
+  const scaleRows = report.trajectory_exports?.scale_per_frame || [];
+  const navPositionFields = isComparisonRows ? ["nav_x_m", "nav_y_m", "nav_z_m"] : ["gt_x_m", "gt_y_m", "gt_z_m"];
+  const voPositionFields = isComparisonRows ? ["vo_x_aligned_m", "vo_y_aligned_m", "vo_z_aligned_m"] : ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"];
+  const positionErrorFields = isComparisonRows ? ["position_error_x_m", "position_error_y_m", "position_error_z_m"] : ["x_error_m", "y_error_m", "z_error_m"];
+  const positionErrorNormField = isComparisonRows ? "position_error_3d_m" : "error_m";
+  const horizontalErrorField = isComparisonRows ? "horizontal_position_error_m" : "horizontal_error_m";
 
-  const [gtX, gtY, gtZ] = segmentedValues(perPose, ["gt_x_m", "gt_y_m", "gt_z_m"]);
-  const [estX, estY, estZ] = segmentedValues(perPose, ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"]);
-  Plotly.newPlot("trajectory3d", [
-    { x: gtX, y: gtY, z: gtZ, mode: "lines", type: "scatter3d", name: "Ground truth" },
-    { x: estX, y: estY, z: estZ, mode: "lines", type: "scatter3d", name: "VO aligned" },
-  ], layout("3D 轨迹", { scene: { xaxis: { title: "x m" }, yaxis: { title: "y m" }, zaxis: { title: "z m" } } }));
+  if (shouldRenderChart("trajectory3d", onlyChartId, selectedIds)) {
+    const [gtX3d, gtY3d, gtZ3d] = segmentedValues(perPose, navPositionFields, "visual_segment_id");
+    const [estX3d, estY3d, estZ3d] = segmentedValues(perPose, voPositionFields, "visual_segment_id");
+    Plotly.newPlot("trajectory3d", [
+      { x: gtX3d, y: gtY3d, z: gtZ3d, mode: "lines", type: "scatter3d", name: "Ground truth" },
+      { x: estX3d, y: estY3d, z: estZ3d, mode: "lines", type: "scatter3d", name: "VO aligned" },
+      ...segmentEndpointTraces3d(perPose, voPositionFields, "vo", {
+        startColor: "#9333ea",
+        endColor: "#ef4444",
+        startSymbol: "diamond",
+        endSymbol: "x",
+        markerSize: 5,
+        markerLineWidth: 1,
+        textSize: 10,
+      }),
+    ], layout("3D 轨迹", { scene: { xaxis: { title: "x m" }, yaxis: { title: "y m" }, zaxis: { title: "z m" } } }));
+  }
 
-  Plotly.newPlot("trajectoryXY", [
-    { x: gtX, y: gtY, mode: "lines", type: "scatter", name: "Ground truth" },
-    { x: estX, y: estY, mode: "lines", type: "scatter", name: "VO aligned" },
-  ], layout("俯视 XY 轨迹", { xaxis: { title: "x m" }, yaxis: { title: "y m", scaleanchor: "x" } }));
+  if (shouldRenderChart("errorDistance", onlyChartId, selectedIds)) {
+    const [dist3d, err3d] = segmentedValues(perPose, ["distance_m", positionErrorNormField]);
+    const [distH, errH] = segmentedValues(perPose, ["distance_m", horizontalErrorField]);
+    Plotly.newPlot("errorDistance", [
+      { x: dist3d, y: err3d, mode: "lines", type: "scatter", name: "3D error" },
+      { x: distH, y: errH, mode: "lines", type: "scatter", name: "horizontal" },
+    ], layout("ATE 绝对位姿误差", { xaxis: { title: "distance m" }, yaxis: { title: "error m" } }));
+  }
 
-  const [dist3d, err3d] = segmentedValues(perPose, ["distance_m", "error_m"]);
-  const [distH, errH] = segmentedValues(perPose, ["distance_m", "horizontal_error_m"]);
-  Plotly.newPlot("errorDistance", [
-    { x: dist3d, y: err3d, mode: "lines", type: "scatter", name: "3D error" },
-    { x: distH, y: errH, mode: "lines", type: "scatter", name: "horizontal" },
-  ], layout("误差随路程变化", { xaxis: { title: "distance m" }, yaxis: { title: "error m" } }));
+  if (shouldRenderChart("navStatusModes", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("navStatusModes", navStatus, "导航状态信息", [
+      { field: "flight_mode", name: "flight_mode" },
+      { field: "navi_mode", name: "navi_mode" },
+      { field: "rtk_yaw", name: "rtk_yaw" },
+      { field: "rtk_alti", name: "rtk_alti" },
+    ], { yTitle: "state" });
+  }
+  if (shouldRenderChart("navVelocity", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("navVelocity", navStatus, {
+      title: "导航速度信息",
+      rows: [
+        { label: "vx", field: "vx", unit: "m/s" },
+        { label: "vy", field: "vy", unit: "m/s" },
+        { label: "vz", field: "vz", unit: "m/s" },
+        { label: "velocity_norm", field: "velocity_norm", unit: "m/s" },
+      ],
+    });
+  }
+  if (shouldRenderChart("navResetCounts", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("navResetCounts", navStatus, "导航 reset 计数", [
+      { field: "position_reset_count", name: "position_reset_count" },
+      { field: "altitude_reset_count", name: "altitude_reset_count" },
+      { field: "heading_reset_count", name: "heading_reset_count" },
+    ], { yTitle: "count" });
+  }
+  if (shouldRenderChart("voStatus", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("voStatus", voStatus, {
+      title: "VO 状态信息",
+      rows: [
+        { label: "num_inliers", field: "num_inliers", unit: "value" },
+        { label: "is_keyframe", field: "is_keyframe", unit: "value" },
+        { label: "time_cost", field: "time_cost", unit: "ms" },
+        { label: "reset_count", field: "reset_count", unit: "value" },
+      ],
+    });
+  }
+  if (shouldRenderChart("positionCompareComposite", onlyChartId, selectedIds)) {
+    renderPairCompositeChart("positionCompareComposite", perPose, {
+      title: "位置随时间变化",
+      leftName: "Ground truth",
+      rightName: "VO aligned",
+      rows: [
+        { label: "X", left: navPositionFields[0], right: voPositionFields[0], unit: "m" },
+        { label: "Y", left: navPositionFields[1], right: voPositionFields[1], unit: "m" },
+        { label: "Z", left: navPositionFields[2], right: voPositionFields[2], unit: "m" },
+      ],
+    });
+  }
+  if (shouldRenderChart("attitudeCompareComposite", onlyChartId, selectedIds)) {
+    renderPairCompositeChart("attitudeCompareComposite", perPose, {
+      title: "姿态随时间变化",
+      leftName: "Ground truth",
+      rightName: "VO aligned",
+      rows: [
+        { label: "Yaw", left: isComparisonRows ? "nav_yaw_deg" : "gt_yaw_deg", right: isComparisonRows ? "vo_yaw_aligned_deg" : "est_yaw_aligned_deg", unit: "deg", unwrap: true },
+        { label: "Pitch", left: isComparisonRows ? "nav_pitch_deg" : "gt_pitch_deg", right: isComparisonRows ? "vo_pitch_aligned_deg" : "est_pitch_aligned_deg", unit: "deg", unwrap: true },
+        { label: "Roll", left: isComparisonRows ? "nav_roll_deg" : "gt_roll_deg", right: isComparisonRows ? "vo_roll_aligned_deg" : "est_roll_aligned_deg", unit: "deg", unwrap: true },
+      ],
+    });
+  }
+  if (shouldRenderChart("positionErrorComposite", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("positionErrorComposite", perPose, {
+      title: "位置误差随时间变化",
+      rows: [
+        { label: "X 误差", field: positionErrorFields[0], unit: "m" },
+        { label: "Y 误差", field: positionErrorFields[1], unit: "m" },
+        { label: "Z 误差", field: positionErrorFields[2], unit: "m" },
+      ],
+    });
+  }
+  if (shouldRenderChart("attitudeErrorComposite", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("attitudeErrorComposite", perPose, {
+      title: "姿态误差随时间变化",
+      rows: [
+        { label: "Yaw 误差", field: isComparisonRows ? "attitude_error_yaw_deg" : "yaw_error_signed_deg", unit: "deg", unwrap: true },
+        { label: "Pitch 误差", field: isComparisonRows ? "attitude_error_pitch_deg" : "pitch_error_signed_deg", unit: "deg", unwrap: true },
+        { label: "Roll 误差", field: isComparisonRows ? "attitude_error_roll_deg" : "roll_error_signed_deg", unit: "deg", unwrap: true },
+      ],
+    });
+  }
 
-  const [distGt, gtAlt] = segmentedValues(perPose, ["distance_m", "gt_z_m"]);
-  const [distEst, estAlt] = segmentedValues(perPose, ["distance_m", "est_z_aligned_m"]);
-  const [distErr, zErr] = segmentedValues(perPose, ["distance_m", "vertical_error_m"]);
-  Plotly.newPlot("altitudeDistance", [
-    { x: distGt, y: gtAlt, mode: "lines", type: "scatter", name: "GT altitude" },
-    { x: distEst, y: estAlt, mode: "lines", type: "scatter", name: "VO altitude" },
-    { x: distErr, y: zErr, mode: "lines", type: "scatter", name: "vertical error" },
-  ], layout("高度与垂直误差", { xaxis: { title: "distance m" }, yaxis: { title: "z/error m" } }));
+  if (shouldRenderChart("rpeTranslationTime", onlyChartId, selectedIds)) {
+    renderRpeTimeChart("rpeTranslationTime", rpeRows, {
+      title: "RPE 平移误差随时间变化",
+      field: "rpe_translation_m",
+      unit: "m",
+      name: "rpe_translation_m",
+    });
+  }
+  if (shouldRenderChart("rpeRotationTime", onlyChartId, selectedIds)) {
+    renderRpeTimeChart("rpeRotationTime", rpeRows, {
+      title: "RPE 旋转误差随时间变化",
+      field: "rpe_rotation_deg",
+      unit: "deg",
+      name: "rpe_rotation_deg",
+    });
+  }
+  if (shouldRenderChart("scaleFrameTime", onlyChartId, selectedIds)) {
+    renderScaleTimeChart("scaleFrameTime", scaleRows);
+  }
+}
 
-  const lengths = segmentSummary.map((row) => row.length_m);
-  Plotly.newPlot("segmentError", [
-    { x: lengths, y: segmentSummary.map((row) => row.translation_error_percent?.mean), mode: "lines+markers", type: "scatter", name: "translation mean %" },
-    { x: lengths, y: segmentSummary.map((row) => row.translation_error_percent?.p95), mode: "lines+markers", type: "scatter", name: "translation p95 %" },
-    { x: lengths, y: segmentSummary.map((row) => row.rotation_error_deg_per_m?.mean ?? null), mode: "lines+markers", type: "scatter", name: "rotation deg/m", yaxis: "y2" },
-  ], layout("按距离子轨迹误差", {
-    xaxis: { title: "segment length m" },
-    yaxis: { title: "translation error %" },
-    yaxis2: { title: "rotation deg/m", overlaying: "y", side: "right" },
+function renderVlocCharts(report, onlyChartId = null, selectedIds = selectedVlocChartIds()) {
+  const details = report.vloc_details || {};
+  const comparison = details.comparison || [];
+  const navStatus = details.nav_status || [];
+  const vlocStatus = details.vloc_status || [];
+  const rows = comparison;
+
+  if (shouldRenderChart("trajectory3d", onlyChartId, selectedIds)) {
+    const [navN3d, navE3d, navD3d] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "nav_d_m"], "visual_segment_id");
+    const [vlocN3d, vlocE3d, vlocD3d] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "vloc_d_m"], "visual_segment_id");
+    Plotly.newPlot("trajectory3d", [
+      { x: navN3d, y: navE3d, z: navD3d, mode: "lines", type: "scatter3d", name: "nav" },
+      { x: vlocN3d, y: vlocE3d, z: vlocD3d, mode: "lines", type: "scatter3d", name: "vloc" },
+      ...segmentEndpointTraces3d(rows, ["vloc_n_m", "vloc_e_m", "vloc_d_m"], "vloc", {
+        startColor: "#9333ea",
+        endColor: "#ef4444",
+        startSymbol: "diamond",
+        endSymbol: "x",
+        markerSize: 5,
+        markerLineWidth: 1,
+        textSize: 10,
+      }),
+    ], layout("3D 轨迹", { scene: { xaxis: { title: "north m" }, yaxis: { title: "east m" }, zaxis: { title: "down m" } } }));
+  }
+
+  if (shouldRenderChart("trajectoryXY", onlyChartId, selectedIds)) {
+    const [navN, navE, navTime] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "timestamp"]);
+    const [vlocN, vlocE, vlocTime] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "timestamp"]);
+    Plotly.newPlot("trajectoryXY", [
+      { x: navN, y: navE, customdata: navTime, mode: "lines", type: "scatter", name: "nav" },
+      { x: vlocN, y: vlocE, customdata: vlocTime, mode: "lines", type: "scatter", name: "vloc" },
+    ], layout("俯视 NE 轨迹", { xaxis: { title: "north m" }, yaxis: { title: "east m", scaleanchor: "x" } }));
+    ensurePointSelectionTools("trajectoryXY");
+  }
+
+  if (shouldRenderChart("errorDistance", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("errorDistance", rows, "误差随路程变化", [
+      { field: "position_error_3d_m", name: "3D position error" },
+      { field: "horizontal_position_error_m", name: "horizontal error" },
+      { field: "vertical_position_error_abs_m", name: "vertical abs error" },
+    ], { xField: "distance_m", xTitle: "distance m", yTitle: "error m" });
+  }
+
+  if (shouldRenderChart("heightComparison", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("heightComparison", rows, "对地高随时间变化", [
+      { field: "nav_height_m", name: "nav height" },
+      { field: "vloc_height_m", name: "vloc height" },
+    ], { yTitle: "height m" });
+  }
+  if (shouldRenderChart("positionCompareComposite", onlyChartId, selectedIds)) {
+    renderPairCompositeChart("positionCompareComposite", rows, {
+      title: "NED 随时间变化",
+      leftName: "nav",
+      rightName: "vloc",
+      rows: [
+        { label: "N", left: "nav_n_m", right: "vloc_n_m", unit: "m" },
+        { label: "E", left: "nav_e_m", right: "vloc_e_m", unit: "m" },
+        { label: "D", left: "nav_d_m", right: "vloc_d_m", unit: "m" },
+      ],
+    });
+  }
+  if (shouldRenderChart("attitudeCompareComposite", onlyChartId, selectedIds)) {
+    renderPairCompositeChart("attitudeCompareComposite", rows, {
+      title: "YPR 随时间变化",
+      leftName: "nav",
+      rightName: "vloc",
+      rows: [
+        { label: "Yaw", left: "nav_yaw_deg", right: "vloc_yaw_deg", unit: "deg", unwrap: true },
+        { label: "Pitch", left: "nav_pitch_deg", right: "vloc_pitch_deg", unit: "deg", unwrap: true },
+        { label: "Roll", left: "nav_roll_deg", right: "vloc_roll_deg", unit: "deg", unwrap: true },
+      ],
+    });
+  }
+  if (shouldRenderChart("positionErrorComposite", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("positionErrorComposite", rows, {
+      title: "NED 误差随时间变化",
+      rows: [
+        { label: "N 误差", field: "position_error_n_m", unit: "m" },
+        { label: "E 误差", field: "position_error_e_m", unit: "m" },
+        { label: "D 误差", field: "position_error_d_m", unit: "m" },
+      ],
+    });
+  }
+  if (shouldRenderChart("attitudeErrorComposite", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("attitudeErrorComposite", rows, {
+      title: "YPR 误差随时间变化",
+      rows: [
+        { label: "Yaw 误差", field: "attitude_error_yaw_deg", unit: "deg", unwrap: true },
+        { label: "Pitch 误差", field: "attitude_error_pitch_deg", unit: "deg", unwrap: true },
+        { label: "Roll 误差", field: "attitude_error_roll_deg", unit: "deg", unwrap: true },
+      ],
+    });
+  }
+
+  if (shouldRenderChart("navStatusModes", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("navStatusModes", navStatus, "导航状态信息", [
+      { field: "flight_mode", name: "flight_mode" },
+      { field: "navi_mode", name: "navi_mode" },
+      { field: "rtk_yaw", name: "rtk_yaw" },
+      { field: "rtk_alti", name: "rtk_alti" },
+    ], { yTitle: "state" });
+  }
+  if (shouldRenderChart("navVelocity", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("navVelocity", navStatus, {
+      title: "导航速度信息",
+      rows: [
+        { label: "vx", field: "vx", unit: "m/s" },
+        { label: "vy", field: "vy", unit: "m/s" },
+        { label: "vz", field: "vz", unit: "m/s" },
+        { label: "velocity_norm", field: "velocity_norm", unit: "m/s" },
+      ],
+    });
+  }
+  if (shouldRenderChart("navResetCounts", onlyChartId, selectedIds)) {
+    renderMultiFieldTimeChart("navResetCounts", navStatus, "导航 reset 计数", [
+      { field: "position_reset_count", name: "position_reset_count" },
+      { field: "altitude_reset_count", name: "altitude_reset_count" },
+      { field: "heading_reset_count", name: "heading_reset_count" },
+    ], { yTitle: "count" });
+  }
+  if (shouldRenderChart("vlocStatus", onlyChartId, selectedIds)) {
+    renderSingleCompositeChart("vlocStatus", vlocStatus, {
+      title: "VLOC 状态信息",
+      rows: [
+        { label: "vloc_mode", field: "vloc_mode", unit: "value" },
+        { label: "num_inliers", field: "num_inliers", unit: "value" },
+        { label: "reset_count", field: "reset_count", unit: "value" },
+      ],
+    });
+  }
+}
+
+function renderPairCompositeChart(id, rows, spec) {
+  const traces = [];
+  const axisLayout = {};
+  const rowCount = spec.rows.length;
+  spec.rows.forEach((row, index) => {
+    const [leftColor, rightColor] = compositePairColors(index);
+    const axisId = index === 0 ? "" : String(index + 1);
+    const xaxisName = `xaxis${axisId}`;
+    const yaxisName = `yaxis${axisId}`;
+    const traceXAxis = `x${axisId}`;
+    const traceYAxis = `y${axisId}`;
+    const top = 1 - (index / rowCount);
+    const bottom = 1 - ((index + 1) / rowCount);
+    axisLayout[xaxisName] = {
+      title: index === rowCount - 1 ? "timestamp s" : "",
+      domain: [0, 1],
+      anchor: traceYAxis,
+      matches: index === 0 ? undefined : "x",
+      showticklabels: index === rowCount - 1,
+      gridcolor: "#e8eef7",
+      zerolinecolor: "#d9e1ec",
+      showspikes: false,
+    };
+    axisLayout[yaxisName] = {
+      title: row.unit,
+      domain: [bottom + 0.02, top - 0.02],
+      anchor: traceXAxis,
+      gridcolor: "#e8eef7",
+      zerolinecolor: "#d9e1ec",
+    };
+    const [tLeft, leftValues] = segmentedValues(rows, ["timestamp", row.left]);
+    const [tRight, rightValues] = segmentedValues(rows, ["timestamp", row.right]);
+    const displayLeft = row.unwrap ? unwrapDegrees(leftValues) : leftValues;
+    const displayRight = row.unwrap ? unwrapDegrees(rightValues) : rightValues;
+    traces.push(
+      { x: tLeft, y: displayLeft, customdata: tLeft, mode: "lines", type: "scatter", name: `${row.label} ${spec.leftName}`, legendgroup: `${row.label}-${spec.leftName}`, showlegend: true, hoverinfo: "none", line: { color: leftColor }, xaxis: traceXAxis, yaxis: traceYAxis },
+      { x: tRight, y: displayRight, customdata: tRight, mode: "lines", type: "scatter", name: `${row.label} ${spec.rightName}`, legendgroup: `${row.label}-${spec.rightName}`, showlegend: true, hoverinfo: "none", line: { color: rightColor }, xaxis: traceXAxis, yaxis: traceYAxis },
+    );
+  });
+  Plotly.newPlot(id, traces, layout(spec.title, {
+    height: 980,
+    hovermode: "x unified",
+    hoversubplots: "axis",
+    hoverdistance: 20,
+    spikedistance: -1,
+    annotations: spec.rows.map((row, index) => ({
+      text: row.label,
+      x: 0,
+      xref: "paper",
+      xanchor: "left",
+      y: 1 - (index / rowCount) - 0.015,
+      yref: "paper",
+      yanchor: "bottom",
+      showarrow: false,
+      font: { size: 14, color: "#0f172a" },
+    })),
+    ...axisLayout,
   }));
-
-  Plotly.newPlot("speedError", [
-    { x: speedBins.map((row) => row.speed_bin_mps), y: speedBins.map((row) => row.translation_error_percent?.mean), type: "bar", name: "mean %" },
-    { x: speedBins.map((row) => row.speed_bin_mps), y: speedBins.map((row) => row.translation_error_percent?.p95), type: "bar", name: "p95 %" },
-  ], layout("速度分箱误差", { xaxis: { title: "speed m/s" }, yaxis: { title: "translation error %" }, barmode: "group" }));
-
-  renderSim3ScaleTimeChart("sim3ScaleTime", sim3Rows, report.alignment || {});
-
-  const seriesSpecs = [
-    { id: "seriesXTime", title: "X 随时间变化", gt: "gt_x_m", est: "est_x_aligned_m", unit: "m" },
-    { id: "seriesYTime", title: "Y 随时间变化", gt: "gt_y_m", est: "est_y_aligned_m", unit: "m" },
-    { id: "seriesZTime", title: "Z 随时间变化", gt: "gt_z_m", est: "est_z_aligned_m", unit: "m" },
-    { id: "seriesYawTime", title: "Yaw 随时间变化", gt: "gt_yaw_deg", est: "est_yaw_aligned_deg", unit: "deg", unwrap: true },
-    { id: "seriesPitchTime", title: "Pitch 随时间变化", gt: "gt_pitch_deg", est: "est_pitch_aligned_deg", unit: "deg", unwrap: true },
-    { id: "seriesRollTime", title: "Roll 随时间变化", gt: "gt_roll_deg", est: "est_roll_aligned_deg", unit: "deg", unwrap: true },
-  ];
-  for (const spec of seriesSpecs) {
-    renderGtVoTimeChart(spec.id, perPose, spec);
-  }
-
-  const errorSpecs = [
-    { id: "errorXTime", title: "X 误差随时间变化", field: "x_error_m", unit: "m" },
-    { id: "errorYTime", title: "Y 误差随时间变化", field: "y_error_m", unit: "m" },
-    { id: "errorZTime", title: "Z 误差随时间变化", field: "z_error_m", unit: "m" },
-    { id: "errorYawTime", title: "Yaw 误差随时间变化", field: "yaw_error_signed_deg", unit: "deg", unwrap: true },
-    { id: "errorPitchTime", title: "Pitch 误差随时间变化", field: "pitch_error_signed_deg", unit: "deg", unwrap: true },
-    { id: "errorRollTime", title: "Roll 误差随时间变化", field: "roll_error_signed_deg", unit: "deg", unwrap: true },
-  ];
-  for (const spec of errorSpecs) {
-    renderErrorTimeChart(spec.id, perPose, spec);
-  }
-
-  renderRpeTimeChart("rpeTranslationTime", rpeRows, {
-    title: "RPE 平移误差随时间变化",
-    field: "rpe_translation_m",
-    unit: "m",
-    name: "rpe_translation_m",
-  });
-  renderRpeTimeChart("rpeRotationTime", rpeRows, {
-    title: "RPE 旋转误差随时间变化",
-    field: "rpe_rotation_deg",
-    unit: "deg",
-    name: "rpe_rotation_deg",
-  });
+  attachCompositeOverlay(id, rows, spec);
+  ensurePointSelectionTools(id);
 }
 
-function renderGtVoTimeChart(id, rows, spec) {
-  const [tGt, gtValues] = segmentedValues(rows, ["timestamp", spec.gt]);
-  const [tEst, estValues] = segmentedValues(rows, ["timestamp", spec.est]);
-  const displayGt = spec.unwrap ? unwrapDegrees(gtValues) : gtValues;
-  const displayEst = spec.unwrap ? unwrapDegrees(estValues) : estValues;
-  Plotly.newPlot(id, [
-    { x: tGt, y: displayGt, mode: "lines", type: "scatter", name: "Ground truth" },
-    { x: tEst, y: displayEst, mode: "lines", type: "scatter", name: "VO aligned" },
-  ], layout(spec.title, { xaxis: { title: "timestamp s" }, yaxis: { title: spec.unit } }));
+function compositePairColors(index) {
+  const palette = [
+    ["#2563eb", "#16a34a"],
+    ["#7c3aed", "#f97316"],
+    ["#dc2626", "#0891b2"],
+  ];
+  return palette[index % palette.length];
 }
 
-function renderErrorTimeChart(id, rows, spec) {
-  const [timestamps, values] = segmentedValues(rows, ["timestamp", spec.field]);
-  const displayValues = spec.unwrap ? unwrapDegrees(values) : values;
-  Plotly.newPlot(id, [
-    { x: timestamps, y: displayValues, mode: "lines", type: "scatter", name: spec.field },
-  ], layout(spec.title, { xaxis: { title: "timestamp s" }, yaxis: { title: `error ${spec.unit}` } }));
+function compositeFieldSpecs(spec) {
+  const fields = [];
+  for (const row of spec.rows || []) {
+    if (row.left && row.right) {
+      fields.push({ label: `${row.label} ${spec.leftName || "left"}`, field: row.left, unit: row.unit || "" });
+      fields.push({ label: `${row.label} ${spec.rightName || "right"}`, field: row.right, unit: row.unit || "" });
+    } else if (row.field) {
+      fields.push({ label: row.label || row.field, field: row.field, unit: row.unit || "" });
+    }
+  }
+  return fields;
+}
+
+function finiteOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function nearestTimestampRow(rows, timestamp) {
+  const target = Number(timestamp);
+  if (!Number.isFinite(target)) {
+    return null;
+  }
+  let bestRow = null;
+  let bestDiff = Infinity;
+  for (const row of rows || []) {
+    const rowTime = Number(row.timestamp);
+    if (!Number.isFinite(rowTime)) {
+      continue;
+    }
+    const diff = Math.abs(rowTime - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestRow = row;
+    }
+  }
+  return bestRow;
+}
+
+function compositeHoverPayload(rows, spec, timestamp) {
+  const row = nearestTimestampRow(rows, timestamp);
+  if (!row) {
+    return { timestamp: finiteOrNull(timestamp), values: [] };
+  }
+  const values = compositeFieldSpecs(spec).map((fieldSpec) => ({
+    label: fieldSpec.label,
+    value: finiteOrNull(row[fieldSpec.field]),
+    unit: fieldSpec.unit,
+  }));
+  return { timestamp: Number(row.timestamp), values };
+}
+
+function compositeRangePayload(rows, spec, range) {
+  const left = Number(range?.[0]);
+  const right = Number(range?.[1]);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) {
+    return { start: null, end: null, sampleCount: 0, stats: [] };
+  }
+  const start = Math.min(left, right);
+  const end = Math.max(left, right);
+  const selectedRows = (rows || []).filter((row) => {
+    const timestamp = Number(row.timestamp);
+    return Number.isFinite(timestamp) && timestamp >= start && timestamp <= end;
+  });
+  const stats = compositeFieldSpecs(spec).map((fieldSpec) => {
+    const values = selectedRows.map((row) => Number(row[fieldSpec.field])).filter((value) => Number.isFinite(value));
+    const count = values.length;
+    const sum = values.reduce((acc, value) => acc + value, 0);
+    return {
+      label: fieldSpec.label,
+      unit: fieldSpec.unit,
+      count,
+      min: count ? roundForDisplay(Math.min(...values)) : null,
+      max: count ? roundForDisplay(Math.max(...values)) : null,
+      mean: count ? roundForDisplay(sum / count) : null,
+    };
+  });
+  return { start, end, sampleCount: selectedRows.length, stats };
+}
+
+function roundForDisplay(value) {
+  return Number.isFinite(value) ? Number(value.toFixed(6)) : null;
+}
+
+function relayoutXRange(eventData) {
+  if (!eventData) {
+    return null;
+  }
+  const axisNames = ["xaxis", "xaxis2", "xaxis3", "xaxis4"];
+  for (const axisName of axisNames) {
+    const range = eventData[`${axisName}.range`];
+    if (Array.isArray(range) && range.length >= 2) {
+      return [range[0], range[1]];
+    }
+    const start = eventData[`${axisName}.range[0]`];
+    const end = eventData[`${axisName}.range[1]`];
+    if (start !== undefined && end !== undefined) {
+      return [start, end];
+    }
+  }
+  return null;
+}
+
+function ensureCompositeOverlay(id) {
+  const plot = document.getElementById(id);
+  if (!plot) {
+    return null;
+  }
+  if (!plot.style.position) {
+    plot.style.position = "relative";
+  }
+  const crosshairId = `${id}Crosshair`;
+  const tooltipId = `${id}Tooltip`;
+  let crosshair = document.getElementById(crosshairId);
+  if (!crosshair) {
+    crosshair = document.createElement("div");
+    crosshair.id = crosshairId;
+    crosshair.className = "composite-crosshair";
+    plot.appendChild(crosshair);
+  }
+  let tooltip = document.getElementById(tooltipId);
+  if (!tooltip) {
+    tooltip = document.createElement("div");
+    tooltip.id = tooltipId;
+    tooltip.className = "composite-floating-tooltip";
+    plot.appendChild(tooltip);
+  }
+  return { plot, crosshair, tooltip };
+}
+
+function formatOverlayNumber(value) {
+  if (!Number.isFinite(Number(value))) {
+    return "N/A";
+  }
+  const number = Number(value);
+  return number.toFixed(3);
+}
+
+function compositeMousePosition(eventData, plot) {
+  const event = eventData?.event;
+  const rect = plot.getBoundingClientRect ? plot.getBoundingClientRect() : { left: 0, top: 0 };
+  const mouseX = Number.isFinite(Number(event?.clientX)) ? Number(event.clientX) - rect.left : 24;
+  const mouseY = Number.isFinite(Number(event?.clientY)) ? Number(event.clientY) - rect.top : 24;
+  return { x: mouseX, y: mouseY };
+}
+
+function compositeCrosshairX(eventData, mouseX) {
+  const point = eventData?.points?.[0];
+  const axis = point?.xaxis;
+  if (axis && typeof axis.l2p === "function") {
+    const axisOffset = Number(axis._offset || 0);
+    const axisPixel = Number(axis.l2p(point.x));
+    if (Number.isFinite(axisPixel)) {
+      return axisOffset + axisPixel;
+    }
+  }
+  return Number.isFinite(Number(mouseX)) ? Number(mouseX) : 0;
+}
+
+function positionCompositeTooltip(tooltip, plot, mouse) {
+  const tooltipWidth = 360;
+  const tooltipHeight = 190;
+  const plotWidth = Number(plot.clientWidth || 0);
+  const plotHeight = Number(plot.clientHeight || 0);
+  const preferRight = mouse.x + tooltipWidth + 18 <= plotWidth;
+  const left = preferRight ? mouse.x + 14 : Math.max(8, mouse.x - tooltipWidth - 14);
+  const top = Math.max(8, Math.min(mouse.y + 14, Math.max(8, plotHeight - tooltipHeight)));
+  tooltip.style.left = `${Math.round(left)}px`;
+  tooltip.style.top = `${Math.round(top)}px`;
+}
+
+function renderCompositeHoverOverlay(id, rows, spec, eventData) {
+  const overlay = ensureCompositeOverlay(id);
+  if (!overlay) {
+    return;
+  }
+  const mouse = compositeMousePosition(eventData, overlay.plot);
+  const x = compositeCrosshairX(eventData, mouse.x);
+  const timestamp = eventData?.points?.[0]?.x;
+  const payload = compositeHoverPayload(rows, spec, timestamp);
+  const chips = payload.values.map((item) => (
+    `<span class="metric-chip"><strong>${escapeHtml(item.label)}</strong>: ${formatOverlayNumber(item.value)}${item.unit ? ` ${escapeHtml(item.unit)}` : ""}</span>`
+  )).join("");
+  overlay.crosshair.style.left = `${Math.round(x)}px`;
+  overlay.crosshair.style.top = "0px";
+  overlay.crosshair.style.bottom = "0px";
+  overlay.crosshair.style.display = "block";
+  overlay.tooltip.innerHTML = `<strong>当前时间戳 ${formatOverlayNumber(payload.timestamp)} s</strong><div>${chips || "没有可用数据"}</div>`;
+  positionCompositeTooltip(overlay.tooltip, overlay.plot, mouse);
+  overlay.tooltip.style.display = "block";
+}
+
+function renderCompositeRangeOverlay(id, rows, spec, range) {
+  const overlay = ensureCompositeOverlay(id);
+  if (!overlay) {
+    return;
+  }
+  const payload = compositeRangePayload(rows, spec, range);
+  const chips = payload.stats.map((item) => (
+    `<span class="metric-chip"><strong>${escapeHtml(item.label)}</strong>: mean ${formatOverlayNumber(item.mean)}, min ${formatOverlayNumber(item.min)}, max ${formatOverlayNumber(item.max)}, n=${item.count}${item.unit ? ` ${escapeHtml(item.unit)}` : ""}</span>`
+  )).join("");
+  overlay.tooltip.innerHTML = `<strong>选区 ${formatOverlayNumber(payload.start)}-${formatOverlayNumber(payload.end)} s，${payload.sampleCount} 帧</strong><div>${chips || "没有可用数据"}</div>`;
+  overlay.tooltip.style.left = "12px";
+  overlay.tooltip.style.top = "12px";
+  overlay.tooltip.style.display = "block";
+}
+
+function hideCompositeOverlay(id) {
+  const crosshair = document.getElementById(`${id}Crosshair`);
+  const tooltip = document.getElementById(`${id}Tooltip`);
+  if (crosshair) {
+    crosshair.style.display = "none";
+  }
+  if (tooltip) {
+    tooltip.style.display = "none";
+  }
+}
+
+function attachCompositeOverlay(id, rows, spec) {
+  const plot = document.getElementById(id);
+  ensureCompositeOverlay(id);
+  if (!plot || typeof plot.on !== "function") {
+    return;
+  }
+  plot.on("plotly_hover", (eventData) => {
+    renderCompositeHoverOverlay(id, rows, spec, eventData);
+  });
+  plot.on("plotly_unhover", () => hideCompositeOverlay(id));
+  plot.on("plotly_relayout", (eventData) => {
+    const range = relayoutXRange(eventData);
+    if (range) {
+      renderCompositeRangeOverlay(id, rows, spec, range);
+    }
+  });
+  if (typeof plot.addEventListener === "function") {
+    plot.addEventListener("mouseleave", () => hideCompositeOverlay(id));
+  }
+}
+
+function renderSingleCompositeChart(id, rows, spec) {
+  const traces = [];
+  const axisLayout = {};
+  const rowCount = spec.rows.length;
+  spec.rows.forEach((row, index) => {
+    const axisId = index === 0 ? "" : String(index + 1);
+    const xaxisName = `xaxis${axisId}`;
+    const yaxisName = `yaxis${axisId}`;
+    const traceXAxis = `x${axisId}`;
+    const traceYAxis = `y${axisId}`;
+    const top = 1 - (index / rowCount);
+    const bottom = 1 - ((index + 1) / rowCount);
+    axisLayout[xaxisName] = {
+      title: index === rowCount - 1 ? "timestamp s" : "",
+      domain: [0, 1],
+      anchor: traceYAxis,
+      matches: index === 0 ? undefined : "x",
+      showticklabels: index === rowCount - 1,
+      gridcolor: "#e8eef7",
+      zerolinecolor: "#d9e1ec",
+      showspikes: false,
+    };
+    axisLayout[yaxisName] = {
+      title: row.unit,
+      domain: [bottom + 0.02, top - 0.02],
+      anchor: traceXAxis,
+      gridcolor: "#e8eef7",
+      zerolinecolor: "#d9e1ec",
+    };
+    const [timestamps, values] = segmentedValues(rows, ["timestamp", row.field]);
+    const displayValues = row.unwrap ? unwrapDegrees(values) : values;
+    traces.push({
+      x: timestamps,
+      y: displayValues,
+      customdata: timestamps,
+      mode: "lines",
+      type: "scatter",
+      name: row.label,
+      legendgroup: row.label,
+      showlegend: false,
+      hoverinfo: "none",
+      xaxis: traceXAxis,
+      yaxis: traceYAxis,
+    });
+  });
+  Plotly.newPlot(id, traces, layout(spec.title, {
+    height: rowCount === 4 ? 1120 : 980,
+    hovermode: "x unified",
+    hoversubplots: "axis",
+    hoverdistance: 20,
+    spikedistance: -1,
+    annotations: spec.rows.map((row, index) => ({
+      text: row.label,
+      x: 0,
+      xref: "paper",
+      xanchor: "left",
+      y: 1 - (index / rowCount) - 0.015,
+      yref: "paper",
+      yanchor: "bottom",
+      showarrow: false,
+      font: { size: 14, color: "#0f172a" },
+    })),
+    ...axisLayout,
+  }));
+  attachCompositeOverlay(id, rows, spec);
+  ensurePointSelectionTools(id);
+}
+
+function renderMultiFieldTimeChart(id, rows, title, specs, options = {}) {
+  const xField = options.xField || "timestamp";
+  const traces = specs.map((spec) => {
+    const [xValues, yValues, timestamps] = segmentedValues(rows, [xField, spec.field, "timestamp"]);
+    const displayY = spec.unwrap ? unwrapDegrees(yValues) : yValues;
+    return { x: xValues, y: displayY, customdata: timestamps, mode: "lines", type: "scatter", name: spec.name || spec.field };
+  });
+  Plotly.newPlot(id, traces, layout(title, {
+    xaxis: { title: options.xTitle || "timestamp s" },
+    yaxis: { title: options.yTitle || "" },
+  }));
+  ensurePointSelectionTools(id);
 }
 
 function renderRpeTimeChart(id, rows, spec) {
@@ -510,40 +2028,92 @@ function renderRpeTimeChart(id, rows, spec) {
   ], layout(spec.title, { xaxis: { title: "timestamp s" }, yaxis: { title: spec.unit } }));
 }
 
-function renderSim3ScaleTimeChart(id, rows, alignment = {}) {
-  const cleanRows = rows.filter((row) => (
-    row.scale_available !== false
-    && Number.isFinite(Number(row.timestamp))
-    && (Number.isFinite(Number(row.local_sim3_scale)) || Number.isFinite(Number(row.sim3_scale)))
-  ));
-  const displayRows = cleanRows.map((row) => ({
-    ...row,
-    display_scale: Number.isFinite(Number(row.local_sim3_scale)) ? row.local_sim3_scale : row.sim3_scale,
-  }));
-  const [timestamps, scales] = segmentedValues(displayRows, ["timestamp", "display_scale"]);
-  const fallbackScale = Number(alignment?.scale);
-  const data = timestamps.length
-    ? [{ x: timestamps, y: scales, mode: "lines+markers", type: "scatter", name: "local_sim3_scale" }]
-    : [{
-        x: Number.isFinite(fallbackScale) ? [0] : [],
-        y: Number.isFinite(fallbackScale) ? [fallbackScale] : [],
-        mode: "markers",
-        type: "scatter",
-        name: "local_sim3_scale",
-      }];
-  Plotly.newPlot(id, data, layout("局部 Sim3 尺度随时间戳变化", { xaxis: { title: "timestamp s" }, yaxis: { title: "GT/VO local scale" } }));
+function renderScaleTimeChart(id, rows) {
+  const cleanRows = rows.filter((row) => row.scale_available !== false && Number.isFinite(Number(row.local_sim3_scale)));
+  const [timestamps, values] = segmentedValues(cleanRows, ["timestamp", "local_sim3_scale"]);
+  Plotly.newPlot(id, [
+    { x: timestamps, y: values, mode: "lines+markers", type: "scatter", name: "local_sim3_scale" },
+  ], layout("局部 Sim3 尺度随时间变化", { xaxis: { title: "timestamp s" }, yaxis: { title: "scale" } }));
 }
 
-function segmentedValues(rows, columns) {
+function segmentEndpointTraces3d(rows, columns, prefix, style) {
+  const endpoints = segmentEndpoints(rows, columns);
+  return [
+    endpointTrace3d(endpoints.starts, columns, `${prefix} start`, style.startColor, style.startSymbol, `${prefix} S`, "top center", style),
+    endpointTrace3d(endpoints.ends, columns, `${prefix} end`, style.endColor, style.endSymbol, `${prefix} E`, "bottom center", style),
+  ];
+}
+
+function segmentEndpoints(rows, columns) {
+  const starts = [];
+  const ends = [];
+  if (!rows.length) {
+    return { starts, ends };
+  }
+
+  let currentSegment = plotSegmentId(rows[0]);
+  let currentRows = [];
+  const flush = () => {
+    const validRows = currentRows.filter((row) => columns.every((column) => Number.isFinite(Number(row[column]))));
+    if (validRows.length) {
+      starts.push(validRows[0]);
+      ends.push(validRows[validRows.length - 1]);
+    }
+  };
+
+  for (const row of rows) {
+    const segmentId = plotSegmentId(row);
+    if (segmentId !== currentSegment) {
+      flush();
+      currentSegment = segmentId;
+      currentRows = [];
+    }
+    currentRows.push(row);
+  }
+  flush();
+  return { starts, ends };
+}
+
+function plotSegmentId(row) {
+  return row.visual_segment_id ?? row.segment_id ?? 0;
+}
+
+function rowSegmentId(row, segmentField = "segment_id") {
+  return row[segmentField] ?? row.segment_id ?? 0;
+}
+
+function endpointTrace3d(rows, columns, name, color, symbol, labelPrefix, textPosition, style = {}) {
+  const markerSize = style.markerSize ?? 9;
+  const markerLineWidth = style.markerLineWidth ?? 2;
+  const textfont = style.textSize ? { size: style.textSize } : undefined;
+  return {
+    x: rows.map((row) => row[columns[0]]),
+    y: rows.map((row) => row[columns[1]]),
+    z: rows.map((row) => row[columns[2]]),
+    mode: "markers+text",
+    type: "scatter3d",
+    name,
+    text: rows.map((_, index) => `${labelPrefix}${index + 1}`),
+    textposition: textPosition,
+    textfont,
+    marker: { size: markerSize, color, symbol, line: { color: "#0f172a", width: markerLineWidth } },
+  };
+}
+
+function segmentedValues(rows, columns, segmentField = null) {
   if (!rows.length) {
     return columns.map(() => []);
   }
+  if (!segmentField) {
+    return columns.map((column) => rows.map((row) => row[column]));
+  }
   const outputs = columns.map(() => []);
-  let currentSegment = rows[0].segment_id;
+  let currentSegment = rowSegmentId(rows[0], segmentField);
   for (const row of rows) {
-    if (row.segment_id !== currentSegment) {
+    const segmentId = rowSegmentId(row, segmentField);
+    if (segmentId !== currentSegment) {
       outputs.forEach((items) => items.push(null));
-      currentSegment = row.segment_id;
+      currentSegment = segmentId;
     }
     columns.forEach((column, index) => outputs[index].push(row[column]));
   }
@@ -625,6 +2195,106 @@ function enableDownloads(enabled) {
   });
 }
 
+async function downloadReportJson() {
+  try {
+    const text = state.workerReady
+      ? String(await workerRequest("slice", { sliceName: "full_report" }))
+      : JSON.stringify(state.report || {}, null, 2);
+    downloadText("vo_evaluation_metrics.json", text, "application/json");
+  } catch (error) {
+    showMessage(`导出 JSON 失败：${error.message}`, "error");
+  }
+}
+
+async function downloadReportCsvSlice(sliceName, filename) {
+  try {
+    const rows = await fetchReportSlice(sliceName);
+    downloadText(filename, toCsv(Array.isArray(rows) ? rows : []), "text/csv");
+  } catch (error) {
+    showMessage(`导出 CSV 失败：${error.message}`, "error");
+  }
+}
+
+async function downloadTrajectoryExcel() {
+  try {
+    const trajectoryExports = await fetchReportSlice("trajectory_exports");
+    downloadBytes(
+      evaluationExportFilename("trajectory_exports", "xlsx"),
+      buildTrajectoryWorkbook(trajectoryExports || {}),
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+  } catch (error) {
+    showMessage(`导出 Excel 失败：${error.message}`, "error");
+  }
+}
+
+async function downloadHtmlReport() {
+  try {
+    const plotlySource = await fetchLocalText(PLOTLY_SCRIPT_URL);
+    downloadText(evaluationExportFilename("evaluation_report", "html"), buildHtmlReport(state.report || {}, { plotlySource }), "text/html");
+  } catch (error) {
+    showMessage(`导出 HTML 失败：${error.message}`, "error");
+  }
+}
+
+async function fetchLocalText(url) {
+  let response;
+  try {
+    response = await fetch(url, { cache: "no-store" });
+  } catch (error) {
+    throw new Error(`无法读取本地资源 ${url}：${error.message || error}`);
+  }
+  if (!response.ok) {
+    throw new Error(`无法读取本地资源 ${url}，HTTP 状态码 ${response.status}`);
+  }
+  return response.text();
+}
+
+function evaluationExportFilename(kind, extension, report = state.report) {
+  const entryMode = sanitizeFilenamePart(reportEntryMode(report)) || "vloc";
+  const dataset = exportDatasetName(report);
+  const prefix = dataset ? `${dataset}_${entryMode}` : entryMode;
+  return `${prefix}_${sanitizeFilenamePart(kind)}.${sanitizeFilenamePart(extension)}`;
+}
+
+function exportDatasetName(report = state.report) {
+  const inputs = report?.inputs || {};
+  const dataName = meaningfulDirectoryName(inputs.data_dir_name || directoryNameFromFiles(selectedFiles(els.dataDirFiles)));
+  const logName = meaningfulDirectoryName(inputs.log_dir_name || directoryNameFromFiles(selectedFiles(els.logDirFiles)));
+  if (dataName && logName && dataName !== logName) {
+    return `${dataName}__${logName}`;
+  }
+  return logName || dataName || "";
+}
+
+function meaningfulDirectoryName(value) {
+  const name = sanitizeFilenamePart(value);
+  const lower = name.toLowerCase();
+  if (lower === "data_dir" || lower === "log_dir") {
+    return "";
+  }
+  return name;
+}
+
+function sanitizeFilenamePart(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+async function fetchReportSlice(sliceName) {
+  if (!state.workerReady) {
+    if (sliceName === "full_report") return state.report || {};
+    if (sliceName === "trajectory_exports") return state.report?.trajectory_exports || {};
+    return state.report?.[sliceName] || (sliceName === "config" ? {} : []);
+  }
+  const text = await workerRequest("slice", { sliceName });
+  return JSON.parse(String(text));
+}
+
 function toCsv(rows) {
   if (!rows.length) {
     return "";
@@ -648,167 +2318,995 @@ function csvCell(value) {
   return text;
 }
 
-function buildHtmlReport() {
-  const report = reportForHtmlExport(state.report || {});
-  const tuningRows = buildTuningConclusionRows(report);
-  const status = reportDiagnosticStatus(tuningRows);
-  const healthCards = buildHealthDashboardCards(report);
-  const associationRows = buildAssociationDiagnosticRows(report);
-  const longRangeRows = buildLongRangeDiagnosticRows(report);
-  const worstRows = buildWorstSegmentRows(report);
-  const conditionRows = buildConditionDiagnosticRows(report);
-  const auxiliaryCards = buildAuxiliaryMetricCards(report);
-  const metricRows = flattenReportMetrics(report);
-  const configRows = buildConfigRows(report);
-  const figureSpecs = buildReportPlotSpecs(report);
-  const summary = report.summary || {};
+function buildHtmlReport(sourceReport = state.report || {}, options = {}) {
+  const report = reportForHtmlExport(sourceReport || {});
+  const entryMode = reportEntryMode(report);
+  const isVloc = entryMode === "vloc";
+  const title = isVloc ? "VLOC 评估结果" : "VO 评估结果";
+  const kicker = isVloc ? "VLOC Offline Visualization" : "VO Offline Visualization";
+  const metrics = exportMetricItems(report);
+  const figures = buildVisualizationExportFigureSpecs(report);
+  const plotlyScript = options.plotlySource
+    ? `<script>${options.plotlySource.replaceAll("</script", "<\\/script")}<\/script>`
+    : `<script src="${escapeHtml(PLOTLY_SCRIPT_URL)}"><\/script>`;
+  const chartOptions = isVloc ? VLOC_CHART_OPTIONS : VO_CHART_OPTIONS;
+  const selectedIds = new Set(figures.map((figure) => figure.id));
+  const chartDirectory = chartOptions
+    .filter((option) => selectedIds.has(option.id))
+    .map((option) => `
+      <label class="chart-directory-item">
+        <input type="checkbox" data-chart-id="${escapeHtml(option.id)}" checked />
+        <span>${escapeHtml(option.label)}</span>
+      </label>
+    `).join("");
+  const figureHtml = figures.map((figure) => `
+    <section class="chart-card" data-chart-id="${escapeHtml(figure.id)}">
+      <div class="chart-header">
+        <div>
+          <div class="chart-kicker">${escapeHtml(figure.pickable ? "Selectable chart" : "Chart")}</div>
+          <h2>${escapeHtml(figure.label)}</h2>
+        </div>
+        ${figure.pickable ? `<div class="chart-tools"><button type="button" data-action="select" data-chart-id="${escapeHtml(figure.id)}">选点</button><button type="button" data-action="clear" data-chart-id="${escapeHtml(figure.id)}">清除</button></div>` : ""}
+      </div>
+      <div id="${escapeHtml(figure.id)}" class="plotly-graph-div export-plot" style="height:${Number(figure.layout?.height || 520)}px;width:100%;"></div>
+    </section>
+  `).join("");
   return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>VO Evaluation Report</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"><\/script>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+${plotlyScript}
 <style>
-:root{--text:#1f2937;--heading:#0f172a;--muted:#64748b;--line:#d8e2ef;--bg:#f4f7fb;--card:#fff;--soft:#f8fafc;--blue:#2563eb;--blue2:#1e40af;--good:#15803d;--warn:#b45309;--bad:#b42318;--info:#175cd3;--shadow:0 16px 38px rgba(15,23,42,.08)}
-*{box-sizing:border-box}html{scroll-behavior:smooth}body{font-family:Inter,Arial,"PingFang SC","Microsoft YaHei",sans-serif;margin:0;color:var(--text);background:linear-gradient(180deg,#eaf1ff 0,#f8fbff 280px,var(--bg) 680px);line-height:1.55}
-.page{max-width:1320px;margin:0 auto;padding:28px 24px 46px}.hero{background:linear-gradient(135deg,#fff 0,#f8fbff 55%,#edf5ff 100%);border:1px solid var(--line);border-radius:8px;padding:28px;margin-bottom:18px;box-shadow:var(--shadow)}
-.hero-top{display:grid;grid-template-columns:1fr auto;gap:18px;align-items:start}.eyebrow{font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--blue);margin-bottom:8px}h1{margin:0 0 8px;color:var(--heading);font-size:36px;line-height:1.05;font-weight:860}.subtitle{margin:0;color:var(--muted)}h2{margin:30px 0 14px;color:var(--heading);font-size:22px}h3{margin:0 0 8px;font-size:16px}.section-note{color:var(--muted);margin:-6px 0 14px}
-.badge{display:inline-flex;align-items:center;border-radius:999px;padding:7px 13px;font-weight:900;font-size:13px;border:1px solid transparent;white-space:nowrap}.badge.good{color:var(--good);background:#eaf7ee;border-color:#b8dfc3}.badge.warning{color:var(--warn);background:#fff7ed;border-color:#fed7aa}.badge.high{color:var(--bad);background:#fff1f2;border-color:#fecdd3}.badge.info{color:var(--info);background:#eff6ff;border-color:#bfdbfe}
-.hero-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:20px}.hero-item{background:rgba(255,255,255,.8);border:1px solid var(--line);border-radius:8px;padding:12px}.hero-label{font-size:12px;font-weight:800;color:var(--muted);margin-bottom:4px}.hero-value{font-weight:820;color:var(--heading);word-break:break-word}
-.notice{border-left:5px solid var(--warn);background:#fffbeb;border:1px solid #fed7aa;border-left-color:var(--warn);border-radius:8px;padding:12px 14px;margin-top:14px;color:#7c2d12}.anchor-nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}.anchor-nav a{color:var(--blue2);background:#eff6ff;border:1px solid #bfdbfe;border-radius:999px;padding:6px 10px;text-decoration:none;font-weight:780;font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}.health-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}.card{background:linear-gradient(180deg,#fff 0,#f9fbfe 100%);border:1px solid var(--line);border-radius:8px;padding:15px;box-shadow:0 1px 0 rgba(15,23,42,.02);position:relative;overflow:hidden}.card:before{content:"";position:absolute;inset:0 0 auto;height:4px;background:var(--blue)}.card.high:before{background:var(--bad)}.card.warning:before{background:var(--warn)}.card.good:before{background:var(--good)}.card.info:before{background:var(--info)}
-.metric-label{font-size:12px;color:var(--muted);font-weight:900;margin-bottom:6px}.metric-value{font-size:26px;line-height:1.05;font-weight:860;color:var(--heading)}.metric-note{font-size:12px;color:var(--muted);margin-top:8px}.metric-source{margin-top:8px;font-size:11px;color:#475569}
-table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden;box-shadow:0 1px 0 rgba(15,23,42,.02)}th,td{border-bottom:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}th{background:#eef3f9;font-size:13px;color:#334155}tr:last-child td{border-bottom:0}code{background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:2px 6px;white-space:nowrap}.priority{font-weight:900}.priority.p0{color:var(--bad)}.priority.p1{color:var(--warn)}.priority.p2{color:var(--info)}.tag{display:inline-flex;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:800;background:#f1f5f9;color:#334155}.tag.high{background:#fff1f2;color:var(--bad)}.tag.warning{background:#fff7ed;color:var(--warn)}.tag.good{background:#eaf7ee;color:var(--good)}.tag.info{background:#eff6ff;color:var(--info)}
-.metric-group{background:#fff;border:1px solid var(--line);border-radius:8px;padding:0;margin:10px 0;overflow:hidden;box-shadow:0 8px 22px rgba(15,23,42,.04)}.metric-group summary{cursor:pointer;font-weight:760;display:grid;grid-template-columns:minmax(180px,1fr) minmax(220px,1.6fr) auto;gap:10px;align-items:center;padding:13px 14px;background:#fff}.metric-group table{border-radius:0;border-left:0;border-right:0;border-bottom:0;box-shadow:none}.group-title{font-size:15px;color:var(--heading)}.group-count{color:var(--muted);font-size:12px}.metric-help{color:var(--muted);margin:0;padding:0 14px 13px}
-.chart{margin:18px 0;overflow:visible}.plotly-graph-div{background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 22px rgba(15,23,42,.04)}details{background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:18px;box-shadow:0 8px 22px rgba(15,23,42,.04)}summary{cursor:pointer;font-weight:760}pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;border:1px solid var(--line);padding:12px;border-radius:8px;max-height:520px;overflow:auto}.downloads{display:flex;flex-wrap:wrap;gap:10px}.downloads button{border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:8px;padding:8px 10px;font-weight:800;cursor:pointer}
-@media(max-width:760px){.page{padding:18px}.hero{padding:20px}.hero-top{grid-template-columns:1fr}h1{font-size:28px}.metric-group summary{grid-template-columns:1fr}.grid{grid-template-columns:1fr}table{font-size:13px}th,td{padding:8px}}
+:root{--text:#1f2937;--heading:#0f172a;--muted:#64748b;--line:#d8e2ef;--bg:#f4f7fb;--card:#fff;--blue:#2563eb;--good:#15803d;--warn:#b45309;--bad:#b42318;--shadow:0 16px 38px rgba(15,23,42,.08)}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,Arial,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.5}.topbar{background:#fff;border-bottom:1px solid var(--line);padding:28px 36px}.topbar h1{margin:0;color:var(--heading);font-size:42px;line-height:1.05}.topbar p{margin:10px 0 0;color:var(--muted);font-weight:700}.page{display:grid;grid-template-columns:360px minmax(0,1fr);gap:24px;max-width:1680px;margin:0 auto;padding:24px}.sidebar{display:flex;flex-direction:column;gap:18px}.panel,.chart-card{background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}.panel{padding:18px}.section-title{display:flex;align-items:center;gap:10px;margin:0 0 14px;color:var(--heading);font-size:20px}.section-title:before{content:"";display:block;width:8px;height:28px;border-radius:999px;background:var(--blue)}.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}.metric{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px;position:relative;overflow:hidden}.metric:before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:var(--blue)}.metric.rank-high:before{background:var(--bad)}.metric.rank-warning:before{background:var(--warn)}.metric.rank-good:before{background:var(--good)}.metric-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.metric .label{font-size:12px;color:var(--muted);font-weight:900}.metric-rank{border:1px solid #bfdbfe;background:#eff6ff;color:#2563eb;border-radius:999px;padding:2px 8px;font-size:12px;font-weight:900}.metric .value{margin-top:14px;color:var(--heading);font-size:28px;font-weight:900}.metric-note{margin-top:8px;color:var(--muted);font-size:12px;font-weight:700}.chart-directory-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.chart-directory-item{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff;font-weight:900;font-size:13px}.chart-directory-item input{width:16px;height:16px;accent-color:var(--blue)}.chart-directory-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.chart-directory-actions button,.chart-tools button,.clear-point-selections{border:0;background:var(--blue);color:#fff;border-radius:8px;padding:8px 10px;font-weight:900;cursor:pointer}.point-selection-output{display:flex;flex-direction:column;gap:10px}.point-selection-card{border:1px solid var(--line);border-radius:8px;overflow:hidden}.point-selection-card h3{margin:0;padding:10px 12px;background:#f8fafc;font-size:14px}.point-selection-table{width:100%;border-collapse:collapse;font-size:12px}.point-selection-table th,.point-selection-table td{border-top:1px solid var(--line);padding:7px;text-align:left}.selection-point-token{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;border-radius:999px;color:#fff;font-size:10px;font-weight:900}.chart-card{margin-bottom:22px;padding:16px}.chart-header{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:10px}.chart-header h2{margin:0;color:var(--heading);font-size:22px}.chart-kicker{text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-size:11px;font-weight:900}.chart-tools{display:flex;gap:8px}.chart-card.point-selection-active{outline:2px solid var(--blue);outline-offset:2px}.plotly-graph-div{background:#fff;border:1px solid var(--line);border-radius:8px}.content{min-width:0}.empty{color:var(--muted);font-weight:800}.mode-pill{display:inline-flex;margin-top:10px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:999px;padding:6px 10px;font-weight:900}
+.export-plot{position:relative}.composite-crosshair{position:absolute;top:0;bottom:0;border-left:1px dashed #0f172a;z-index:20;pointer-events:none;display:none}.composite-floating-tooltip{position:absolute;z-index:21;max-width:420px;background:rgba(255,255,255,.95);border:1px solid #94a3b8;border-radius:8px;box-shadow:0 18px 45px rgba(15,23,42,.16);padding:10px 12px;color:#1f2937;font-size:13px;pointer-events:none;display:none}.composite-floating-tooltip strong{display:block;margin-bottom:6px;color:#0f172a}.metric-chip{display:inline-flex;align-items:center;margin:3px 4px 3px 0;border:1px solid #bfdbfe;background:#eff6ff;color:#1e3a8a;border-radius:8px;padding:4px 7px;font-weight:700;white-space:nowrap}
+@media(max-width:980px){.page{grid-template-columns:1fr}.chart-directory-list{grid-template-columns:repeat(2,minmax(0,1fr))}.topbar h1{font-size:32px}}
 </style>
 </head><body>
-<main class="page">
-<section class="hero">
-  <div class="hero-top">
-    <div>
-      <div class="eyebrow">Monocular Long Range UAV VO</div>
-      <h1>VO 调参诊断报告</h1>
-      <p class="subtitle">物流无人机 / 单目 VO / 长航程 / Sim3 形状评估</p>
-    </div>
-    <span class="badge ${status.className}">${escapeHtml(status.label)}</span>
-  </div>
-  <div class="hero-grid">
-    <div class="hero-item"><div class="hero-label">estimate</div><div class="hero-value">${escapeHtml(report.inputs?.estimate?.name || "VO")}</div></div>
-    <div class="hero-item"><div class="hero-label">reference</div><div class="hero-value">${escapeHtml(referenceLabel(report))}</div></div>
-    <div class="hero-item"><div class="hero-label">matched frames</div><div class="hero-value">${escapeHtml(summary.matched_poses ?? "N/A")}</div></div>
-    <div class="hero-item"><div class="hero-label">matched duration</div><div class="hero-value">${formatValue(summary.duration_s, "s")}</div></div>
-    <div class="hero-item"><div class="hero-label">matched path length</div><div class="hero-value">${formatValue(summary.gt_path_length_m, "m")}</div></div>
-    <div class="hero-item"><div class="hero-label">profile</div><div class="hero-value">${escapeHtml(report.config?.profile || "monocular_long_range_uav")}</div></div>
-    <div class="hero-item"><div class="hero-label">alignment summary</div><div class="hero-value">${escapeHtml(alignmentSummaryLabel(report))}</div></div>
-    <div class="hero-item"><div class="hero-label">risk level</div><div class="hero-value">${escapeHtml(status.shortLabel)}</div></div>
-  </div>
-  ${referenceWarningHtml(report)}
-  <nav class="anchor-nav">
-    <a href="#tuning">调参结论</a><a href="#health">健康指标</a><a href="#longrange">长航程</a><a href="#worst">最差片段</a><a href="#advanced">完整指标</a>
-  </nav>
-</section>
-<section id="tuning">
-  <h2>调参结论摘要</h2>
-  <p class="section-note">这里不是简单列指标，而是按 P0/P1/P2 给出“先改什么、证据是什么、可能原因是什么”。</p>
-  ${tuningConclusionTableHtml(tuningRows)}
-</section>
-<section id="health">
-  <h2>核心健康指标 Dashboard</h2>
-  <div class="grid health-grid">${healthCards.map(reportHealthCardHtml).join("\n")}</div>
-</section>
-<section>
-  <h2>时间同步诊断</h2>
-  <p class="section-note">这里说明 GT/Reference 和 VO 到底是如何放到同一时间轴上的。插值模式下，GT 会被插值到 VO 时间戳；nearest 模式不会插值。</p>
-  ${associationDiagnosticTableHtml(associationRows)}
-</section>
-<section id="longrange">
-  <h2>长航程子轨迹误差</h2>
-  <p class="section-note">长距离段用于看累计漂移；短距离段用于看局部跟踪稳定性。百分比越低越好，p95 比 mean 更适合作为工程容差参考。</p>
-  ${longRangeDiagnosticTableHtml(longRangeRows)}
-</section>
-<section id="worst">
-  <h2>Top-K 最差片段</h2>
-  <p class="section-note">这些片段最适合回放图像、特征数、RANSAC 内点率、关键帧和重定位日志。</p>
-  ${worstSegmentsTableHtml(worstRows)}
-</section>
-<section>
-  <h2>条件诊断</h2>
-  ${conditionDiagnosticTableHtml(conditionRows)}
-</section>
-<section>
-  <h2>A/B 对比</h2>
-  ${comparisonPlaceholderHtml()}
-</section>
-<section>
-  <h2>辅助论文指标</h2>
-  <p class="section-note">这些指标仍然保留，但不作为首页第一优先级；命名会明确是否为分段 Sim3、全局 Sim3 或固定帧/固定时间 RPE。</p>
-  <div class="grid">${auxiliaryCards.map(reportHealthCardHtml).join("\n")}</div>
-</section>
-<section>
-  <h2>可视化</h2>
-  ${figureSpecs.map((spec, index) => plotHtml(`reportPlot${index}`, spec)).join("\n")}
-</section>
-<section>
-  <h2>导出与复现</h2>
-  <p class="section-note">HTML 报告内嵌完整 report；如果在网页工具里导出，还可以拿到 per_pose、segment_records、worst_segments 和 config 文件。报告和 CSV 会包含轨迹坐标、时间戳、逐帧误差和最差片段；真实飞行或敏感数据请勿公开分享。</p>
-  <div class="downloads">
-    <button onclick="downloadEmbeddedReport('json')">下载 JSON 指标</button>
-    <button onclick="downloadEmbeddedReport('per_pose')">下载每帧误差 CSV</button>
-    <button onclick="downloadEmbeddedReport('segment_records')">下载子轨迹误差 CSV</button>
-    <button onclick="downloadEmbeddedReport('worst_segments')">下载最差片段 CSV</button>
-    <button onclick="downloadEmbeddedReport('config')">下载配置 JSON</button>
-  </div>
-</section>
-<section>
-  <h2>配置与数据</h2>
-  <table><tbody>${configRows.map((row) => `<tr><th>${escapeHtml(row.label)}</th><td>${escapeHtml(row.value)}</td></tr>`).join("")}</tbody></table>
-</section>
-<section id="advanced">
-  <h2>高级详情 / 完整指标</h2>
-  <p class="section-note">完整指标默认折叠，展开后可以看到所有字段、中文解释以及它们反映的问题。逐帧 per_pose 和子轨迹明细请从上方 CSV 导出。</p>
-  ${metricTableHtml(metricRows)}
-</section>
-<details>
-  <summary>原始 JSON 指标</summary>
-  <pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre>
-</details>
+<header class="topbar">
+  <h1>${escapeHtml(title)}</h1>
+  <p>离线可视化快照。保留页面上的指标卡、图表目录、图表交互和选点记录；不包含上传与重新评估功能。</p>
+  <span class="mode-pill">${escapeHtml(kicker)}</span>
+</header>
+<main class="page" data-entry-mode="${escapeHtml(entryMode)}">
+  <aside class="sidebar">
+    <section class="panel">
+      <h2 class="section-title">图表目录</h2>
+      <div id="chartDirectory" class="chart-directory-list">${chartDirectory}</div>
+      <div class="chart-directory-actions">
+        <button type="button" id="selectAllCharts">全选</button>
+        <button type="button" id="clearCharts">清除</button>
+      </div>
+    </section>
+    <section class="panel" id="pointSelectionOutputSection" hidden>
+      <h2 class="section-title">选点输出</h2>
+      <div id="pointSelectionOutput" class="point-selection-output"></div>
+      <button type="button" id="clearAllPointSelections" class="clear-point-selections">清除所有点</button>
+    </section>
+  </aside>
+  <section class="content">
+    <section class="metric-grid">
+      ${metrics.map((item, index) => `
+        <div class="metric ${metricStatusClass(item.status)}">
+          <div class="metric-top">
+            <div class="label">${escapeHtml(item.label)}</div>
+            <div class="metric-rank">#${String(index + 1).padStart(2, "0")}</div>
+          </div>
+          <div class="value">${formatValue(item.value, item.unit)}</div>
+          <div class="metric-note">${escapeHtml(item.note || "")}</div>
+        </div>
+      `).join("")}
+    </section>
+    ${figureHtml || `<div class="panel empty">当前报告没有可导出的图表数据。</div>`}
+  </section>
 </main>
 <script>
-window.__VO_REPORT__ = ${safeJson(report)};
-function downloadEmbeddedReport(kind) {
-  const report = window.__VO_REPORT__ || {};
-  if (kind === "json") return downloadBlob("vo_evaluation_metrics.json", JSON.stringify(report, null, 2), "application/json");
-  if (kind === "config") return downloadBlob("vo_evaluation_config.json", JSON.stringify(report.config || {}, null, 2), "application/json");
-  const rows = report[kind] || [];
-  return downloadBlob("vo_" + kind + ".csv", rowsToCsv(rows), "text/csv");
+window.__VO_EXPORT_REPORT__ = ${safeJson(report)};
+window.__VO_EXPORT_FIGURES__ = ${safeJson(figures)};
+window.__VO_EXPORT_SELECTIONS__ = [];
+window.__VO_ACTIVE_CHART__ = null;
+window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = null;
+window.__VO_EXPORT_SELECTION_SEQUENCE__ = 0;
+const POINT_COLORS = ${safeJson(POINT_SELECTION_COLORS)};
+function initExportPage() {
+  renderAllCharts();
+  document.querySelectorAll("#chartDirectory input").forEach((input) => {
+    input.addEventListener("change", () => setChartVisible(input.dataset.chartId, input.checked));
+  });
+  document.getElementById("selectAllCharts")?.addEventListener("click", () => setAllChartsVisible(true));
+  document.getElementById("clearCharts")?.addEventListener("click", () => setAllChartsVisible(false));
+  document.getElementById("clearAllPointSelections")?.addEventListener("click", clearAllPointSelections);
+  document.addEventListener("keydown", handleExportPointSelectionKeydown);
+  document.querySelectorAll("[data-action='select']").forEach((button) => {
+    button.addEventListener("click", () => togglePointMode(button.dataset.chartId));
+  });
+  document.querySelectorAll("[data-action='clear']").forEach((button) => {
+    button.addEventListener("click", () => clearChartSelections(button.dataset.chartId));
+  });
 }
-function rowsToCsv(rows) {
-  if (!Array.isArray(rows) || !rows.length) return "";
-  const headers = Object.keys(rows[0]);
-  const csvCell = (value) => {
-    if (value === null || value === undefined) return "";
-    const text = String(value);
-    return /[",\\n]/.test(text) ? '"' + text.replaceAll('"', '""') + '"' : text;
+function renderAllCharts() {
+  for (const figure of window.__VO_EXPORT_FIGURES__) {
+    const node = document.getElementById(figure.id);
+    if (!node) continue;
+    Promise.resolve(Plotly.newPlot(figure.id, figure.data, figure.layout, {responsive: true})).then(() => {
+      attachExportCompositeOverlay(figure);
+      attachExportPointSelection(figure);
+    });
+  }
+}
+function attachExportPointSelection(figure) {
+  const node = document.getElementById(figure.id);
+  if (!node || !figure.pickable || typeof node.on !== "function" || node.__exportPointSelectionAttached) return;
+  node.__exportPointSelectionAttached = true;
+  node.on("plotly_click", (eventData) => {
+    if (focusExportPointSelectionFromEvent(figure.id, eventData)) {
+      return;
+    }
+    if (window.__VO_ACTIVE_CHART__ === figure.id) {
+      recordPointSelection(figure, eventData);
+    }
+  });
+  node.on("plotly_hover", (eventData) => {
+    focusExportPointSelectionFromEvent(figure.id, eventData);
+  });
+}
+function attachExportCompositeOverlay(figure) {
+  const node = document.getElementById(figure.id);
+  if (!node || figure.layout?.scene || typeof node.on !== "function" || node.__exportCompositeOverlayAttached) return;
+  node.__exportCompositeOverlayAttached = true;
+  ensureExportCompositeOverlay(figure.id);
+  node.on("plotly_hover", (eventData) => renderExportCompositeHoverOverlay(figure.id, eventData));
+  node.on("plotly_unhover", () => hideExportCompositeOverlay(figure.id));
+  if (typeof node.addEventListener === "function") {
+    node.addEventListener("mouseleave", () => hideExportCompositeOverlay(figure.id));
+  }
+}
+function ensureExportCompositeOverlay(chartId) {
+  const plot = document.getElementById(chartId);
+  if (!plot) return null;
+  if (!plot.style.position) plot.style.position = "relative";
+  const crosshairId = chartId + "Crosshair";
+  const tooltipId = chartId + "Tooltip";
+  let crosshair = document.getElementById(crosshairId);
+  if (!crosshair) {
+    crosshair = document.createElement("div");
+    crosshair.id = crosshairId;
+    crosshair.className = "composite-crosshair";
+    plot.appendChild(crosshair);
+  }
+  let tooltip = document.getElementById(tooltipId);
+  if (!tooltip) {
+    tooltip = document.createElement("div");
+    tooltip.id = tooltipId;
+    tooltip.className = "composite-floating-tooltip";
+    plot.appendChild(tooltip);
+  }
+  return { plot, crosshair, tooltip };
+}
+function renderExportCompositeHoverOverlay(chartId, eventData) {
+  const overlay = ensureExportCompositeOverlay(chartId);
+  if (!overlay) return;
+  const point = eventData?.points?.[0];
+  const mouse = exportMousePosition(eventData, overlay.plot);
+  const x = exportCrosshairX(point, mouse.x);
+  const timestamp = point?.x;
+  overlay.crosshair.style.left = Math.round(x) + "px";
+  overlay.crosshair.style.top = "0px";
+  overlay.crosshair.style.bottom = "0px";
+  overlay.crosshair.style.display = "block";
+  overlay.tooltip.innerHTML = "<strong>当前时间戳 " + numberText(timestamp) + " s</strong><div>" + exportAllHoverChips(chartId, timestamp) + "</div>";
+  positionExportTooltip(overlay.tooltip, overlay.plot, mouse);
+  overlay.tooltip.style.display = "block";
+}
+function exportMousePosition(eventData, plot) {
+  const event = eventData?.event;
+  const rect = plot.getBoundingClientRect ? plot.getBoundingClientRect() : { left: 0, top: 0 };
+  return {
+    x: Number.isFinite(Number(event?.clientX)) ? Number(event.clientX) - rect.left : 24,
+    y: Number.isFinite(Number(event?.clientY)) ? Number(event.clientY) - rect.top : 24,
   };
-  return [headers.join(","), ...rows.map((row) => headers.map((key) => csvCell(row[key])).join(","))].join("\\n");
 }
-function downloadBlob(filename, text, mime) {
-  const blob = new Blob([text], { type: mime + ";charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+function exportCrosshairX(point, mouseX) {
+  const axis = point?.xaxis;
+  if (axis && typeof axis.l2p === "function") {
+    const axisOffset = Number(axis._offset || 0);
+    const axisPixel = Number(axis.l2p(point.x));
+    if (Number.isFinite(axisPixel)) {
+      return axisOffset + axisPixel;
+    }
+  }
+  return Number.isFinite(Number(mouseX)) ? Number(mouseX) : 0;
 }
+function exportAllHoverChips(chartId, timestamp) {
+  const figure = window.__VO_EXPORT_FIGURES__.find((item) => item.id === chartId);
+  const target = Number(timestamp);
+  if (!figure || !Number.isFinite(target)) return "没有可用数据";
+  const chips = [];
+  for (const trace of figure.data || []) {
+    if (trace?.type === "scatter3d" || trace?.meta?.pointSelectionMarker || trace?.meta?.pointSelectionHitTarget) {
+      continue;
+    }
+    const point = nearestExportTracePoint(trace, target);
+    if (!point) {
+      continue;
+    }
+    chips.push('<span class="metric-chip"><strong>' + escapeHtml(trace.name || "trace") + '</strong>: ' + numberText(point.y) + '</span>');
+  }
+  return chips.join("") || "没有可用数据";
+}
+function nearestExportTracePoint(trace, target) {
+  const xs = Array.isArray(trace?.x) ? trace.x : [];
+  const ys = Array.isArray(trace?.y) ? trace.y : [];
+  let bestIndex = -1;
+  let bestDiff = Infinity;
+  for (let index = 0; index < xs.length; index += 1) {
+    const x = Number(xs[index]);
+    const y = Number(ys[index]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      continue;
+    }
+    const diff = Math.abs(x - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestIndex = index;
+    }
+  }
+  if (bestIndex < 0) {
+    return null;
+  }
+  return { x: Number(xs[bestIndex]), y: Number(ys[bestIndex]), index: bestIndex };
+}
+function positionExportTooltip(tooltip, plot, mouse) {
+  const tooltipWidth = 380;
+  const tooltipHeight = 190;
+  const plotWidth = Number(plot.clientWidth || 0);
+  const plotHeight = Number(plot.clientHeight || 0);
+  const preferRight = mouse.x + tooltipWidth + 18 <= plotWidth;
+  const left = preferRight ? mouse.x + 14 : Math.max(8, mouse.x - tooltipWidth - 14);
+  const top = Math.max(8, Math.min(mouse.y + 14, Math.max(8, plotHeight - tooltipHeight)));
+  tooltip.style.left = Math.round(left) + "px";
+  tooltip.style.top = Math.round(top) + "px";
+}
+function hideExportCompositeOverlay(chartId) {
+  const crosshair = document.getElementById(chartId + "Crosshair");
+  const tooltip = document.getElementById(chartId + "Tooltip");
+  if (crosshair) crosshair.style.display = "none";
+  if (tooltip) tooltip.style.display = "none";
+}
+function setChartVisible(chartId, visible) {
+  const card = document.querySelector("[data-chart-id='" + cssEscape(chartId) + "']");
+  if (card) card.hidden = !visible;
+}
+function setAllChartsVisible(visible) {
+  document.querySelectorAll("#chartDirectory input").forEach((input) => {
+    input.checked = visible;
+    setChartVisible(input.dataset.chartId, visible);
+  });
+}
+function togglePointMode(chartId) {
+  window.__VO_ACTIVE_CHART__ = window.__VO_ACTIVE_CHART__ === chartId ? null : chartId;
+  refreshAllExportPointModeStates();
+}
+function recordPointSelection(figure, eventData) {
+  const point = firstExportSelectablePlotPoint(eventData);
+  if (!point) return;
+  window.__VO_EXPORT_SELECTION_SEQUENCE__ += 1;
+  const order = window.__VO_EXPORT_SELECTION_SEQUENCE__;
+  const colorSlot = nextExportPointColorSlot();
+  const colorMeta = exportPointColorMeta(colorSlot);
+  const traceName = point.data?.name || "trace " + (Number(point.curveNumber) + 1);
+  const selection = {
+    id: "p" + Date.now() + "_" + order,
+    order,
+    colorSlot,
+    chartId: figure.id,
+    chartTitle: figure.label,
+    traceName,
+    timestamp: exportPointTimestamp(point),
+    value: exportPointValueText(figure.id, point),
+    color: colorMeta.color,
+    markerText: colorMeta.text,
+    x: Number(point.x),
+    y: Number(point.y),
+    xaxis: point.data?.xaxis || "x",
+    yaxis: point.data?.yaxis || "y",
+  };
+  window.__VO_EXPORT_SELECTIONS__.push(selection);
+  window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = selection.id;
+  refreshExportChartSelectionMarkers(figure.id);
+  renderPointSelectionOutput();
+}
+function exportPointColorMeta(slot) {
+  const zeroIndex = Math.max(0, slot - 1);
+  const colorIndex = zeroIndex % POINT_COLORS.length;
+  const cycle = Math.floor(zeroIndex / POINT_COLORS.length);
+  return { color: POINT_COLORS[colorIndex], text: cycle > 0 ? String(cycle) : "" };
+}
+function nextExportPointColorSlot() {
+  const used = new Set(window.__VO_EXPORT_SELECTIONS__.map((selection) => selection.colorSlot).filter((slot) => Number.isFinite(Number(slot))));
+  let slot = 1;
+  while (used.has(slot)) {
+    slot += 1;
+  }
+  return slot;
+}
+function addExportSelectionMarkers(selection) {
+  Plotly.addTraces(selection.chartId, [exportSelectionHitTargetTrace(selection), exportSelectionMarkerTrace(selection)]);
+}
+function refreshExportPointModeState(chartId) {
+  const card = document.querySelector("[data-chart-id='" + cssEscape(chartId) + "']");
+  if (card) {
+    card.classList.toggle("point-selection-active", card.dataset.chartId === window.__VO_ACTIVE_CHART__);
+  }
+}
+function refreshAllExportPointModeStates() {
+  document.querySelectorAll(".chart-card").forEach((card) => {
+    card.classList.toggle("point-selection-active", card.dataset.chartId === window.__VO_ACTIVE_CHART__);
+  });
+}
+function exportSelectionMarkerTrace(selection) {
+  return {
+    x: [selection.x],
+    y: [selection.y],
+    mode: selection.markerText ? "markers+text" : "markers",
+    type: "scatter",
+    name: "选点 " + selection.order,
+    text: selection.markerText ? [selection.markerText] : [""],
+    textposition: "middle center",
+    textfont: { color: "#ffffff", size: 9, family: "Arial, sans-serif" },
+    marker: { color: selection.color, size: 9, symbol: "circle", line: { width: 0 } },
+    customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }],
+    meta: { pointSelectionMarker: true, selectionId: selection.id },
+    xaxis: selection.xaxis,
+    yaxis: selection.yaxis,
+    showlegend: false,
+    hovertemplate: escapeHtml(selection.traceName) + "<br>timestamp=%{customdata.timestamp:.3f}<br>value=" + escapeHtml(String(selection.value)) + "<extra></extra>",
+  };
+}
+function exportSelectionHitTargetTrace(selection) {
+  return {
+    x: [selection.x],
+    y: [selection.y],
+    mode: "markers",
+    type: "scatter",
+    name: "选点命中 " + selection.order,
+    marker: { color: selection.color, size: 24, opacity: 0.04, symbol: "circle", line: { width: 0 } },
+    customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }],
+    meta: { pointSelectionHitTarget: true, selectionId: selection.id },
+    xaxis: selection.xaxis,
+    yaxis: selection.yaxis,
+    showlegend: false,
+    hoverinfo: "none",
+  };
+}
+function isExportSelectionTrace(trace) {
+  return Boolean(trace?.meta?.pointSelectionMarker || trace?.meta?.pointSelectionHitTarget);
+}
+function exportSelectionFromMarkerPoint(point) {
+  if (!isExportSelectionTrace(point?.data)) return null;
+  const markerData = Array.isArray(point.data.customdata) ? point.data.customdata[point.pointNumber] : null;
+  const selectionId = markerData?.selectionId || point.data?.meta?.selectionId;
+  return window.__VO_EXPORT_SELECTIONS__.find((selection) => selection.id === selectionId) || null;
+}
+function exportPointTimestamp(point) {
+  const custom = Array.isArray(point?.data?.customdata) ? point.data.customdata[point.pointNumber] : undefined;
+  const customTimestamp = typeof custom === "object" && custom !== null ? custom.timestamp : custom;
+  const timestamp = Number(customTimestamp);
+  if (Number.isFinite(timestamp)) {
+    return timestamp;
+  }
+  const x = Number(point?.x);
+  return Number.isFinite(x) ? x : null;
+}
+function exportPointValueText(chartId, point) {
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  if (chartId === "trajectoryXY") {
+    return "north=" + numberText(x) + ", east=" + numberText(y);
+  }
+  return numberText(y);
+}
+function existingExportPointSelectionForPoint(chartId, point) {
+  const traceName = point?.data?.name || "trace " + (Number(point?.curveNumber) + 1);
+  const timestamp = exportPointTimestamp(point);
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  return window.__VO_EXPORT_SELECTIONS__.find((selection) => {
+    if (selection.chartId !== chartId || selection.traceName !== traceName) {
+      return false;
+    }
+    const sameVisiblePoint = numbersClose(selection.x, x) && numbersClose(selection.y, y);
+    if (Number.isFinite(timestamp) && Number.isFinite(Number(selection.timestamp))) {
+      return numbersClose(selection.timestamp, timestamp) && sameVisiblePoint;
+    }
+    return sameVisiblePoint;
+  }) || null;
+}
+function focusExportPointSelectionFromEvent(chartId, eventData) {
+  const points = exportEventPoints(eventData);
+  for (const point of points) {
+    const selection = exportSelectionFromMarkerPoint(point);
+    if (selection) {
+      window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = selection.id;
+      return true;
+    }
+  }
+  for (const point of points) {
+    const selection = existingExportPointSelectionForPoint(chartId, point);
+    if (selection) {
+      window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = selection.id;
+      return true;
+    }
+  }
+  return false;
+}
+function exportEventPoints(eventData) {
+  return Array.isArray(eventData?.points) ? eventData.points.filter(Boolean) : [];
+}
+function firstExportSelectablePlotPoint(eventData) {
+  return exportEventPoints(eventData).find((point) => !isExportSelectionTrace(point.data)) || null;
+}
+function numbersClose(left, right) {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  return Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && Math.abs(leftNumber - rightNumber) <= 1e-9;
+}
+function exportSelectionMarkerTraceIndices(chartId) {
+  const chart = document.getElementById(chartId);
+  const data = Array.isArray(chart?.data) ? chart.data : [];
+  return data
+    .map((trace, index) => (isExportSelectionTrace(trace) ? index : -1))
+    .filter((index) => index >= 0);
+}
+function removeExportSelectionMarkerTraces(chartId) {
+  const indices = exportSelectionMarkerTraceIndices(chartId);
+  if (!indices.length || typeof Plotly === "undefined" || typeof Plotly.deleteTraces !== "function") {
+    return;
+  }
+  Plotly.deleteTraces(chartId, indices);
+}
+function refreshExportChartSelectionMarkers(chartId) {
+  if (!document.getElementById(chartId)) {
+    return;
+  }
+  removeExportSelectionMarkerTraces(chartId);
+  const selections = window.__VO_EXPORT_SELECTIONS__.filter((selection) => selection.chartId === chartId);
+  if (!selections.length || typeof Plotly === "undefined" || typeof Plotly.addTraces !== "function") {
+    return;
+  }
+  Plotly.addTraces(chartId, selections.flatMap((selection) => [exportSelectionHitTargetTrace(selection), exportSelectionMarkerTrace(selection)]));
+}
+function refreshAllExportSelectionMarkers() {
+  for (const figure of window.__VO_EXPORT_FIGURES__) {
+    refreshExportChartSelectionMarkers(figure.id);
+  }
+}
+function clearChartSelections(chartId) {
+  window.__VO_EXPORT_SELECTIONS__ = window.__VO_EXPORT_SELECTIONS__.filter((selection) => selection.chartId !== chartId);
+  if (window.__VO_ACTIVE_CHART__ === chartId) {
+    window.__VO_ACTIVE_CHART__ = null;
+  }
+  if (!window.__VO_EXPORT_SELECTIONS__.some((selection) => selection.id === window.__VO_EXPORT_FOCUSED_SELECTION_ID__)) {
+    window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = null;
+  }
+  refreshExportChartSelectionMarkers(chartId);
+  refreshExportPointModeState(chartId);
+  renderPointSelectionOutput();
+}
+function clearAllPointSelections() {
+  window.__VO_EXPORT_SELECTIONS__ = [];
+  window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = null;
+  window.__VO_ACTIVE_CHART__ = null;
+  window.__VO_EXPORT_SELECTION_SEQUENCE__ = 0;
+  refreshAllExportSelectionMarkers();
+  refreshAllExportPointModeStates();
+  renderPointSelectionOutput();
+}
+function deleteFocusedExportPointSelection() {
+  const target = window.__VO_EXPORT_SELECTIONS__.find((selection) => selection.id === window.__VO_EXPORT_FOCUSED_SELECTION_ID__);
+  if (!target) return;
+  window.__VO_EXPORT_SELECTIONS__ = window.__VO_EXPORT_SELECTIONS__.filter((selection) => selection.id !== target.id);
+  window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = null;
+  refreshExportChartSelectionMarkers(target.chartId);
+  renderPointSelectionOutput();
+}
+function isExportTextEditingTarget(target) {
+  const tag = target?.tagName?.toLowerCase();
+  if (!tag) {
+    return false;
+  }
+  if (target?.isContentEditable) {
+    return true;
+  }
+  if (tag === "textarea" || tag === "select") {
+    return true;
+  }
+  if (tag !== "input") {
+    return false;
+  }
+  const type = String(target.type || "text").toLowerCase();
+  return !["button", "checkbox", "color", "file", "radio", "range", "reset", "submit"].includes(type);
+}
+function handleExportPointSelectionKeydown(event) {
+  if (event.key !== "Delete" && event.key !== "Backspace") return;
+  if (isExportTextEditingTarget(event.target)) return;
+  if (window.__VO_EXPORT_FOCUSED_SELECTION_ID__) {
+    event.preventDefault?.();
+    deleteFocusedExportPointSelection();
+  }
+}
+function renderPointSelectionOutput() {
+  const section = document.getElementById("pointSelectionOutputSection");
+  const output = document.getElementById("pointSelectionOutput");
+  const selections = window.__VO_EXPORT_SELECTIONS__;
+  section.hidden = selections.length === 0;
+  if (!selections.length) {
+    output.innerHTML = "";
+    return;
+  }
+  const chartIds = [...new Set(selections.map((selection) => selection.chartId))];
+  output.innerHTML = chartIds.map((chartId) => {
+    const rows = selections.filter((selection) => selection.chartId === chartId);
+    return '<div class="point-selection-card"><h3>' + escapeHtml(rows[0].chartTitle) + '</h3><table class="point-selection-table"><thead><tr><th>线</th><th>点</th><th>时间戳</th><th>值</th></tr></thead><tbody>' + rows.map((selection) => '<tr><td>' + escapeHtml(selection.traceName) + '</td><td><span class="selection-point-token" style="background:' + selection.color + '">' + escapeHtml(selection.markerText) + '</span></td><td>' + numberText(selection.timestamp) + '</td><td>' + numberText(selection.value) + '</td></tr>').join("") + '</tbody></table></div>';
+  }).join("");
+}
+function numberText(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(3) : escapeHtml(String(value ?? "N/A"));
+}
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
+}
+function cssEscape(value) {
+  if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value);
+  return String(value).replace(/'/g, "\\\\'");
+}
+initExportPage();
 <\/script>
 </body></html>`;
 }
 
 function reportForHtmlExport(report) {
-  const { trajectory_exports: _trajectoryExports, ...htmlReport } = report || {};
+  const isVo = reportEntryMode(report || {}) === "vo";
+  const {
+    trajectory_exports: trajectoryExports,
+    per_pose: _perPose,
+    segment_records: _segmentRecords,
+    ...htmlReport
+  } = report || {};
+  if (trajectoryExports?.rpe_per_frame) {
+    htmlReport.trajectory_exports = { ...htmlReport.trajectory_exports, rpe_per_frame: trajectoryExports.rpe_per_frame };
+  }
+  if (isVo && trajectoryExports?.scale_per_frame) {
+    htmlReport.trajectory_exports = { ...htmlReport.trajectory_exports, scale_per_frame: trajectoryExports.scale_per_frame };
+  }
   return htmlReport;
+}
+
+function exportMetricItems(report) {
+  const entryMode = reportEntryMode(report);
+  const summary = report.summary || {};
+  const ate = report.ate_position_m || {};
+  const vertical = report.ate_vertical_m || {};
+  const rpe = report.rpe_frame_delta?.translation_m || {};
+  const vlocSummary = report.vloc_details?.summary || {};
+  const path = summary.gt_path_length_m || 0;
+  const ateRel = path > 0 && Number.isFinite(ate.rmse) ? (100 * ate.rmse / path) : NaN;
+  const rawRatio = summary.raw_path_scale_ratio_est_over_gt;
+  const breakCount = report.discontinuities?.all_matches?.break_count || 0;
+  const estCoverage = 100 * summary.est_pose_coverage_ratio;
+  const voMetrics = [
+    { label: "ATE RMSE", value: ate.rmse, unit: "m", note: Number.isFinite(ateRel) ? `${formatNumber(ateRel)} % 路程` : "全局位置一致性", status: ateRel > 2 ? "high" : ateRel > 1 ? "warning" : "good" },
+    { label: "RPE RMSE", value: rpe.rmse, unit: "m", note: rpeDeltaLabel(report.rpe_frame_delta), status: Number.isFinite(rpe.rmse) && Number.isFinite(ate.rmse) && rpe.rmse > ate.rmse ? "warning" : "neutral" },
+    { label: "长航程路程", value: summary.gt_path_length_m, unit: "m", note: `${formatValue(summary.duration_s, "s")} / ${summary.matched_poses ?? "N/A"} 帧`, status: "neutral" },
+    { label: "垂直 RMSE", value: vertical.rmse, unit: "m", note: "高度方向误差", status: Number.isFinite(vertical.rmse) && Number.isFinite(ate.rmse) && Math.abs(vertical.rmse) > ate.rmse ? "warning" : "neutral" },
+    { label: "GT 覆盖率", value: 100 * (summary.gt_pose_coverage_ratio ?? summary.coverage_ratio), unit: "%", note: "评估覆盖的 GT 范围", status: "neutral" },
+    { label: "Raw 尺度比", value: rawRatio, unit: "", note: "VO 原始路程 / GT 路程", status: Number.isFinite(rawRatio) && (rawRatio < 0.8 || rawRatio > 1.25) ? "warning" : "neutral" },
+    { label: "对齐尺度", value: report.alignment?.scale, unit: "", note: scaleRangeText(report.alignment || {}) || "全局对齐因子", status: "neutral" },
+    { label: "匹配位姿", value: summary.matched_poses, unit: "", note: `${summary.original_matched_poses ?? "N/A"} 原始匹配`, status: "neutral" },
+    { label: "VO 匹配率", value: estCoverage, unit: "%", note: `${summary.est_poses ?? "N/A"} 个 VO 位姿`, status: estCoverage < 90 ? "warning" : "neutral" },
+    { label: "断点数量", value: breakCount, unit: "", note: report.discontinuities?.selected_segment?.policy || "vo_timestamps", status: breakCount > 0 ? "warning" : "good" },
+    { label: "姿态修正", value: orientationCorrectionLabel(report.orientation_correction || {}), unit: "", note: report.orientation_correction?.auto ? "自动选择" : "手动/默认", status: report.orientation_correction?.selected && report.orientation_correction.selected !== "none" ? "warning" : "neutral" },
+    { label: "耗时", value: summary.duration_s, unit: "s", note: "有效评估窗口", status: "neutral" },
+  ];
+  const vlocMetrics = [
+    { label: "ATE RMSE", value: ate.rmse, unit: "m", note: Number.isFinite(ateRel) ? `${formatNumber(ateRel)} % 路程` : "整体位置一致性", status: ateRel > 2 ? "high" : ateRel > 1 ? "warning" : "good" },
+    { label: "长航程路程", value: summary.gt_path_length_m, unit: "m", note: `${formatValue(summary.duration_s, "s")} / ${summary.matched_poses ?? "N/A"} 帧`, status: "neutral" },
+    { label: "垂直 RMSE", value: vertical.rmse, unit: "m", note: "高度方向误差", status: Number.isFinite(vertical.rmse) && Number.isFinite(ate.rmse) && Math.abs(vertical.rmse) > ate.rmse ? "warning" : "neutral" },
+    { label: "GT 覆盖率", value: 100 * (summary.gt_pose_coverage_ratio ?? summary.coverage_ratio), unit: "%", note: "评估覆盖的 GT 范围", status: "neutral" },
+    { label: "匹配位姿", value: summary.matched_poses, unit: "", note: `${summary.original_matched_poses ?? "N/A"} 原始匹配`, status: "neutral" },
+    { label: "VLOC 匹配率", value: estCoverage, unit: "%", note: `${summary.est_poses ?? "N/A"} 个 VLOC 位姿`, status: estCoverage < 90 ? "warning" : "neutral" },
+    { label: "断点数量", value: breakCount, unit: "", note: report.discontinuities?.selected_segment?.policy || "vo_timestamps", status: breakCount > 0 ? "warning" : "good" },
+    { label: "mean_error_pos_xy", value: vlocSummary.mean_error_pos_xy, unit: "m", note: "逐帧水平位置误差范数的平均值", status: "neutral" },
+    { label: "mean_error_pos_z", value: vlocSummary.mean_error_pos_z, unit: "m", note: "逐帧垂直位置误差绝对值的平均值", status: "neutral" },
+    { label: "mean_error_euler", value: vlocSummary.mean_error_euler, unit: "deg", note: "逐帧欧拉角误差范数的平均值", status: "neutral" },
+    { label: "max_error_pos_xy", value: vlocSummary.max_error_pos_xy, unit: "m", note: "逐帧水平位置误差范数的最大值", status: "warning" },
+    { label: "max_error_pos_z", value: vlocSummary.max_error_pos_z, unit: "m", note: "逐帧垂直位置误差绝对值的最大值", status: "warning" },
+    { label: "max_error_euler", value: vlocSummary.max_error_euler, unit: "deg", note: "逐帧欧拉角误差范数的最大值", status: "warning" },
+    { label: "耗时", value: summary.duration_s, unit: "s", note: "有效评估窗口", status: "neutral" },
+  ];
+  return entryMode === "vloc" ? vlocMetrics : voMetrics;
+}
+
+function buildVisualizationExportFigureSpecs(report) {
+  return reportEntryMode(report) === "vloc"
+    ? buildVlocVisualizationExportFigureSpecs(report)
+    : buildVoVisualizationExportFigureSpecs(report);
+}
+
+function exportFigureSpec(id, label, data, chartLayout, pickable = true) {
+  return { id, label, data, layout: chartLayout, pickable };
+}
+
+function buildVlocVisualizationExportFigureSpecs(report) {
+  const details = report.vloc_details || {};
+  const rows = details.comparison || [];
+  const navStatus = details.nav_status || [];
+  const vlocStatus = details.vloc_status || [];
+  const figures = [];
+  const [navN3d, navE3d, navD3d] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "nav_d_m"], "visual_segment_id");
+  const [vlocN3d, vlocE3d, vlocD3d] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "vloc_d_m"], "visual_segment_id");
+  figures.push(exportFigureSpec("trajectory3d", "3D 轨迹", [
+    { x: navN3d, y: navE3d, z: navD3d, mode: "lines", type: "scatter3d", name: "nav" },
+    { x: vlocN3d, y: vlocE3d, z: vlocD3d, mode: "lines", type: "scatter3d", name: "vloc" },
+    ...segmentEndpointTraces3d(rows, ["vloc_n_m", "vloc_e_m", "vloc_d_m"], "vloc", {
+      startColor: "#9333ea",
+      endColor: "#ef4444",
+      startSymbol: "diamond",
+      endSymbol: "x",
+      markerSize: 5,
+      markerLineWidth: 1,
+      textSize: 10,
+    }),
+  ], layout("3D 轨迹", { height: 640, scene: { xaxis: { title: "north m" }, yaxis: { title: "east m" }, zaxis: { title: "down m" } } }), false));
+
+  const [navN, navE, navTime] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "timestamp"]);
+  const [vlocN, vlocE, vlocTime] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "timestamp"]);
+  figures.push(exportFigureSpec("trajectoryXY", "俯视 NE 轨迹", [
+    { x: navN, y: navE, customdata: navTime, mode: "lines", type: "scatter", name: "nav" },
+    { x: vlocN, y: vlocE, customdata: vlocTime, mode: "lines", type: "scatter", name: "vloc" },
+  ], layout("俯视 NE 轨迹", { height: 560, xaxis: { title: "north m" }, yaxis: { title: "east m", scaleanchor: "x" } })));
+
+  figures.push(exportMultiFieldTimeFigure("errorDistance", "误差随路程变化", rows, [
+    { field: "position_error_3d_m", name: "3D position error" },
+    { field: "horizontal_position_error_m", name: "horizontal error" },
+    { field: "vertical_position_error_abs_m", name: "vertical abs error" },
+  ], { xField: "distance_m", xTitle: "distance m", yTitle: "error m" }));
+  figures.push(exportMultiFieldTimeFigure("heightComparison", "对地高随时间变化", rows, [
+    { field: "nav_height_m", name: "nav height" },
+    { field: "vloc_height_m", name: "vloc height" },
+  ], { yTitle: "height m" }));
+  figures.push(exportMultiFieldTimeFigure("navStatusModes", "导航状态信息", navStatus, [
+    { field: "flight_mode", name: "flight_mode" },
+    { field: "navi_mode", name: "navi_mode" },
+    { field: "rtk_yaw", name: "rtk_yaw" },
+    { field: "rtk_alti", name: "rtk_alti" },
+  ], { yTitle: "state" }));
+  figures.push(exportSingleCompositeFigure("navVelocity", "导航速度信息", navStatus, {
+    title: "导航速度信息",
+    rows: [
+      { label: "vx", field: "vx", unit: "m/s" },
+      { label: "vy", field: "vy", unit: "m/s" },
+      { label: "vz", field: "vz", unit: "m/s" },
+      { label: "velocity_norm", field: "velocity_norm", unit: "m/s" },
+    ],
+  }));
+  figures.push(exportMultiFieldTimeFigure("navResetCounts", "导航 reset 计数", navStatus, [
+    { field: "position_reset_count", name: "position_reset_count" },
+    { field: "altitude_reset_count", name: "altitude_reset_count" },
+    { field: "heading_reset_count", name: "heading_reset_count" },
+  ], { yTitle: "count" }));
+  figures.push(exportSingleCompositeFigure("vlocStatus", "VLOC 状态信息", vlocStatus, {
+    title: "VLOC 状态信息",
+    rows: [
+      { label: "vloc_mode", field: "vloc_mode", unit: "value" },
+      { label: "num_inliers", field: "num_inliers", unit: "value" },
+      { label: "reset_count", field: "reset_count", unit: "value" },
+    ],
+  }));
+  figures.push(exportPairCompositeFigure("positionCompareComposite", "NED 随时间变化", rows, {
+    title: "NED 随时间变化",
+    leftName: "nav",
+    rightName: "vloc",
+    rows: [
+      { label: "N", left: "nav_n_m", right: "vloc_n_m", unit: "m" },
+      { label: "E", left: "nav_e_m", right: "vloc_e_m", unit: "m" },
+      { label: "D", left: "nav_d_m", right: "vloc_d_m", unit: "m" },
+    ],
+  }));
+  figures.push(exportPairCompositeFigure("attitudeCompareComposite", "YPR 随时间变化", rows, {
+    title: "YPR 随时间变化",
+    leftName: "nav",
+    rightName: "vloc",
+    rows: [
+      { label: "Yaw", left: "nav_yaw_deg", right: "vloc_yaw_deg", unit: "deg", unwrap: true },
+      { label: "Pitch", left: "nav_pitch_deg", right: "vloc_pitch_deg", unit: "deg", unwrap: true },
+      { label: "Roll", left: "nav_roll_deg", right: "vloc_roll_deg", unit: "deg", unwrap: true },
+    ],
+  }));
+  figures.push(exportSingleCompositeFigure("positionErrorComposite", "NED 误差随时间变化", rows, {
+    title: "NED 误差随时间变化",
+    rows: [
+      { label: "N 误差", field: "position_error_n_m", unit: "m" },
+      { label: "E 误差", field: "position_error_e_m", unit: "m" },
+      { label: "D 误差", field: "position_error_d_m", unit: "m" },
+    ],
+  }));
+  figures.push(exportSingleCompositeFigure("attitudeErrorComposite", "YPR 误差随时间变化", rows, {
+    title: "YPR 误差随时间变化",
+    rows: [
+      { label: "Yaw 误差", field: "attitude_error_yaw_deg", unit: "deg", unwrap: true },
+      { label: "Pitch 误差", field: "attitude_error_pitch_deg", unit: "deg", unwrap: true },
+      { label: "Roll 误差", field: "attitude_error_roll_deg", unit: "deg", unwrap: true },
+    ],
+  }));
+  return figures;
+}
+
+function buildVoVisualizationExportFigureSpecs(report) {
+  const details = report.vo_details || {};
+  const comparison = details.comparison || [];
+  const rows = comparison.length ? comparison : (report.per_pose || []);
+  const isComparisonRows = comparison.length > 0;
+  const navStatus = details.nav_status || [];
+  const voStatus = details.vo_status || [];
+  const rpeRows = report.trajectory_exports?.rpe_per_frame || [];
+  const scaleRows = report.trajectory_exports?.scale_per_frame || [];
+  const navPositionFields = isComparisonRows ? ["nav_x_m", "nav_y_m", "nav_z_m"] : ["gt_x_m", "gt_y_m", "gt_z_m"];
+  const voPositionFields = isComparisonRows ? ["vo_x_aligned_m", "vo_y_aligned_m", "vo_z_aligned_m"] : ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"];
+  const positionErrorFields = isComparisonRows ? ["position_error_x_m", "position_error_y_m", "position_error_z_m"] : ["x_error_m", "y_error_m", "z_error_m"];
+  const positionErrorNormField = isComparisonRows ? "position_error_3d_m" : "error_m";
+  const horizontalErrorField = isComparisonRows ? "horizontal_position_error_m" : "horizontal_error_m";
+  const figures = [];
+  const [gtX3d, gtY3d, gtZ3d] = segmentedValues(rows, navPositionFields, "visual_segment_id");
+  const [estX3d, estY3d, estZ3d] = segmentedValues(rows, voPositionFields, "visual_segment_id");
+  figures.push(exportFigureSpec("trajectory3d", "3D 轨迹", [
+    { x: gtX3d, y: gtY3d, z: gtZ3d, mode: "lines", type: "scatter3d", name: "Ground truth" },
+    { x: estX3d, y: estY3d, z: estZ3d, mode: "lines", type: "scatter3d", name: "VO aligned" },
+    ...segmentEndpointTraces3d(rows, voPositionFields, "vo", {
+      startColor: "#9333ea",
+      endColor: "#ef4444",
+      startSymbol: "diamond",
+      endSymbol: "x",
+      markerSize: 5,
+      markerLineWidth: 1,
+      textSize: 10,
+    }),
+  ], layout("3D 轨迹", { height: 640, scene: { xaxis: { title: "x m" }, yaxis: { title: "y m" }, zaxis: { title: "z m" } } }), false));
+  const [dist3d, err3d, errT] = segmentedValues(rows, ["distance_m", positionErrorNormField, "timestamp"]);
+  const [distH, errH, errHT] = segmentedValues(rows, ["distance_m", horizontalErrorField, "timestamp"]);
+  figures.push(exportFigureSpec("errorDistance", "ATE 绝对位姿误差", [
+    { x: dist3d, y: err3d, customdata: errT, mode: "lines", type: "scatter", name: "3D error" },
+    { x: distH, y: errH, customdata: errHT, mode: "lines", type: "scatter", name: "horizontal" },
+  ], layout("ATE 绝对位姿误差", { height: 560, xaxis: { title: "distance m" }, yaxis: { title: "error m" } })));
+  figures.push(exportMultiFieldTimeFigure("navStatusModes", "导航状态信息", navStatus, [
+    { field: "flight_mode", name: "flight_mode" },
+    { field: "navi_mode", name: "navi_mode" },
+    { field: "rtk_yaw", name: "rtk_yaw" },
+    { field: "rtk_alti", name: "rtk_alti" },
+  ], { yTitle: "state" }));
+  figures.push(exportSingleCompositeFigure("navVelocity", "导航速度信息", navStatus, {
+    title: "导航速度信息",
+    rows: [
+      { label: "vx", field: "vx", unit: "m/s" },
+      { label: "vy", field: "vy", unit: "m/s" },
+      { label: "vz", field: "vz", unit: "m/s" },
+      { label: "velocity_norm", field: "velocity_norm", unit: "m/s" },
+    ],
+  }));
+  figures.push(exportMultiFieldTimeFigure("navResetCounts", "导航 reset 计数", navStatus, [
+    { field: "position_reset_count", name: "position_reset_count" },
+    { field: "altitude_reset_count", name: "altitude_reset_count" },
+    { field: "heading_reset_count", name: "heading_reset_count" },
+  ], { yTitle: "count" }));
+  figures.push(exportSingleCompositeFigure("voStatus", "VO 状态信息", voStatus, {
+    title: "VO 状态信息",
+    rows: [
+      { label: "num_inliers", field: "num_inliers", unit: "value" },
+      { label: "is_keyframe", field: "is_keyframe", unit: "value" },
+      { label: "time_cost", field: "time_cost", unit: "ms" },
+      { label: "reset_count", field: "reset_count", unit: "value" },
+    ],
+  }));
+  figures.push(exportPairCompositeFigure("positionCompareComposite", "位置随时间变化", rows, {
+    title: "位置随时间变化",
+    leftName: "Ground truth",
+    rightName: "VO aligned",
+    rows: [
+      { label: "X", left: navPositionFields[0], right: voPositionFields[0], unit: "m" },
+      { label: "Y", left: navPositionFields[1], right: voPositionFields[1], unit: "m" },
+      { label: "Z", left: navPositionFields[2], right: voPositionFields[2], unit: "m" },
+    ],
+  }));
+  figures.push(exportPairCompositeFigure("attitudeCompareComposite", "姿态随时间变化", rows, {
+    title: "姿态随时间变化",
+    leftName: "Ground truth",
+    rightName: "VO aligned",
+    rows: [
+      { label: "Yaw", left: isComparisonRows ? "nav_yaw_deg" : "gt_yaw_deg", right: isComparisonRows ? "vo_yaw_aligned_deg" : "est_yaw_aligned_deg", unit: "deg", unwrap: true },
+      { label: "Pitch", left: isComparisonRows ? "nav_pitch_deg" : "gt_pitch_deg", right: isComparisonRows ? "vo_pitch_aligned_deg" : "est_pitch_aligned_deg", unit: "deg", unwrap: true },
+      { label: "Roll", left: isComparisonRows ? "nav_roll_deg" : "gt_roll_deg", right: isComparisonRows ? "vo_roll_aligned_deg" : "est_roll_aligned_deg", unit: "deg", unwrap: true },
+    ],
+  }));
+  figures.push(exportSingleCompositeFigure("positionErrorComposite", "位置误差随时间变化", rows, {
+    title: "位置误差随时间变化",
+    rows: [
+      { label: "X 误差", field: positionErrorFields[0], unit: "m" },
+      { label: "Y 误差", field: positionErrorFields[1], unit: "m" },
+      { label: "Z 误差", field: positionErrorFields[2], unit: "m" },
+    ],
+  }));
+  figures.push(exportSingleCompositeFigure("attitudeErrorComposite", "姿态误差随时间变化", rows, {
+    title: "姿态误差随时间变化",
+    rows: [
+      { label: "Yaw 误差", field: isComparisonRows ? "attitude_error_yaw_deg" : "yaw_error_signed_deg", unit: "deg", unwrap: true },
+      { label: "Pitch 误差", field: isComparisonRows ? "attitude_error_pitch_deg" : "pitch_error_signed_deg", unit: "deg", unwrap: true },
+      { label: "Roll 误差", field: isComparisonRows ? "attitude_error_roll_deg" : "roll_error_signed_deg", unit: "deg", unwrap: true },
+    ],
+  }));
+  figures.push(exportRpeTimeFigure("rpeTranslationTime", "RPE 平移误差随时间变化", rpeRows, {
+    field: "rpe_translation_m",
+    unit: "m",
+    name: "rpe_translation_m",
+  }));
+  figures.push(exportRpeTimeFigure("rpeRotationTime", "RPE 旋转误差随时间变化", rpeRows, {
+    field: "rpe_rotation_deg",
+    unit: "deg",
+    name: "rpe_rotation_deg",
+  }));
+  figures.push(exportScaleTimeFigure("scaleFrameTime", "局部 Sim3 尺度随时间变化", scaleRows));
+  return figures;
+}
+
+function exportMultiFieldTimeFigure(id, title, rows, specs, options = {}) {
+  const xField = options.xField || "timestamp";
+  const traces = specs.map((spec) => {
+    const [xValues, yValues, timestamps] = segmentedValues(rows, [xField, spec.field, "timestamp"]);
+    const displayY = spec.unwrap ? unwrapDegrees(yValues) : yValues;
+    return { x: xValues, y: displayY, customdata: timestamps, mode: "lines", type: "scatter", name: spec.name || spec.field };
+  });
+  return exportFigureSpec(id, title, traces, layout(title, {
+    height: 560,
+    xaxis: { title: options.xTitle || "timestamp s" },
+    yaxis: { title: options.yTitle || "" },
+  }));
+}
+
+function exportRpeTimeFigure(id, title, rows, spec) {
+  const cleanRows = rows.filter((row) => row.rpe_available !== false && Number.isFinite(Number(row[spec.field])));
+  const [timestamps, values] = segmentedValues(cleanRows, ["timestamp", spec.field]);
+  return exportFigureSpec(id, title, [
+    { x: timestamps, y: values, customdata: timestamps, mode: "lines+markers", type: "scatter", name: spec.name },
+  ], layout(title, { height: 560, xaxis: { title: "timestamp s" }, yaxis: { title: spec.unit } }));
+}
+
+function exportScaleTimeFigure(id, title, rows) {
+  const cleanRows = rows.filter((row) => row.scale_available !== false && Number.isFinite(Number(row.local_sim3_scale)));
+  const [timestamps, values] = segmentedValues(cleanRows, ["timestamp", "local_sim3_scale"]);
+  return exportFigureSpec(id, title, [
+    { x: timestamps, y: values, customdata: timestamps, mode: "lines+markers", type: "scatter", name: "local_sim3_scale" },
+  ], layout(title, { height: 560, xaxis: { title: "timestamp s" }, yaxis: { title: "scale" } }));
+}
+
+function exportPairCompositeFigure(id, label, rows, spec) {
+  const traces = [];
+  const axisLayout = {};
+  const rowCount = spec.rows.length;
+  spec.rows.forEach((row, index) => {
+    const [leftColor, rightColor] = compositePairColors(index);
+    const axisId = index === 0 ? "" : String(index + 1);
+    const xaxisName = `xaxis${axisId}`;
+    const yaxisName = `yaxis${axisId}`;
+    const traceXAxis = `x${axisId}`;
+    const traceYAxis = `y${axisId}`;
+    const top = 1 - (index / rowCount);
+    const bottom = 1 - ((index + 1) / rowCount);
+    axisLayout[xaxisName] = {
+      title: index === rowCount - 1 ? "timestamp s" : "",
+      domain: [0, 1],
+      anchor: traceYAxis,
+      matches: index === 0 ? undefined : "x",
+      showticklabels: index === rowCount - 1,
+      gridcolor: "#e8eef7",
+      zerolinecolor: "#d9e1ec",
+      showspikes: false,
+    };
+    axisLayout[yaxisName] = {
+      title: row.unit,
+      domain: [bottom + 0.02, top - 0.02],
+      anchor: traceXAxis,
+      gridcolor: "#e8eef7",
+      zerolinecolor: "#d9e1ec",
+    };
+    const [tLeft, leftValues] = segmentedValues(rows, ["timestamp", row.left]);
+    const [tRight, rightValues] = segmentedValues(rows, ["timestamp", row.right]);
+    traces.push(
+      { x: tLeft, y: row.unwrap ? unwrapDegrees(leftValues) : leftValues, customdata: tLeft, mode: "lines", type: "scatter", name: `${row.label} ${spec.leftName}`, legendgroup: `${row.label}-${spec.leftName}`, showlegend: true, hoverinfo: "none", line: { color: leftColor }, xaxis: traceXAxis, yaxis: traceYAxis },
+      { x: tRight, y: row.unwrap ? unwrapDegrees(rightValues) : rightValues, customdata: tRight, mode: "lines", type: "scatter", name: `${row.label} ${spec.rightName}`, legendgroup: `${row.label}-${spec.rightName}`, showlegend: true, hoverinfo: "none", line: { color: rightColor }, xaxis: traceXAxis, yaxis: traceYAxis },
+    );
+  });
+  return exportFigureSpec(id, label, traces, layout(spec.title, {
+    height: 980,
+    hovermode: "x unified",
+    hoversubplots: "axis",
+    hoverdistance: 20,
+    spikedistance: -1,
+    annotations: spec.rows.map((row, index) => ({
+      text: row.label,
+      x: 0,
+      xref: "paper",
+      xanchor: "left",
+      y: 1 - (index / rowCount) - 0.015,
+      yref: "paper",
+      yanchor: "bottom",
+      showarrow: false,
+      font: { size: 14, color: "#0f172a" },
+    })),
+    ...axisLayout,
+  }));
+}
+
+function exportSingleCompositeFigure(id, label, rows, spec) {
+  const traces = [];
+  const axisLayout = {};
+  const rowCount = spec.rows.length;
+  spec.rows.forEach((row, index) => {
+    const axisId = index === 0 ? "" : String(index + 1);
+    const xaxisName = `xaxis${axisId}`;
+    const yaxisName = `yaxis${axisId}`;
+    const traceXAxis = `x${axisId}`;
+    const traceYAxis = `y${axisId}`;
+    const top = 1 - (index / rowCount);
+    const bottom = 1 - ((index + 1) / rowCount);
+    axisLayout[xaxisName] = {
+      title: index === rowCount - 1 ? "timestamp s" : "",
+      domain: [0, 1],
+      anchor: traceYAxis,
+      matches: index === 0 ? undefined : "x",
+      showticklabels: index === rowCount - 1,
+      gridcolor: "#e8eef7",
+      zerolinecolor: "#d9e1ec",
+      showspikes: false,
+    };
+    axisLayout[yaxisName] = {
+      title: row.unit,
+      domain: [bottom + 0.02, top - 0.02],
+      anchor: traceXAxis,
+      gridcolor: "#e8eef7",
+      zerolinecolor: "#d9e1ec",
+    };
+    const [timestamps, values] = segmentedValues(rows, ["timestamp", row.field]);
+    traces.push({
+      x: timestamps,
+      y: row.unwrap ? unwrapDegrees(values) : values,
+      customdata: timestamps,
+      mode: "lines",
+      type: "scatter",
+      name: row.label,
+      legendgroup: row.label,
+      showlegend: false,
+      hoverinfo: "none",
+      xaxis: traceXAxis,
+      yaxis: traceYAxis,
+    });
+  });
+  return exportFigureSpec(id, label, traces, layout(spec.title, {
+    height: rowCount === 4 ? 1120 : 980,
+    hovermode: "x unified",
+    hoversubplots: "axis",
+    hoverdistance: 20,
+    spikedistance: -1,
+    annotations: spec.rows.map((row, index) => ({
+      text: row.label,
+      x: 0,
+      xref: "paper",
+      xanchor: "left",
+      y: 1 - (index / rowCount) - 0.015,
+      yref: "paper",
+      yanchor: "bottom",
+      showarrow: false,
+      font: { size: 14, color: "#0f172a" },
+    })),
+    ...axisLayout,
+  }));
 }
 
 function referenceLabel(report) {
@@ -1477,142 +3975,6 @@ if (document.getElementById("${id}")) {
 
 function safeJson(value) {
   return JSON.stringify(value).replaceAll("</", "<\\/");
-}
-
-function reportSubtitle(report) {
-  const inputs = report.inputs || {};
-  const gt = inputs.ground_truth?.name || "Ground truth";
-  const est = inputs.estimate?.name || "VO";
-  const summary = report.summary || {};
-  return `${gt} vs ${est}，匹配 ${summary.matched_poses ?? "N/A"} 帧，评估路程 ${formatValue(summary.gt_path_length_m, "m")}`;
-}
-
-function reportOverallStatus(findings) {
-  if (findings.some((item) => item.severity === "high")) {
-    return { label: "存在高风险项", className: "high" };
-  }
-  if (findings.some((item) => item.severity === "warning")) {
-    return { label: "有需要关注的指标", className: "warning" };
-  }
-  return { label: "整体可用", className: "good" };
-}
-
-function buildReportMetricCards(report) {
-  const summary = report.summary || {};
-  const ate = report.ate_position_m || {};
-  const rpe = report.rpe_frame_delta?.translation_m || {};
-  const orient = report.ate_orientation_deg || {};
-  const yaw = report.ate_yaw_deg || {};
-  const alignment = report.alignment || {};
-  const breaks = report.discontinuities?.all_matches?.break_count;
-  return [
-    { label: "ATE RMSE", value: formatValue(ate.rmse, "m"), note: `p95 ${formatValue(ate.p95, "m")}` },
-    { label: "RPE 平移 RMSE", value: formatValue(rpe.rmse, "m"), note: `p95 ${formatValue(rpe.p95, "m")}` },
-    { label: "终点漂移", value: formatValue(summary.endpoint_error_m, "m"), note: `${formatNumber(summary.endpoint_error_percent_of_path)} % 路程` },
-    { label: "姿态 RMSE", value: formatValue(orient.rmse, "deg"), note: `yaw ${formatValue(yaw.rmse, "deg")}` },
-    { label: "对齐尺度", value: formatNumber(alignment.scale), note: scaleRangeText(alignment) },
-    { label: "断点数量", value: breaks ?? "N/A", note: `策略 ${report.discontinuities?.selected_segment?.policy || "N/A"}` },
-    { label: "VO 匹配率", value: formatValue(100 * summary.est_pose_coverage_ratio, "%"), note: `${summary.matched_poses ?? "N/A"} / ${summary.est_poses ?? "N/A"} 帧` },
-    { label: "GT 覆盖率", value: formatValue(100 * (summary.gt_time_coverage_ratio ?? summary.gt_pose_coverage_ratio), "%"), note: "仅表示评估覆盖的 GT 段" },
-  ];
-}
-
-function reportMetricCardHtml(item) {
-  return `<div class="card"><div class="metric-label">${escapeHtml(item.label)}</div><div class="metric-value">${escapeHtml(item.value)}</div><div class="metric-note">${escapeHtml(item.note || "")}</div></div>`;
-}
-
-function buildReportFindings(report) {
-  const findings = [];
-  const summary = report.summary || {};
-  const ate = report.ate_position_m || {};
-  const rpe = report.rpe_frame_delta?.translation_m || {};
-  const orient = report.ate_orientation_deg || {};
-  const yaw = report.ate_yaw_deg || {};
-  const alignment = report.alignment || {};
-  const association = report.association || {};
-  const disc = report.discontinuities?.all_matches || {};
-  const selected = report.discontinuities?.selected_segment || {};
-  const orientationInfo = report.orientation_correction || {};
-
-  const add = (severity, title, evidence, advice) => findings.push({ severity, title, evidence, advice });
-  const path = summary.gt_path_length_m;
-  const ateRel = path > 0 ? (100 * ate.rmse / path) : null;
-  if (Number.isFinite(ateRel) && ateRel > 2) {
-    add("high", "整体位置误差偏大", `ATE RMSE ${formatValue(ate.rmse, "m")}，约 ${formatNumber(ateRel)} % 路程。`, "优先检查时间同步、坐标轴方向、尺度来源和 Sim3/SE3 选择；再看轨迹图中是否存在局部大偏移。");
-  } else if (Number.isFinite(ateRel) && ateRel > 1) {
-    add("warning", "整体位置误差需要关注", `ATE RMSE ${formatValue(ate.rmse, "m")}，约 ${formatNumber(ateRel)} % 路程。`, "长航程无人机建议继续看 p95/max 误差和终点漂移，避免均值掩盖局部异常。");
-  }
-
-  if ((disc.break_count || 0) > 0) {
-    const largestGap = Math.max(...(disc.breaks || []).map((item) => item.time_gap_s || 0), 0);
-    add("high", "检测到 VO 重置或大跳变", `断点 ${disc.break_count} 个，最大时间间隔 ${formatValue(largestGap, "s")}；当前评估策略 ${selected.policy || "N/A"}。`, "如果目标是连续长航程定位，需要减少跟踪丢失，加入重定位/地图复用；评估时继续按连续段看，不要把跨断点结果当成单条连续轨迹。");
-  }
-
-  const scaleRange = scaleRangePercent(alignment);
-  if (Number.isFinite(scaleRange) && scaleRange > 15) {
-    add("high", "分段尺度变化明显", `Sim3 scale 范围 ${formatNumber(alignment.scale_min)} 到 ${formatNumber(alignment.scale_max)}，相对均值变化约 ${formatNumber(scaleRange)} %。`, "无尺度 VO 不能只靠一个全局尺度解释全程；真实无人机导航需要双目/深度/高度计/GPS/IMU 融合提供尺度。");
-  } else if (Number.isFinite(scaleRange) && scaleRange > 8) {
-    add("warning", "尺度稳定性需要关注", `Sim3 scale 相对均值变化约 ${formatNumber(scaleRange)} %。`, "检查不同连续段的尺度是否由 reset、特征退化或高度变化引起。");
-  }
-
-  const rawRatio = summary.raw_path_scale_ratio_est_over_gt;
-  if (Number.isFinite(rawRatio) && (rawRatio < 0.8 || rawRatio > 1.25)) {
-    add("info", "VO 输出是无尺度或尺度不一致数据", `Raw VO/GT 路程比 ${formatNumber(rawRatio)}。`, "使用 Sim3 评估轨迹形状是合理的；如果要真实飞控定位，需要外部尺度源，不能直接使用原始 VO 单位。");
-  }
-
-  if (orientationInfo.auto && orientationInfo.selected && orientationInfo.selected !== "none") {
-    add("info", "自动姿态修正已生效", `自动选择 ${orientationInfo.selected}，姿态 RMSE ${formatValue(orient.rmse, "deg")}，yaw RMSE ${formatValue(yaw.rmse, "deg")}。`, "这说明 VO 和 GT 姿态坐标系/外参不完全一致；建议在 VO 输出端明确 camera-to-body 或 ENU/NED 约定。");
-  }
-  if (Number.isFinite(orient.rmse) && orient.rmse > 10) {
-    add("high", "姿态误差偏大", `姿态 RMSE ${formatValue(orient.rmse, "deg")}。`, "检查 yaw/pitch/roll 顺序、角度/弧度、旋转取逆、相机系到机体系外参和 ENU/NED 转换。");
-  } else if (Number.isFinite(orient.rmse) && orient.rmse > 5) {
-    add("warning", "姿态误差略高", `姿态 RMSE ${formatValue(orient.rmse, "deg")}，yaw RMSE ${formatValue(yaw.rmse, "deg")}。`, "如果姿态要用于控制或相机指向，继续校准外参和欧拉角约定。");
-  }
-
-  const seg50 = findSegment(report, 50);
-  const segLong = findSegment(report, 1000) || findSegment(report, 500);
-  const seg50Mean = seg50?.translation_error_percent?.mean;
-  const segLongMean = segLong?.translation_error_percent?.mean;
-  if (Number.isFinite(seg50Mean) && seg50Mean > 10) {
-    add("high", "短距离局部漂移偏大", `50m 子轨迹平均误差 ${formatValue(seg50Mean, "%")}。`, "优先调特征跟踪、RANSAC、关键帧策略和图像质量；短段差通常说明帧间估计不稳定。");
-  } else if (Number.isFinite(seg50Mean) && seg50Mean > 5) {
-    add("warning", "短距离局部漂移需要关注", `50m 子轨迹平均误差 ${formatValue(seg50Mean, "%")}。`, "检查高速、弱纹理、运动模糊区间的误差分箱。");
-  }
-  if (Number.isFinite(segLongMean) && segLongMean > 5) {
-    add("high", "长距离累计漂移偏大", `${segLong.length_m}m 子轨迹平均误差 ${formatValue(segLongMean, "%")}。`, "优化后端约束、闭环/重定位和尺度融合；长段差说明累计漂移无法满足长航程要求。");
-  } else if (Number.isFinite(segLongMean) && segLongMean > 2) {
-    add("warning", "长距离累计漂移需要关注", `${segLong.length_m}m 子轨迹平均误差 ${formatValue(segLongMean, "%")}。`, "对物流无人机建议同时看 2000m/5000m 段和终点漂移，确认长航程稳定性。");
-  }
-
-  if (report.divergence?.diverged) {
-    add("warning", "发散阈值被触发", `首次触发 distance=${formatValue(report.divergence.first_divergence_distance_m, "m")}，error=${formatValue(report.divergence.first_divergence_error_m, "m")}。`, "如果首帧附近触发，可能是阈值过严或对齐后起点仍有偏差；建议结合 ATE 曲线判断是否真实发散。");
-  }
-
-  if ((association.dropped_est_outside_gt_range || 0) > 0 || (association.dropped_est_large_gt_gap || 0) > 0) {
-    add("warning", "部分 VO 帧未纳入评估", `超出 GT 或插值间隔过大丢弃 ${association.dropped_est_outside_gt_range || 0} + ${association.dropped_est_large_gt_gap || 0} 帧。`, "检查 GT/VO 时间戳单位、固定偏移和最大插值间隔设置。");
-  }
-  if (summary.est_pose_coverage_ratio < 0.95) {
-    add("warning", "VO 匹配率偏低", `VO 匹配率 ${formatValue(100 * summary.est_pose_coverage_ratio, "%")}。`, "优先检查时间同步方式、时间偏移和 GT 时间覆盖范围。");
-  }
-
-  if (!findings.some((item) => item.severity === "high" || item.severity === "warning")) {
-    add("good", "主要误差指标未触发严重告警", "ATE、RPE、子轨迹误差和姿态误差在当前阈值下基本可读。", "继续结合轨迹图、速度分箱和任务容差做最终判断。");
-  }
-  return findings;
-}
-
-function reportFindingHtml(item) {
-  return `<div class="finding ${escapeHtml(item.severity)}"><div class="severity">${escapeHtml(item.severity)}</div><h3>${escapeHtml(item.title)}</h3><p class="evidence">${escapeHtml(item.evidence)}</p><p class="advice">${escapeHtml(item.advice)}</p></div>`;
-}
-
-function buildSegmentSummaryRows(report) {
-  return (report.segment_errors || []).map((row) => ({
-    length: formatNumber(row.length_m),
-    count: row.count ?? "",
-    mean: formatNumber(row.translation_error_percent?.mean),
-    p95: formatNumber(row.translation_error_percent?.p95),
-    scaleP95: formatNumber(row.scale_drift_percent?.p95),
-  }));
 }
 
 function buildConfigRows(report) {
@@ -2352,7 +4714,7 @@ function buildTrajectoryWorkbook(sheets) {
     "rpe_per_frame",
     "scale_per_frame",
   ];
-  const entries = orderedNames.map((name) => ({
+  const entries = orderedNames.filter((name) => Object.prototype.hasOwnProperty.call(sheets || {}, name)).map((name) => ({
     name,
     rows: Array.isArray(sheets?.[name]) ? sheets[name] : [],
   }));

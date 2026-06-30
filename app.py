@@ -2,7 +2,7 @@
 
 这个文件只负责交互和展示：
 1. 侧边栏收集评估配置。
-2. 上传 GT/VO 文件并交给 vo_eval.evaluator 解析和计算。
+2. 按固定目录契约读取 data_dir / log_dir。
 3. 把 report 中的指标映射到页面指标卡、Plotly 图表和下载文件。
 
 核心计算不在这里，核心指标都由 vo_eval/evaluator.py 产生。
@@ -19,43 +19,14 @@ from typing import Any
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 import vo_eval.evaluator as vo_evaluator
 
 
-GT_FORMAT_OPTIONS = {
-    "自动识别": "auto",
-    "SF: gt(ts1 ts2 x y z ypr) / vo(ts tx ty tz ypr)": "sf",
-    "TUM: timestamp tx ty tz qx qy qz qw": "tum",
-    "KITTI: 3x4 pose matrix": "kitti",
-    "CSV/TSV 表格": "csv",
-    "XYZ: [t] x y z": "xyz",
-}
-
-EST_FORMAT_OPTIONS = {
-    **GT_FORMAT_OPTIONS,
-    "VLOC: ts status inliers reset tx ty tz ypr lat lon alt": "vloc",
-}
-
-ALIGNMENT_OPTIONS = {
-    "SE3 刚体对齐（双目/VIO/尺度已知推荐）": "se3",
-    "Sim3 相似变换（单目 VO/尺度未知）": "sim3",
-    "首帧对齐（看漂移随距离增长）": "first_pose",
-    "不对齐": "none",
-}
-
-ORIENTATION_CORRECTION_OPTIONS = {
-    "自动选择最优姿态修正（推荐）": "auto",
-    "不修正": "none",
-    "忽略姿态，只评估位置": "ignore",
-    "取逆 R^T": "inverse",
-    "右乘 Rz(180) camera/body 外参": "rz180_right",
-    "左乘 Rz(180)": "rz180_left",
-    "右乘 Rx(180)": "rx180_right",
-    "右乘 Ry(180)": "ry180_right",
-    "ENU/NED 左乘": "enu_ned_left",
-    "ENU/NED 右乘": "enu_ned_right",
-    "ENU/NED 两侧变换": "enu_ned_both",
+EVALUATION_ENTRY_OPTIONS = {
+    "VLOC 评估": "vloc",
+    "VO 评估": "vo",
 }
 
 SEGMENT_POLICY_OPTIONS = {
@@ -64,78 +35,104 @@ SEGMENT_POLICY_OPTIONS = {
     "只评估最长连续段": "longest",
 }
 
-ASSOCIATION_OPTIONS = {
-    "GT插值到VO时间戳（推荐）": "interpolate_gt",
-    "TUM最近邻时间戳匹配": "nearest",
-    "按索引匹配（不按时间）": "index",
-}
+VLOC_CHART_OPTIONS = [
+    ("trajectory3d", "3D 轨迹"),
+    ("trajectoryXY", "俯视 NE 轨迹"),
+    ("errorDistance", "误差随路程变化"),
+    ("heightComparison", "对地高随时间变化"),
+    ("navStatusModes", "导航状态信息"),
+    ("navVelocity", "导航速度信息"),
+    ("navResetCounts", "导航 reset 计数"),
+    ("vlocStatus", "VLOC 状态信息"),
+    ("positionCompareComposite", "NED 随时间变化"),
+    ("attitudeCompareComposite", "YPR 随时间变化"),
+    ("positionErrorComposite", "NED 误差随时间变化"),
+    ("attitudeErrorComposite", "YPR 误差随时间变化"),
+]
 
-INTERPOLATION_GAP_PRESETS = {
-    "20 Hz reference（0.15 s 推荐）": 0.15,
-    "100 Hz reference（0.05 s）": 0.05,
-    "50 Hz reference（0.08 s）": 0.08,
-    "10 Hz reference（0.30 s）": 0.30,
-    "不限制 GT gap": -1.0,
-    "自定义": 0.15,
-}
+VLOC_CHART_IDS = tuple(chart_id for chart_id, _label in VLOC_CHART_OPTIONS)
+
+VO_CHART_OPTIONS = [
+    ("trajectory3d", "3D 轨迹"),
+    ("errorDistance", "ATE 绝对位姿误差"),
+    ("navStatusModes", "导航状态信息"),
+    ("navVelocity", "导航速度信息"),
+    ("navResetCounts", "导航 reset 计数"),
+    ("voStatus", "VO 状态信息"),
+    ("positionCompareComposite", "位置随时间变化"),
+    ("attitudeCompareComposite", "姿态随时间变化"),
+    ("positionErrorComposite", "位置误差随时间变化"),
+    ("attitudeErrorComposite", "姿态误差随时间变化"),
+    ("rpeTranslationTime", "RPE 平移误差"),
+    ("rpeRotationTime", "RPE 旋转误差"),
+    ("scaleFrameTime", "局部 Sim3 尺度"),
+]
+
+VO_CHART_IDS = tuple(chart_id for chart_id, _label in VO_CHART_OPTIONS)
 
 
 def main() -> None:
-    """页面入口：上传文件 -> 构造配置 -> 调用 evaluator -> 展示 report。"""
+    """页面入口：选择 VLOC/VO 流程 -> 输入 data_dir/log_dir -> 调用 evaluator -> 展示 report。"""
     st.set_page_config(page_title="VO 评估系统", layout="wide")
     st.title("VO 评估系统")
 
     with st.sidebar:
         # 这些控件直接映射到 EvaluationConfig：
-        # alignment -> 对齐方式；association/max_time_diff/time_offset -> 时间同步；
-        # rpe_delta_value/unit -> RPE；segment_* -> 长航程子轨迹误差；
-        # divergence_* -> 发散检测阈值。
+        # 当前只保留 VO 的 RPE/尺度图间隔可调，其余评估参数走固定默认值。
         st.header("输入设置")
-        gt_format_label = st.selectbox("Ground truth 格式", list(GT_FORMAT_OPTIONS), index=0)
-        est_format_label = st.selectbox("VO 输出格式", list(EST_FORMAT_OPTIONS), index=0)
-        alignment_label = st.selectbox("轨迹对齐", list(ALIGNMENT_OPTIONS), index=1)
-        orientation_label = st.selectbox("VO 姿态修正", list(ORIENTATION_CORRECTION_OPTIONS), index=0)
-        association_label = st.selectbox("时间同步方式", list(ASSOCIATION_OPTIONS), index=0)
-        max_time_diff = st.number_input("时间关联最大误差 s（不按时间则填 -1）", value=0.02, min_value=-1.0, step=0.01)
-        interpolation_preset_label = st.selectbox("Reference 频率 / 插值间隔预设", list(INTERPOLATION_GAP_PRESETS), index=0)
-        max_interpolation_gap = st.number_input(
-            "GT 插值最大间隔 s（不限制填 -1）",
-            value=float(INTERPOLATION_GAP_PRESETS[interpolation_preset_label]),
-            min_value=-1.0,
-            step=0.01,
-        )
-        allow_extrapolation = st.checkbox("允许外推（不推荐）", value=False)
-        interpolate_rotation = st.checkbox("GT 姿态用 SLERP 插值", value=True)
-        time_offset = st.number_input("VO 时间戳偏移 s（按 TUM：加到 VO 时间戳）", value=0.0, step=0.01)
-        rpe_value_col, rpe_unit_col = st.columns([2, 1])
-        with rpe_value_col:
-            rpe_delta_value = st.number_input("RPE 统计间隔", value=1.0, min_value=0.001, step=1.0)
-        with rpe_unit_col:
-            rpe_delta_unit_label = st.selectbox("单位", ["f", "m"], index=0)
-        scale_value_col, scale_unit_col = st.columns([2, 1])
-        with scale_value_col:
-            scale_delta_value = st.number_input("尺度图间隔", value=1.0, min_value=0.001, step=1.0)
-        with scale_unit_col:
-            scale_delta_unit_label = st.selectbox("单位 ", ["f", "m"], index=0)
-        segment_text = st.text_input("长航程子轨迹长度 m", value="50,100,200,500,1000,2000,5000")
-        max_segments = st.number_input("每个长度最多抽样段数", value=10000, min_value=100, step=1000)
-        segment_step = st.number_input("子轨迹起点步长 frames（KITTI 默认 10）", value=10, min_value=1, step=1)
-        length_tolerance = st.number_input("子轨迹长度容差比例（rpg 默认 0.2）", value=0.2, min_value=0.0, max_value=1.0, step=0.05)
-        segment_policy_label = st.selectbox("VO重置/大跳变处理", list(SEGMENT_POLICY_OPTIONS), index=0)
-        discontinuity_step = st.number_input("断点步长阈值 m", value=100.0, min_value=0.0, step=10.0)
-        discontinuity_gap = st.number_input("断点时间间隔阈值 s", value=5.0, min_value=0.0, step=1.0)
-        divergence_abs = st.number_input("发散绝对阈值 m", value=10.0, min_value=0.0, step=1.0)
-        divergence_rel = st.number_input("发散相对阈值 % 路程", value=2.0, min_value=0.0, step=0.5)
+        entry_label = st.radio("评估入口", list(EVALUATION_ENTRY_OPTIONS), index=0)
+        entry_mode = EVALUATION_ENTRY_OPTIONS[entry_label]
+        data_dir = st.text_input("data_dir", placeholder="/path/to/data_dir")
+        log_dir = st.text_input("log_dir", placeholder="/path/to/log_dir")
+        st.caption("VLOC 固定读取 data_dir/imu.txt 与 log_dir/vloc.txt；VO 固定读取 data_dir/imu.txt 与 log_dir/vo.txt。")
+        if entry_mode == "vloc":
+            st.caption("VLOC 固定使用 GT 插值到 VLOC 时间戳，最大 GT 插值间隔 1.0 s；超过 1.0 s 的 VLOC 帧直接丢弃。")
+            rpe_delta_value = 1.0
+            rpe_delta_unit_label = "f"
+            scale_delta_value = 1.0
+            scale_delta_unit_label = "f"
+            segment_text = "50,100,200,500,1000,2000,5000"
+            max_segments = 10000
+            segment_step = 10
+            length_tolerance = 0.05
+            segment_policy_label = "按VO时间戳统一评估（推荐）"
+            discontinuity_step = 100.0
+            discontinuity_gap = 5.0
+            divergence_abs = 30.0
+            divergence_rel = 3.0
+        if entry_mode == "vo":
+            st.caption("VO 固定使用 GT 插值到 VO 时间戳，最大 GT 插值间隔 1.0 s；按 reset_count 有效连续段分别做 Sim3，不允许外推，时间偏移固定为 0。")
+            rpe_value_col, rpe_unit_col = st.columns([2, 1])
+            with rpe_value_col:
+                rpe_delta_value = st.number_input("RPE 统计间隔", value=1.0, min_value=0.001, step=1.0)
+            with rpe_unit_col:
+                rpe_delta_unit_label = st.selectbox("单位", ["f", "m"], index=0)
+            scale_value_col, scale_unit_col = st.columns([2, 1])
+            with scale_value_col:
+                scale_delta_value = st.number_input("尺度图间隔", value=1.0, min_value=0.001, step=1.0)
+            with scale_unit_col:
+                scale_delta_unit_label = st.selectbox("单位 ", ["f", "m"], index=0)
+            segment_text = "50,100,200,500,1000,2000,5000"
+            max_segments = 10000
+            segment_step = 10
+            length_tolerance = 0.05
+            segment_policy_label = "按VO连续段逐段评估"
+            discontinuity_step = 100.0
+            discontinuity_gap = 5.0
+            divergence_abs = 30.0
+            divergence_rel = 3.0
 
-    left, right = st.columns(2)
-    with left:
-        gt_file = st.file_uploader("拖入 ground truth 轨迹文件", type=["txt", "csv", "tsv", "log"], key="gt")
-    with right:
-        est_file = st.file_uploader("拖入 VO 跑完输出的轨迹文件", type=["txt", "csv", "tsv", "log"], key="est")
+        selected_vloc_chart_ids = set(VLOC_CHART_IDS)
+        selected_vo_chart_ids = set(VO_CHART_IDS)
+        if entry_mode == "vloc":
+            selected_vloc_chart_ids = show_vloc_chart_directory()
+        if entry_mode == "vo":
+            selected_vo_chart_ids = show_chart_directory("vo", VO_CHART_OPTIONS)
 
-    st.caption("支持 TUM、KITTI odometry 3x4 矩阵、CSV/TSV/空格表；可从注释表头读取 x/y/z/yaw/pitch/roll，并自动识别弧度/角度。")
+    st.subheader(entry_label)
 
-    if not gt_file or not est_file:
+    if not data_dir or not log_dir:
+        st.info("先填写 `data_dir` 和 `log_dir`，再运行评估。")
         show_metric_catalog()
         return
 
@@ -144,17 +141,7 @@ def main() -> None:
         # 每次评估前 reload evaluator，确保页面使用最新的解析/指标逻辑。
         evaluator = latest_evaluator()
         segment_lengths = parse_float_list(segment_text)
-        cfg = evaluator.EvaluationConfig(
-            alignment=ALIGNMENT_OPTIONS[alignment_label],
-            orientation_correction=ORIENTATION_CORRECTION_OPTIONS[orientation_label],
-            association_mode=ASSOCIATION_OPTIONS[association_label],
-            max_time_diff_s=None if max_time_diff < 0 else float(max_time_diff),
-            max_interpolation_gap_s=None if max_interpolation_gap < 0 else float(max_interpolation_gap),
-            allow_extrapolation=bool(allow_extrapolation),
-            interpolate_rotation=bool(interpolate_rotation),
-            interpolation_position_method="linear",
-            interpolation_rotation_method="slerp",
-            time_offset_s=float(time_offset),
+        common_cfg = dict(
             rpe_delta_frames=max(1, int(round(float(rpe_delta_value)))) if rpe_delta_unit_label == "f" else 1,
             rpe_delta_value=float(rpe_delta_value),
             rpe_delta_unit="frames" if rpe_delta_unit_label == "f" else "meters",
@@ -172,15 +159,46 @@ def main() -> None:
             divergence_abs_m=float(divergence_abs),
             divergence_rel_percent=float(divergence_rel),
         )
-        gt = load_uploaded(gt_file, GT_FORMAT_OPTIONS[gt_format_label], evaluator)
-        est = load_uploaded(est_file, EST_FORMAT_OPTIONS[est_format_label], evaluator)
-        report = evaluator.evaluate_trajectories(gt, est, cfg)
+        if entry_mode == "vloc":
+            cfg = evaluator.EvaluationConfig(
+                alignment="none",
+                orientation_correction="none",
+                association_mode="interpolate_gt",
+                max_time_diff_s=None,
+                max_interpolation_gap_s=1.0,
+                allow_extrapolation=False,
+                interpolate_rotation=True,
+                interpolation_position_method="linear",
+                interpolation_rotation_method="slerp",
+                time_offset_s=0.0,
+                **common_cfg,
+            )
+        else:
+            cfg = evaluator.EvaluationConfig(
+                alignment="sim3",
+                orientation_correction="none",
+                association_mode="interpolate_gt",
+                max_time_diff_s=None,
+                max_interpolation_gap_s=1.0,
+                allow_extrapolation=False,
+                interpolate_rotation=True,
+                interpolation_position_method="linear",
+                interpolation_rotation_method="slerp",
+                time_offset_s=0.0,
+                **common_cfg,
+            )
+        if entry_mode == "vloc":
+            bundle = evaluator.load_vloc_evaluation_bundle(data_dir, log_dir)
+            report = evaluator.evaluate_vloc_bundle(bundle, cfg)
+        else:
+            bundle = evaluator.load_vo_evaluation_bundle(data_dir, log_dir)
+            report = evaluator.evaluate_vo_bundle(bundle, cfg)
     except Exception as exc:
         st.error(f"评估失败：{exc}")
         return
 
-    show_summary(report)
-    show_visuals(report)
+    show_summary(report, entry_mode)
+    show_visuals(report, entry_mode, selected_vloc_chart_ids, selected_vo_chart_ids)
     show_tables_and_downloads(report)
 
 
@@ -188,9 +206,39 @@ def latest_evaluator():
     return importlib.reload(vo_evaluator)
 
 
-def load_uploaded(uploaded: Any, fmt: str, evaluator: Any):
-    text = uploaded.getvalue().decode("utf-8", errors="replace")
-    return evaluator.load_trajectory_from_text(text, fmt=fmt, name=uploaded.name)
+def evaluation_export_filename(report: dict[str, Any], kind: str, extension: str) -> str:
+    """生成导出文件名：数据目录 + 入口模式 + 导出类型。
+
+    例如 2839_traj_vloc_evaluation_report.html。
+    如果 data_dir 和 log_dir 名不同，文件名保留两者，避免离线文件混淆。
+    """
+    inputs = report.get("inputs") or {}
+    entry_mode = sanitize_filename_part(inputs.get("entry_mode") or "vloc") or "vloc"
+    data_name = meaningful_directory_name(inputs.get("data_dir_name"))
+    log_name = meaningful_directory_name(inputs.get("log_dir_name"))
+    if data_name and log_name and data_name != log_name:
+        dataset = f"{data_name}__{log_name}"
+    else:
+        dataset = log_name or data_name
+    prefix = f"{dataset}_{entry_mode}" if dataset else entry_mode
+    return f"{prefix}_{sanitize_filename_part(kind)}.{sanitize_filename_part(extension)}"
+
+
+def meaningful_directory_name(value: Any) -> str:
+    """忽略 data_dir/log_dir 这种固定目录名，只保留真实数据集名。"""
+    name = sanitize_filename_part(value)
+    if name.lower() in {"data_dir", "log_dir"}:
+        return ""
+    return name
+
+
+def sanitize_filename_part(value: Any) -> str:
+    """清理单个文件名片段，避免浏览器/系统不接受的字符。"""
+    text = str(value or "").strip()
+    text = re.sub(r'[\\/:*?"<>|]+', "_", text)
+    text = re.sub(r"\s+", "_", text)
+    text = re.sub(r"_+", "_", text)
+    return text.strip("_")
 
 
 def parse_float_list(text: str) -> list[float]:
@@ -214,9 +262,7 @@ def show_metric_catalog() -> None:
         ("RPE 局部相对误差", "固定帧或固定时间间隔；看局部漂移"),
         ("按距离子轨迹误差", "KITTI/rpg 风格，固定段长分母；长航程无人机最关键"),
         ("尺度误差/尺度漂移", "raw path scale ratio 与分段 scale ratio；单目 VO 必看"),
-        ("终点漂移", "最终位置误差及占总路程百分比；物流长航线直观"),
         ("覆盖率/成功率/丢帧", "matched poses、覆盖率、最大时间间隔；看算法是否完整跑完"),
-        ("发散点", "误差超过绝对阈值或随路程增长阈值的位置"),
         ("海拔/垂直误差", "z 方向 RMSE/bias/p95；无人机配送必须单独看"),
         ("水平误差", "XY 平面误差；对应导航和投递位置偏差"),
         ("姿态/航向误差", "orientation/yaw error；影响航向控制和相机朝向"),
@@ -226,7 +272,7 @@ def show_metric_catalog() -> None:
     st.dataframe(pd.DataFrame(rows, columns=["指标", "用途"]), use_container_width=True, hide_index=True)
 
 
-def show_summary(report: dict[str, Any]) -> None:
+def show_summary(report: dict[str, Any], entry_mode: str) -> None:
     """顶部指标卡。
 
     页面展示顺序和 README “运行结果截图指标卡与代码/公式对应”保持一致：
@@ -236,14 +282,13 @@ def show_summary(report: dict[str, Any]) -> None:
     ate = report["ate_position_m"] or {}
     vertical = report["ate_vertical_m"] or {}
     rpe = (report["rpe_frame_delta"].get("translation_m") or {})
-    div = report["divergence"]
-    assoc = report.get("association", {})
     orientation_info = report.get("orientation_correction", {})
     alignment = report.get("alignment", {})
     breaks = nested(report, "discontinuities", "all_matches", "break_count", default=0)
+    vloc_summary = nested(report, "vloc_details", "summary", default={}) or {}
 
-    st.subheader("运行结果")
-    cards = [
+    st.subheader("VLOC 运行结果" if entry_mode == "vloc" else "VO 运行结果")
+    vo_cards = [
         {
             "label": "#01 ATE RMSE",
             "value": report_value(ate.get("rmse"), "m"),
@@ -255,94 +300,146 @@ def show_summary(report: dict[str, Any]) -> None:
             "help": f"{rpe_delta_label(report.get('rpe_frame_delta', {}))}；p95 {report_value(rpe.get('p95'), 'm')}",
         },
         {
-            "label": "#03 终点漂移",
-            "value": report_value(summary.get("endpoint_error_m"), "m"),
-            "help": f"{report_number(summary.get('endpoint_error_percent_of_path'))} % 路程",
-        },
-        {
-            "label": "#04 长航程路程",
+            "label": "#03 长航程路程",
             "value": report_value(summary.get("gt_path_length_m"), "m"),
             "help": f"{report_value(summary.get('duration_s'), 's')} / {summary.get('matched_poses', 'N/A')} 帧",
         },
         {
-            "label": "#05 垂直 RMSE",
+            "label": "#04 垂直 RMSE",
             "value": report_value(vertical.get("rmse"), "m"),
             "help": f"p95 {report_value(vertical.get('p95'), 'm')}",
         },
         {
-            "label": "#06 发散状态",
-            "value": "是" if div.get("diverged") else "否",
-            "help": divergence_summary_label(div),
-        },
-        {
-            "label": "#07 GT 覆盖率",
+            "label": "#05 GT 覆盖率",
             "value": report_value(100 * summary.get("gt_pose_coverage_ratio", summary.get("coverage_ratio", math.nan)), "%"),
             "help": "插值模式按有效评估时间 / GT 全时长解释",
         },
         {
-            "label": "#08 Raw 尺度比",
+            "label": "#06 Raw 尺度比",
             "value": report_number(summary.get("raw_path_scale_ratio_est_over_gt")),
             "help": "VO 原始路程 / GT 路程",
         },
         {
-            "label": "#09 对齐尺度",
+            "label": "#07 对齐尺度",
             "value": report_number(alignment.get("scale")),
             "help": scale_range_text(alignment),
         },
         {
-            "label": "#10 匹配位姿",
+            "label": "#08 匹配位姿",
             "value": report_value(summary.get("matched_poses")),
             "help": f"{summary.get('original_matched_poses', 'N/A')} 原始匹配",
         },
         {
-            "label": "#11 VO 匹配率",
+            "label": "#09 VO 匹配率",
             "value": report_value(100 * summary.get("est_pose_coverage_ratio", math.nan), "%"),
             "help": f"{summary.get('matched_poses', 'N/A')} / {summary.get('est_poses', 'N/A')} 帧",
         },
         {
-            "label": "#12 断点数量",
+            "label": "#10 断点数量",
             "value": report_value(breaks),
             "help": f"策略 {nested(report, 'discontinuities', 'selected_segment', 'policy', default='N/A')}",
         },
         {
-            "label": "#13 时间同步",
-            "value": association_label(assoc),
-            "help": association_summary_label(assoc),
-        },
-        {
-            "label": "#14 姿态修正",
+            "label": "#11 姿态修正",
             "value": orientation_correction_label(orientation_info),
             "help": orientation_summary_label(orientation_info),
         },
         {
-            "label": "#15 耗时",
+            "label": "#12 耗时",
             "value": report_value(summary.get("duration_s"), "s"),
             "help": "有效评估窗口，不是算法运行耗时",
         },
     ]
+    vloc_cards = [
+        {
+            "label": "#01 ATE RMSE",
+            "value": report_value(ate.get("rmse"), "m"),
+            "help": f"{report_number(100 * ate.get('rmse', math.nan) / summary.get('gt_path_length_m', math.nan))} % 路程；p95 {report_value(ate.get('p95'), 'm')}",
+        },
+        {
+            "label": "#02 长航程路程",
+            "value": report_value(summary.get("gt_path_length_m"), "m"),
+            "help": f"{report_value(summary.get('duration_s'), 's')} / {summary.get('matched_poses', 'N/A')} 帧",
+        },
+        {
+            "label": "#03 垂直 RMSE",
+            "value": report_value(vertical.get("rmse"), "m"),
+            "help": f"p95 {report_value(vertical.get('p95'), 'm')}",
+        },
+        {
+            "label": "#04 GT 覆盖率",
+            "value": report_value(100 * summary.get("gt_pose_coverage_ratio", summary.get("coverage_ratio", math.nan)), "%"),
+            "help": "插值模式按有效评估时间 / GT 全时长解释",
+        },
+        {
+            "label": "#05 匹配位姿",
+            "value": report_value(summary.get("matched_poses")),
+            "help": f"{summary.get('original_matched_poses', 'N/A')} 原始匹配",
+        },
+        {
+            "label": "#06 VLOC 匹配率",
+            "value": report_value(100 * summary.get("est_pose_coverage_ratio", math.nan), "%"),
+            "help": f"{summary.get('matched_poses', 'N/A')} / {summary.get('est_poses', 'N/A')} 帧",
+        },
+        {
+            "label": "#07 断点数量",
+            "value": report_value(breaks),
+            "help": f"策略 {nested(report, 'discontinuities', 'selected_segment', 'policy', default='N/A')}",
+        },
+        {
+            "label": "#08 mean_error_pos_xy",
+            "value": report_value(vloc_summary.get("mean_error_pos_xy"), "m"),
+            "help": "逐帧水平位置误差范数的平均值",
+        },
+        {
+            "label": "#09 mean_error_pos_z",
+            "value": report_value(vloc_summary.get("mean_error_pos_z"), "m"),
+            "help": "逐帧垂直位置误差绝对值的平均值",
+        },
+        {
+            "label": "#10 mean_error_euler",
+            "value": report_value(vloc_summary.get("mean_error_euler"), "deg"),
+            "help": "逐帧欧拉角误差范数 sqrt(yaw^2 + pitch^2 + roll^2) 的平均值",
+        },
+        {
+            "label": "#11 max_error_pos_xy",
+            "value": report_value(vloc_summary.get("max_error_pos_xy"), "m"),
+            "help": "逐帧水平位置误差范数的最大值",
+        },
+        {
+            "label": "#12 max_error_pos_z",
+            "value": report_value(vloc_summary.get("max_error_pos_z"), "m"),
+            "help": "逐帧垂直位置误差绝对值的最大值",
+        },
+        {
+            "label": "#13 max_error_euler",
+            "value": report_value(vloc_summary.get("max_error_euler"), "deg"),
+            "help": "逐帧欧拉角误差范数的最大值",
+        },
+        {
+            "label": "#14 耗时",
+            "value": report_value(summary.get("duration_s"), "s"),
+            "help": "有效评估窗口，不是算法运行耗时",
+        },
+    ]
+    cards = vloc_cards if entry_mode == "vloc" else vo_cards
 
     for start in range(0, len(cards), 5):
         cols = st.columns(5)
         for col, item in zip(cols, cards[start : start + 5]):
             col.metric(item["label"], item["value"], help=item["help"])
 
-    if orientation_info.get("auto") and orientation_info.get("selected"):
+    if entry_mode == "vo" and orientation_info.get("auto") and orientation_info.get("selected"):
         st.info(
             f"自动姿态修正选择：{orientation_info.get('selected')}，"
             f"score={orientation_info.get('best_score', math.nan):.3f}。"
             "该选择只用于评估坐标系/外参修正，不会改变原始数据。"
         )
 
-    if div.get("diverged"):
-        st.warning(
-            f"首次发散：distance={div.get('first_divergence_distance_m'):.2f} m, "
-            f"error={div.get('first_divergence_error_m'):.2f} m, "
-            f"threshold={div.get('threshold_at_divergence_m'):.2f} m"
-        )
     raw_ratio = summary.get("raw_path_scale_ratio_est_over_gt")
     align_info = report.get("alignment", {})
     align_mode = align_info.get("base_mode", align_info.get("mode"))
-    if raw_ratio is not None and math.isfinite(raw_ratio) and align_mode == "se3" and not 0.8 <= raw_ratio <= 1.25:
+    if entry_mode == "vo" and raw_ratio is not None and math.isfinite(raw_ratio) and align_mode == "se3" and not 0.8 <= raw_ratio <= 1.25:
         st.warning(
             f"当前使用 SE3 刚体对齐，但 VO/GT 原始路程比例为 {raw_ratio:.3f}，尺度明显不一致。"
             "这会导致轨迹无法重合；若 VO 是单目或尺度未知，请改用 Sim3。"
@@ -367,17 +464,6 @@ def show_summary(report: dict[str, Any]) -> None:
             st.dataframe(pd.DataFrame(all_disc.get("breaks", [])), use_container_width=True, hide_index=True)
 
 
-def association_label(assoc: dict[str, Any]) -> str:
-    method = assoc.get("mode") or assoc.get("method")
-    if method == "interpolate_gt":
-        return "GT插值到VO"
-    if method == "nearest":
-        return "最近邻"
-    if method == "index":
-        return "按索引"
-    return str(method or "N/A")
-
-
 def rpe_delta_label(rpe_info: dict[str, Any]) -> str:
     unit = rpe_info.get("delta_unit")
     if unit == "meters":
@@ -397,19 +483,6 @@ def orientation_correction_label(info: dict[str, Any]) -> str:
     return str(selected)
 
 
-def association_summary_label(assoc: dict[str, Any]) -> str:
-    """README #13 时间同步卡片的备注文本。"""
-    if assoc.get("interpolated"):
-        return (
-            f"匹配 {assoc.get('matches', 'N/A')} 帧；"
-            f"最大插值间隔 {report_value(assoc.get('max_interpolation_gap_s'), 's')}"
-        )
-    return (
-        f"匹配 {assoc.get('matches', 'N/A')} 帧；"
-        f"平均时间差 {report_value(assoc.get('mean_time_diff_s'), 's')}"
-    )
-
-
 def orientation_summary_label(info: dict[str, Any]) -> str:
     """README #14 姿态修正卡片的备注文本。"""
     if info.get("auto"):
@@ -417,94 +490,364 @@ def orientation_summary_label(info: dict[str, Any]) -> str:
     return f"请求 {info.get('requested', 'N/A')}"
 
 
-def divergence_summary_label(divergence: dict[str, Any]) -> str:
-    """README #06 发散状态卡片的备注文本。"""
-    if not divergence.get("diverged"):
-        return "未触发发散阈值"
-    return (
-        f"distance={report_value(divergence.get('first_divergence_distance_m'), 'm')}；"
-        f"error={report_value(divergence.get('first_divergence_error_m'), 'm')}"
-    )
-
-
-def show_visuals(report: dict[str, Any]) -> None:
+def show_visuals(
+    report: dict[str, Any],
+    entry_mode: str,
+    selected_vloc_chart_ids: set[str] | None = None,
+    selected_vo_chart_ids: set[str] | None = None,
+) -> None:
     """可视化区域。
 
     图表与指标对应：
-    - 3D/XY 轨迹：per_pose 中 GT 和对齐后的 VO 坐标。
-    - 误差随路程：per_pose.error_m / horizontal_error_m。
-    - 高度与垂直误差：per_pose.gt_z_m / est_z_aligned_m / vertical_error_m。
-    - 按距离子轨迹误差：segment_errors。
-    - 速度分箱误差：speed_bins。
+    - 3D 轨迹：per_pose 中 GT 和对齐后的 VO 坐标。
+    - 绝对位姿误差：per_pose.error_m / horizontal_error_m。
+    - 导航/VO 状态：vo_details.nav_status / vo_details.vo_status。
     - x/y/z/yaw/pitch/roll 随时间变化：用于逐轴检查 GT 和 VO 是否同趋势。
     - x/y/z/yaw/pitch/roll 误差随时间变化：用于定位某个时间段的单轴异常。
     - RPE 平移/旋转误差随时间变化：使用当前 RPE 帧数或距离配置。
     """
+    if entry_mode == "vloc":
+        show_vloc_visuals(report, selected_vloc_chart_ids)
+        return
+
     per_pose = report["per_pose"]
     segment_records = report["segment_records"]
     trajectory_exports = report.get("trajectory_exports") or {}
-    scale_per_frame = pd.DataFrame(trajectory_exports.get("scale_per_frame", trajectory_exports.get("sim3_vo_tum", pd.DataFrame())))
+    details = report.get("vo_details", {})
+    nav_status = pd.DataFrame(details.get("nav_status", []))
+    vo_status = pd.DataFrame(details.get("vo_status", []))
     rpe_per_frame = pd.DataFrame(trajectory_exports.get("rpe_per_frame", pd.DataFrame()))
+    scale_per_frame = pd.DataFrame(trajectory_exports.get("scale_per_frame", pd.DataFrame()))
 
     fig3d = make_trajectory_3d(per_pose)
-    fig_xy = make_trajectory_xy(per_pose)
     fig_error = make_error_distance(per_pose)
-    fig_alt = make_altitude_distance(per_pose)
-    fig_segment = make_segment_error(report["segment_errors"])
-    fig_speed = make_speed_error(report["speed_bins"])
-    fig_sim3_scale = make_sim3_scale_time_series(scale_per_frame)
-    time_series_figs = [
-        make_gt_vo_time_series(per_pose, "X 随时间变化", "gt_x_m", "est_x_aligned_m", "m"),
-        make_gt_vo_time_series(per_pose, "Y 随时间变化", "gt_y_m", "est_y_aligned_m", "m"),
-        make_gt_vo_time_series(per_pose, "Z 随时间变化", "gt_z_m", "est_z_aligned_m", "m"),
-        make_gt_vo_time_series(per_pose, "Yaw 随时间变化", "gt_yaw_deg", "est_yaw_aligned_deg", "deg", unwrap_angles=True),
-        make_gt_vo_time_series(per_pose, "Pitch 随时间变化", "gt_pitch_deg", "est_pitch_aligned_deg", "deg", unwrap_angles=True),
-        make_gt_vo_time_series(per_pose, "Roll 随时间变化", "gt_roll_deg", "est_roll_aligned_deg", "deg", unwrap_angles=True),
-    ]
-    error_time_figs = [
-        make_error_time_series(per_pose, "X 误差随时间变化", "x_error_m", "m"),
-        make_error_time_series(per_pose, "Y 误差随时间变化", "y_error_m", "m"),
-        make_error_time_series(per_pose, "Z 误差随时间变化", "z_error_m", "m"),
-        make_error_time_series(per_pose, "Yaw 误差随时间变化", "yaw_error_signed_deg", "deg", unwrap_angles=True),
-        make_error_time_series(per_pose, "Pitch 误差随时间变化", "pitch_error_signed_deg", "deg", unwrap_angles=True),
-        make_error_time_series(per_pose, "Roll 误差随时间变化", "roll_error_signed_deg", "deg", unwrap_angles=True),
-    ]
+    nav_mode_fig = make_vloc_multi_series(
+        nav_status,
+        "导航状态信息",
+        [("flight_mode", "flight_mode"), ("navi_mode", "navi_mode"), ("rtk_yaw", "rtk_yaw"), ("rtk_alti", "rtk_alti")],
+        "state",
+    )
+    nav_velocity_fig = make_composite_single_time_series(
+        nav_status,
+        "导航速度信息",
+        [
+            ("vx", "vx", "m/s", False),
+            ("vy", "vy", "m/s", False),
+            ("vz", "vz", "m/s", False),
+            ("velocity_norm", "velocity_norm", "m/s", False),
+        ],
+    )
+    nav_reset_fig = make_vloc_multi_series(
+        nav_status,
+        "导航 reset 计数",
+        [
+            ("position_reset_count", "position_reset_count"),
+            ("altitude_reset_count", "altitude_reset_count"),
+            ("heading_reset_count", "heading_reset_count"),
+        ],
+        "count",
+    )
+    vo_status_fig = make_composite_single_time_series(
+        vo_status,
+        "VO 状态信息",
+        [
+            ("num_inliers", "num_inliers", "value", False),
+            ("is_keyframe", "is_keyframe", "value", False),
+            ("time_cost", "time_cost", "ms", False),
+            ("reset_count", "reset_count", "value", False),
+        ],
+    )
+    fig_position_compare = make_composite_pair_time_series(
+        per_pose,
+        "位置随时间变化",
+        [
+            ("X", "gt_x_m", "est_x_aligned_m", "m", False),
+            ("Y", "gt_y_m", "est_y_aligned_m", "m", False),
+            ("Z", "gt_z_m", "est_z_aligned_m", "m", False),
+        ],
+        left_name="Ground truth",
+        right_name="VO aligned",
+    )
+    fig_attitude_compare = make_composite_pair_time_series(
+        per_pose,
+        "姿态随时间变化",
+        [
+            ("Yaw", "gt_yaw_deg", "est_yaw_aligned_deg", "deg", True),
+            ("Pitch", "gt_pitch_deg", "est_pitch_aligned_deg", "deg", True),
+            ("Roll", "gt_roll_deg", "est_roll_aligned_deg", "deg", True),
+        ],
+        left_name="Ground truth",
+        right_name="VO aligned",
+    )
+    fig_position_error = make_composite_error_time_series(
+        per_pose,
+        "位置误差随时间变化",
+        [
+            ("X 误差", "x_error_m", "m", False),
+            ("Y 误差", "y_error_m", "m", False),
+            ("Z 误差", "z_error_m", "m", False),
+        ],
+    )
+    fig_attitude_error = make_composite_error_time_series(
+        per_pose,
+        "姿态误差随时间变化",
+        [
+            ("Yaw 误差", "yaw_error_signed_deg", "deg", True),
+            ("Pitch 误差", "pitch_error_signed_deg", "deg", True),
+            ("Roll 误差", "roll_error_signed_deg", "deg", True),
+        ],
+    )
     rpe_time_figs = [
-        make_rpe_time_series(rpe_per_frame, "RPE 平移误差随时间变化", "rpe_translation_m", "m"),
-        make_rpe_time_series(rpe_per_frame, "RPE 旋转误差随时间变化", "rpe_rotation_deg", "deg"),
+        ("rpeTranslationTime", make_rpe_time_series(rpe_per_frame, "RPE 平移误差随时间变化", "rpe_translation_m", "m")),
+        ("rpeRotationTime", make_rpe_time_series(rpe_per_frame, "RPE 旋转误差随时间变化", "rpe_rotation_deg", "deg")),
+    ]
+    scale_time_figs = [
+        ("scaleFrameTime", make_scale_time_series(scale_per_frame)),
     ]
 
-    st.subheader("可视化")
-    top_left, top_right = st.columns(2)
-    top_left.plotly_chart(fig3d, use_container_width=True)
-    top_right.plotly_chart(fig_xy, use_container_width=True)
+    selected = set(selected_vo_chart_ids) if selected_vo_chart_ids is not None else set(VO_CHART_IDS)
 
-    mid_left, mid_right = st.columns(2)
-    mid_left.plotly_chart(fig_error, use_container_width=True)
-    mid_right.plotly_chart(fig_alt, use_container_width=True)
+    def plot_selected(figures: list[tuple[str, go.Figure]]) -> None:
+        for chart_id, fig in figures:
+            if chart_id in selected:
+                st.plotly_chart(fig, use_container_width=True)
 
-    low_left, low_right = st.columns(2)
-    low_left.plotly_chart(fig_segment, use_container_width=True)
-    low_right.plotly_chart(fig_speed, use_container_width=True)
+    st.subheader("VO 可视化")
+    trajectory_figs = [
+        ("trajectory3d", fig3d),
+        ("errorDistance", fig_error),
+    ]
+    status_figs = [
+        ("navStatusModes", nav_mode_fig),
+        ("navVelocity", nav_velocity_fig),
+        ("navResetCounts", nav_reset_fig),
+        ("voStatus", vo_status_fig),
+    ]
+    comparison_figs = [
+        ("positionCompareComposite", fig_position_compare),
+        ("attitudeCompareComposite", fig_attitude_compare),
+        ("positionErrorComposite", fig_position_error),
+        ("attitudeErrorComposite", fig_attitude_error),
+    ]
+    plot_selected(trajectory_figs)
 
-    sim3_left, _ = st.columns(2)
-    sim3_left.plotly_chart(fig_sim3_scale, use_container_width=True)
+    if selected.intersection(chart_id for chart_id, _fig in status_figs):
+        st.markdown("#### 导航 / VO 状态")
+        plot_selected(status_figs)
 
-    st.markdown("#### GT / VO 随时间变化")
-    render_figure_grid(time_series_figs)
+    if selected.intersection(chart_id for chart_id, _fig in comparison_figs):
+        st.markdown("#### Nav / VO 随时间变化与误差")
+        plot_selected(comparison_figs)
 
-    st.markdown("#### 误差随时间变化")
-    render_figure_grid(error_time_figs)
+    if selected.intersection(chart_id for chart_id, _fig in rpe_time_figs):
+        st.markdown("#### RPE 随时间变化")
+        plot_selected(rpe_time_figs)
 
-    st.markdown("#### RPE 随时间变化")
-    render_figure_grid(rpe_time_figs)
+    if selected.intersection(chart_id for chart_id, _fig in scale_time_figs):
+        st.markdown("#### 尺度随时间变化")
+        plot_selected(scale_time_figs)
 
+    all_figs = [
+        *trajectory_figs,
+        *status_figs,
+        *comparison_figs,
+        *rpe_time_figs,
+        *scale_time_figs,
+    ]
     if not segment_records.empty:
         with st.expander("按距离子轨迹原始记录"):
             st.dataframe(segment_records, use_container_width=True, hide_index=True)
 
-    html = build_html_report(report, [fig3d, fig_xy, fig_error, fig_alt, fig_segment, fig_speed, fig_sim3_scale, *time_series_figs, *error_time_figs, *rpe_time_figs])
-    st.download_button("下载 HTML 可视化报告", html, file_name="vo_evaluation_report.html", mime="text/html")
+    html_figs = [fig for chart_id, fig in all_figs if chart_id in selected]
+    html = build_html_report(report, html_figs)
+    st.download_button(
+        "下载 HTML 可视化报告",
+        html,
+        file_name=evaluation_export_filename(report, "evaluation_report", "html"),
+        mime="text/html",
+    )
+
+
+def show_vloc_chart_directory() -> set[str]:
+    """VLOC 图表目录：控制右侧 12 张 VLOC 图的显示/隐藏。"""
+    return show_chart_directory("vloc", VLOC_CHART_OPTIONS)
+
+
+def show_chart_directory(entry_mode: str, options: list[tuple[str, str]]) -> set[str]:
+    """通用图表目录：VLOC/VO 都用 3 列小方块控制右侧图表。"""
+    label = entry_mode.upper()
+    chart_ids = tuple(chart_id for chart_id, _label in options)
+    st.header("图表目录")
+    st.caption(f"选择要在右侧展示的 {label} 图表；评估完成后默认全部打开。")
+    for chart_id in chart_ids:
+        key = f"{entry_mode}_chart_{chart_id}"
+        if key not in st.session_state:
+            st.session_state[key] = True
+
+    select_col, clear_col = st.columns(2)
+    if select_col.button("全选", key=f"{entry_mode}_chart_select_all"):
+        for chart_id in chart_ids:
+            st.session_state[f"{entry_mode}_chart_{chart_id}"] = True
+    if clear_col.button("清除", key=f"{entry_mode}_chart_clear"):
+        for chart_id in chart_ids:
+            st.session_state[f"{entry_mode}_chart_{chart_id}"] = False
+
+    selected: set[str] = set()
+    for start in range(0, len(options), 3):
+        columns = st.columns(3)
+        for column, (chart_id, chart_label) in zip(columns, options[start : start + 3]):
+            with column:
+                if st.checkbox(chart_label, key=f"{entry_mode}_chart_{chart_id}"):
+                    selected.add(chart_id)
+    return selected
+
+
+def show_vloc_visuals(report: dict[str, Any], selected_chart_ids: set[str] | None = None) -> None:
+    """VLOC 专用可视化页面。
+
+    VLOC 需求文档要求按 nav/vloc 对比展示：
+    - nav 状态：flight_mode/navi_mode/rtk_yaw/rtk_alti/reset/速度；
+    - vloc 状态：vloc_mode/num_inliers/reset_count；
+    - nav-vloc 位置、姿态、height 对比；
+    - nav - vloc 的位置误差和 R_ref^-1 R_est 的姿态误差。
+    """
+    details = report.get("vloc_details", {})
+    comparison = pd.DataFrame(details.get("comparison", []))
+    nav_status = pd.DataFrame(details.get("nav_status", []))
+    vloc_status = pd.DataFrame(details.get("vloc_status", []))
+
+    fig3d = make_vloc_trajectory_3d(comparison)
+    fig_xy = make_vloc_trajectory_xy(comparison)
+    fig_error = make_vloc_error_distance(comparison)
+    fig_height = make_vloc_multi_series(
+        comparison,
+        "对地高随时间变化",
+        [("nav_height_m", "nav height"), ("vloc_height_m", "vloc height")],
+        "height m",
+    )
+    nav_mode_fig = make_vloc_multi_series(
+        nav_status,
+        "导航状态信息",
+        [("flight_mode", "flight_mode"), ("navi_mode", "navi_mode"), ("rtk_yaw", "rtk_yaw"), ("rtk_alti", "rtk_alti")],
+        "state",
+    )
+    nav_velocity_fig = make_composite_single_time_series(
+        nav_status,
+        "导航速度信息",
+        [
+            ("vx", "vx", "m/s", False),
+            ("vy", "vy", "m/s", False),
+            ("vz", "vz", "m/s", False),
+            ("velocity_norm", "velocity_norm", "m/s", False),
+        ],
+    )
+    nav_reset_fig = make_vloc_multi_series(
+        nav_status,
+        "导航 reset 计数",
+        [
+            ("position_reset_count", "position_reset_count"),
+            ("altitude_reset_count", "altitude_reset_count"),
+            ("heading_reset_count", "heading_reset_count"),
+        ],
+        "count",
+    )
+    vloc_status_fig = make_composite_single_time_series(
+        vloc_status,
+        "VLOC 状态信息",
+        [
+            ("vloc_mode", "vloc_mode", "value", False),
+            ("num_inliers", "num_inliers", "value", False),
+            ("reset_count", "reset_count", "value", False),
+        ],
+    )
+    fig_position_compare = make_composite_pair_time_series(
+        comparison,
+        "NED 随时间变化",
+        [
+            ("N", "nav_n_m", "vloc_n_m", "m", False),
+            ("E", "nav_e_m", "vloc_e_m", "m", False),
+            ("D", "nav_d_m", "vloc_d_m", "m", False),
+        ],
+        left_name="nav",
+        right_name="vloc",
+    )
+    fig_attitude_compare = make_composite_pair_time_series(
+        comparison,
+        "YPR 随时间变化",
+        [
+            ("Yaw", "nav_yaw_deg", "vloc_yaw_deg", "deg", True),
+            ("Pitch", "nav_pitch_deg", "vloc_pitch_deg", "deg", True),
+            ("Roll", "nav_roll_deg", "vloc_roll_deg", "deg", True),
+        ],
+        left_name="nav",
+        right_name="vloc",
+    )
+    fig_position_error = make_composite_error_time_series(
+        comparison,
+        "NED 误差随时间变化",
+        [
+            ("N 误差", "position_error_n_m", "m", False),
+            ("E 误差", "position_error_e_m", "m", False),
+            ("D 误差", "position_error_d_m", "m", False),
+        ],
+    )
+    fig_attitude_error = make_composite_error_time_series(
+        comparison,
+        "YPR 误差随时间变化",
+        [
+            ("Yaw 误差", "attitude_error_yaw_deg", "deg", True),
+            ("Pitch 误差", "attitude_error_pitch_deg", "deg", True),
+            ("Roll 误差", "attitude_error_roll_deg", "deg", True),
+        ],
+    )
+
+    selected = selected_chart_ids if selected_chart_ids is not None else set(VLOC_CHART_IDS)
+    selected = set(selected)
+
+    def plot_selected(figures: list[tuple[str, go.Figure]]) -> None:
+        for chart_id, fig in figures:
+            if chart_id in selected:
+                st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("VLOC 可视化")
+    trajectory_figs = [
+        ("trajectory3d", fig3d),
+        ("trajectoryXY", fig_xy),
+        ("errorDistance", fig_error),
+        ("heightComparison", fig_height),
+    ]
+    status_figs = [
+        ("navStatusModes", nav_mode_fig),
+        ("navVelocity", nav_velocity_fig),
+        ("navResetCounts", nav_reset_fig),
+        ("vlocStatus", vloc_status_fig),
+    ]
+    comparison_figs = [
+        ("positionCompareComposite", fig_position_compare),
+        ("attitudeCompareComposite", fig_attitude_compare),
+        ("positionErrorComposite", fig_position_error),
+        ("attitudeErrorComposite", fig_attitude_error),
+    ]
+    plot_selected(trajectory_figs)
+    if selected.intersection(chart_id for chart_id, _fig in status_figs):
+        st.markdown("#### 导航与 VLOC 状态")
+        plot_selected(status_figs)
+    if selected.intersection(chart_id for chart_id, _fig in comparison_figs):
+        st.markdown("#### Nav / VLOC 随时间变化与误差")
+        plot_selected(comparison_figs)
+
+    if not comparison.empty:
+        with st.expander("VLOC 逐帧对比明细"):
+            st.dataframe(comparison, use_container_width=True, hide_index=True)
+
+    html_figs = [fig for chart_id, fig in [*trajectory_figs, *status_figs, *comparison_figs] if chart_id in selected]
+    html = build_html_report(report, html_figs)
+    st.download_button(
+        "下载 HTML 可视化报告",
+        html,
+        file_name=evaluation_export_filename(report, "evaluation_report", "html"),
+        mime="text/html",
+    )
 
 
 def show_tables_and_downloads(report: dict[str, Any]) -> None:
@@ -541,7 +884,7 @@ def show_tables_and_downloads(report: dict[str, Any]) -> None:
     col4.download_button(
         "下载轨迹 Excel",
         vo_evaluator.report_to_excel(report),
-        file_name="vo_trajectory_exports.xlsx",
+        file_name=evaluation_export_filename(report, "trajectory_exports", "xlsx"),
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         disabled=not bool(report.get("trajectory_exports")),
     )
@@ -550,8 +893,8 @@ def show_tables_and_downloads(report: dict[str, Any]) -> None:
 def make_trajectory_3d(df: pd.DataFrame) -> go.Figure:
     """3D 轨迹图：用于肉眼检查 GT 与 VO aligned 是否重合、是否重置。"""
     fig = go.Figure()
-    gt_x, gt_y, gt_z = segmented_values(df, ["gt_x_m", "gt_y_m", "gt_z_m"])
-    est_x, est_y, est_z = segmented_values(df, ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"])
+    gt_x, gt_y, gt_z = segmented_values(df, ["gt_x_m", "gt_y_m", "gt_z_m"], segment_col="visual_segment_id")
+    est_x, est_y, est_z = segmented_values(df, ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"], segment_col="visual_segment_id")
     fig.add_trace(go.Scatter3d(x=gt_x, y=gt_y, z=gt_z, mode="lines", name="Ground truth"))
     fig.add_trace(
         go.Scatter3d(
@@ -562,18 +905,20 @@ def make_trajectory_3d(df: pd.DataFrame) -> go.Figure:
             name="VO aligned",
         )
     )
+    add_segment_endpoint_markers_3d(
+        fig,
+        df,
+        ["est_x_aligned_m", "est_y_aligned_m", "est_z_aligned_m"],
+        "vo",
+        start_color="#9333ea",
+        end_color="#ef4444",
+        start_symbol="diamond",
+        end_symbol="x",
+        marker_size=5,
+        marker_line_width=1,
+        text_size=10,
+    )
     fig.update_layout(title="3D 轨迹", scene=dict(xaxis_title="x m", yaxis_title="y m", zaxis_title="z m"), height=460)
-    return fig
-
-
-def make_trajectory_xy(df: pd.DataFrame) -> go.Figure:
-    """俯视 XY 轨迹图：对应水平路径形状和水平误差观察。"""
-    fig = go.Figure()
-    gt_x, gt_y = segmented_values(df, ["gt_x_m", "gt_y_m"])
-    est_x, est_y = segmented_values(df, ["est_x_aligned_m", "est_y_aligned_m"])
-    fig.add_trace(go.Scatter(x=gt_x, y=gt_y, mode="lines", name="Ground truth"))
-    fig.add_trace(go.Scatter(x=est_x, y=est_y, mode="lines", name="VO aligned"))
-    fig.update_layout(title="俯视 XY 轨迹", xaxis_title="x m", yaxis_title="y m", yaxis_scaleanchor="x", height=460)
     return fig
 
 
@@ -584,116 +929,280 @@ def make_error_distance(df: pd.DataFrame) -> go.Figure:
     dist_h, err_h = segmented_values(df, ["distance_m", "horizontal_error_m"])
     fig.add_trace(go.Scatter(x=dist_3d, y=err_3d, mode="lines", name="3D error"))
     fig.add_trace(go.Scatter(x=dist_h, y=err_h, mode="lines", name="horizontal"))
+    fig.update_layout(title="ATE 绝对位姿误差", xaxis_title="distance m", yaxis_title="error m", height=360)
+    return fig
+
+
+def make_vloc_trajectory_3d(df: pd.DataFrame) -> go.Figure:
+    """VLOC 3D 轨迹图：nav 和 vloc 都使用 body/NED 统一后的坐标。"""
+    fig = go.Figure()
+    if {"nav_n_m", "nav_e_m", "nav_d_m", "vloc_n_m", "vloc_e_m", "vloc_d_m"}.issubset(df.columns):
+        nav_n, nav_e, nav_d = segmented_values(df, ["nav_n_m", "nav_e_m", "nav_d_m"], segment_col="visual_segment_id")
+        vloc_n, vloc_e, vloc_d = segmented_values(df, ["vloc_n_m", "vloc_e_m", "vloc_d_m"], segment_col="visual_segment_id")
+        fig.add_trace(go.Scatter3d(x=nav_n, y=nav_e, z=nav_d, mode="lines", name="nav"))
+        fig.add_trace(go.Scatter3d(x=vloc_n, y=vloc_e, z=vloc_d, mode="lines", name="vloc"))
+        add_segment_endpoint_markers_3d(
+            fig,
+            df,
+            ["vloc_n_m", "vloc_e_m", "vloc_d_m"],
+            "vloc",
+            start_color="#9333ea",
+            end_color="#ef4444",
+            start_symbol="diamond",
+            end_symbol="x",
+            marker_size=5,
+            marker_line_width=1,
+            text_size=10,
+        )
+    fig.update_layout(title="3D 轨迹", scene=dict(xaxis_title="north m", yaxis_title="east m", zaxis_title="down m"), height=460)
+    return fig
+
+
+def make_vloc_trajectory_xy(df: pd.DataFrame) -> go.Figure:
+    """VLOC 俯视轨迹图：N/E 平面路径对比。"""
+    fig = go.Figure()
+    if {"nav_n_m", "nav_e_m", "vloc_n_m", "vloc_e_m"}.issubset(df.columns):
+        nav_n, nav_e = segmented_values(df, ["nav_n_m", "nav_e_m"])
+        vloc_n, vloc_e = segmented_values(df, ["vloc_n_m", "vloc_e_m"])
+        fig.add_trace(go.Scatter(x=nav_n, y=nav_e, mode="lines", name="nav"))
+        fig.add_trace(go.Scatter(x=vloc_n, y=vloc_e, mode="lines", name="vloc"))
+    fig.update_layout(title="俯视 NE 轨迹", xaxis_title="north m", yaxis_title="east m", yaxis_scaleanchor="x", height=460)
+    return fig
+
+
+def make_vloc_error_distance(df: pd.DataFrame) -> go.Figure:
+    """VLOC 位置误差随 nav 轨迹路程变化。"""
+    fig = go.Figure()
+    for col, name in [
+        ("position_error_3d_m", "3D position error"),
+        ("horizontal_position_error_m", "horizontal error"),
+        ("vertical_position_error_abs_m", "vertical abs error"),
+    ]:
+        if {"distance_m", col}.issubset(df.columns):
+            distance, values = segmented_values(df, ["distance_m", col])
+            fig.add_trace(go.Scatter(x=distance, y=values, mode="lines", name=name))
     fig.update_layout(title="误差随路程变化", xaxis_title="distance m", yaxis_title="error m", height=360)
     return fig
 
 
-def make_altitude_distance(df: pd.DataFrame) -> go.Figure:
-    """高度与垂直误差：无人机高度方向单独看，避免被 XY 误差掩盖。"""
+def make_vloc_multi_series(
+    df: pd.DataFrame,
+    title: str,
+    columns: list[tuple[str, str]],
+    y_title: str,
+) -> go.Figure:
+    """VLOC 状态/height 多曲线图。"""
     fig = go.Figure()
-    dist_gt, gt_z = segmented_values(df, ["distance_m", "gt_z_m"])
-    dist_est, est_z = segmented_values(df, ["distance_m", "est_z_aligned_m"])
-    dist_err, z_err = segmented_values(df, ["distance_m", "vertical_error_m"])
-    fig.add_trace(go.Scatter(x=dist_gt, y=gt_z, mode="lines", name="GT altitude"))
-    fig.add_trace(go.Scatter(x=dist_est, y=est_z, mode="lines", name="VO altitude"))
-    fig.add_trace(go.Scatter(x=dist_err, y=z_err, mode="lines", name="vertical error"))
-    fig.update_layout(title="高度与垂直误差", xaxis_title="distance m", yaxis_title="z/error m", height=360)
+    for col, name in columns:
+        if {"timestamp", col}.issubset(df.columns):
+            timestamps, values = segmented_values(df, ["timestamp", col])
+            fig.add_trace(go.Scatter(x=timestamps, y=values, mode="lines", name=name))
+    fig.update_layout(title=title, xaxis_title="timestamp s", yaxis_title=y_title, height=360)
     return fig
 
 
-def segmented_values(df: pd.DataFrame, cols: list[str]) -> list[list[float | None]]:
+def make_composite_pair_time_series(
+    df: pd.DataFrame,
+    title: str,
+    series_specs: list[tuple[str, str, str, str, bool]],
+    left_name: str,
+    right_name: str,
+) -> go.Figure:
+    """三联图：两组轨迹分量共享一个时间轴，缩放时一起观察。"""
+    fig = make_subplots(rows=len(series_specs), cols=1, shared_xaxes=True, subplot_titles=[spec[0] for spec in series_specs], vertical_spacing=0.04)
+    for row_idx, (label, left_col, right_col, unit, unwrap_angles) in enumerate(series_specs, start=1):
+        left_color, right_color = composite_pair_colors(row_idx - 1)
+        if {"timestamp", left_col, right_col}.issubset(df.columns):
+            t_left, left_values = segmented_values(df, ["timestamp", left_col])
+            t_right, right_values = segmented_values(df, ["timestamp", right_col])
+            if unwrap_angles:
+                left_values = unwrap_degrees(left_values)
+                right_values = unwrap_degrees(right_values)
+            fig.add_trace(
+                go.Scatter(
+                    x=t_left,
+                    y=left_values,
+                    mode="lines",
+                    name=f"{label} {left_name}",
+                    legendgroup=f"{label}-{left_name}",
+                    showlegend=True,
+                    line=dict(color=left_color),
+                ),
+                row=row_idx,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=t_right,
+                    y=right_values,
+                    mode="lines",
+                    name=f"{label} {right_name}",
+                    legendgroup=f"{label}-{right_name}",
+                    showlegend=True,
+                    line=dict(color=right_color),
+                ),
+                row=row_idx,
+                col=1,
+            )
+        fig.update_yaxes(title_text=unit, row=row_idx, col=1)
+    fig.update_xaxes(title_text="timestamp s", row=len(series_specs), col=1)
+    apply_composite_time_interaction(fig, title=title, height=320 * len(series_specs))
+    return fig
+
+
+def composite_pair_colors(row_index: int) -> tuple[str, str]:
+    """三联对比图按行分配颜色，避免第三行 D/Roll 两条线太接近。"""
+    palette = [
+        ("#2563eb", "#16a34a"),
+        ("#7c3aed", "#f97316"),
+        ("#dc2626", "#0891b2"),
+    ]
+    return palette[row_index % len(palette)]
+
+
+def add_segment_endpoint_markers_3d(
+    fig: go.Figure,
+    df: pd.DataFrame,
+    coord_cols: list[str],
+    trace_prefix: str,
+    start_color: str,
+    end_color: str,
+    start_symbol: str,
+    end_symbol: str,
+    marker_size: int = 9,
+    marker_line_width: int = 2,
+    text_size: int | None = None,
+) -> None:
+    """在每个连续段的 3D 轨迹首尾加标记，帮助判断断点前后的起止位置。"""
+    if df.empty or not set(coord_cols).issubset(df.columns):
+        return
+
+    segment_col = "visual_segment_id" if "visual_segment_id" in df.columns else "segment_id"
+    groups = df.groupby(segment_col, sort=False) if segment_col in df.columns else [(0, df)]
+    starts: list[pd.Series] = []
+    ends: list[pd.Series] = []
+    for _, group in groups:
+        clean = group.dropna(subset=coord_cols)
+        if clean.empty:
+            continue
+        starts.append(clean.iloc[0])
+        ends.append(clean.iloc[-1])
+    if not starts:
+        return
+
+    start_frame = pd.DataFrame(starts)
+    end_frame = pd.DataFrame(ends)
+    labels = [f"{trace_prefix} S{idx + 1}" for idx in range(len(start_frame))]
+    end_labels = [f"{trace_prefix} E{idx + 1}" for idx in range(len(end_frame))]
+    marker_common = dict(size=marker_size, line=dict(color="#0f172a", width=marker_line_width))
+    textfont = dict(size=text_size) if text_size is not None else None
+    fig.add_trace(
+        go.Scatter3d(
+            x=start_frame[coord_cols[0]],
+            y=start_frame[coord_cols[1]],
+            z=start_frame[coord_cols[2]],
+            mode="markers+text",
+            name=f"{trace_prefix} start",
+            text=labels,
+            textposition="top center",
+            textfont=textfont,
+            marker={**marker_common, "symbol": start_symbol, "color": start_color},
+        )
+    )
+    fig.add_trace(
+        go.Scatter3d(
+            x=end_frame[coord_cols[0]],
+            y=end_frame[coord_cols[1]],
+            z=end_frame[coord_cols[2]],
+            mode="markers+text",
+            name=f"{trace_prefix} end",
+            text=end_labels,
+            textposition="bottom center",
+            textfont=textfont,
+            marker={**marker_common, "symbol": end_symbol, "color": end_color},
+        )
+    )
+
+
+def make_composite_error_time_series(
+    df: pd.DataFrame,
+    title: str,
+    series_specs: list[tuple[str, str, str, bool]],
+) -> go.Figure:
+    """三联图：单组误差分量共享一个时间轴。"""
+    fig = make_subplots(rows=len(series_specs), cols=1, shared_xaxes=True, subplot_titles=[spec[0] for spec in series_specs], vertical_spacing=0.04)
+    for row_idx, (label, error_col, unit, unwrap_angles) in enumerate(series_specs, start=1):
+        if {"timestamp", error_col}.issubset(df.columns):
+            timestamps, values = segmented_values(df, ["timestamp", error_col])
+            if unwrap_angles:
+                values = unwrap_degrees(values)
+            fig.add_trace(
+                go.Scatter(x=timestamps, y=values, mode="lines", name=label, legendgroup=label, showlegend=False),
+                row=row_idx,
+                col=1,
+            )
+        fig.update_yaxes(title_text=unit, row=row_idx, col=1)
+    fig.update_xaxes(title_text="timestamp s", row=len(series_specs), col=1)
+    apply_composite_time_interaction(fig, title=title, height=320 * len(series_specs))
+    return fig
+
+
+def make_composite_single_time_series(
+    df: pd.DataFrame,
+    title: str,
+    series_specs: list[tuple[str, str, str, bool]],
+) -> go.Figure:
+    """多联图：同一状态类信号拆成多行，共享时间轴。"""
+    fig = make_subplots(rows=len(series_specs), cols=1, shared_xaxes=True, subplot_titles=[spec[0] for spec in series_specs], vertical_spacing=0.04)
+    for row_idx, (label, field, unit, unwrap_angles) in enumerate(series_specs, start=1):
+        if {"timestamp", field}.issubset(df.columns):
+            timestamps, values = segmented_values(df, ["timestamp", field])
+            if unwrap_angles:
+                values = unwrap_degrees(values)
+            fig.add_trace(
+                go.Scatter(x=timestamps, y=values, mode="lines", name=label, legendgroup=label, showlegend=False),
+                row=row_idx,
+                col=1,
+            )
+        fig.update_yaxes(title_text=unit, row=row_idx, col=1)
+    fig.update_xaxes(title_text="timestamp s", row=len(series_specs), col=1)
+    apply_composite_time_interaction(fig, title=title, height=270 * len(series_specs))
+    return fig
+
+
+def apply_composite_time_interaction(fig: go.Figure, title: str, height: int) -> None:
+    """给多行时间序列统一配置跨子图 hover 虚线和共享时间轴交互。"""
+    fig.update_xaxes(
+        showspikes=True,
+        spikemode="across",
+        spikedash="dot",
+        spikesnap="cursor",
+        spikethickness=1,
+    )
+    fig.update_layout(
+        title=title,
+        height=height,
+        hovermode="x unified",
+        hoversubplots="axis",
+        hoverdistance=20,
+        spikedistance=-1,
+    )
+
+
+def segmented_values(df: pd.DataFrame, cols: list[str], segment_col: str | None = None) -> list[list[float | None]]:
     """Plotly 分段画线辅助函数。
 
-    segment_id 之间插入 None，避免 VO 重置/分段评估时图上被错误连线。
+    默认不插入断点，避免 NED/YPR/误差等普通时间序列中间断开。
+    只有 3D 轨迹会显式传 visual_segment_id，用断点诊断来断开重置位置。
     """
-    if "segment_id" not in df.columns:
+    if segment_col is None or segment_col not in df.columns:
         return [df[col].tolist() for col in cols]
     outputs: list[list[float | None]] = [[] for _ in cols]
-    for _, group in df.groupby("segment_id", sort=False):
+    for _, group in df.groupby(segment_col, sort=False):
         for idx, col in enumerate(cols):
             outputs[idx].extend(group[col].tolist())
             outputs[idx].append(None)
     return outputs
-
-
-def make_segment_error(segment_summary: list[dict[str, Any]]) -> go.Figure:
-    """长航程子轨迹误差图，对应 KITTI/rpg 风格 segment_errors。"""
-    fig = go.Figure()
-    if segment_summary:
-        lengths = [row["length_m"] for row in segment_summary]
-        mean_trans = [row["translation_error_percent"]["mean"] for row in segment_summary]
-        p95_trans = [row["translation_error_percent"]["p95"] for row in segment_summary]
-        fig.add_trace(go.Scatter(x=lengths, y=mean_trans, mode="lines+markers", name="translation mean %"))
-        fig.add_trace(go.Scatter(x=lengths, y=p95_trans, mode="lines+markers", name="translation p95 %"))
-        rot = [
-            row["rotation_error_deg_per_m"]["mean"]
-            if row.get("rotation_error_deg_per_m") is not None
-            else None
-            for row in segment_summary
-        ]
-        if any(v is not None for v in rot):
-            fig.add_trace(go.Scatter(x=lengths, y=rot, mode="lines+markers", name="rotation deg/m", yaxis="y2"))
-            fig.update_layout(yaxis2=dict(title="rotation deg/m", overlaying="y", side="right"))
-    fig.update_layout(title="按距离子轨迹误差", xaxis_title="segment length m", yaxis_title="translation error %", height=360)
-    return fig
-
-
-def make_speed_error(speed_bins: list[dict[str, Any]]) -> go.Figure:
-    """速度分箱误差图，用于判断高速/低速时 VO 漂移是否不同。"""
-    fig = go.Figure()
-    if speed_bins:
-        labels = [row["speed_bin_mps"] for row in speed_bins]
-        means = [row["translation_error_percent"]["mean"] for row in speed_bins]
-        p95 = [row["translation_error_percent"]["p95"] for row in speed_bins]
-        fig.add_trace(go.Bar(x=labels, y=means, name="mean %"))
-        fig.add_trace(go.Bar(x=labels, y=p95, name="p95 %"))
-    fig.update_layout(title="速度分箱误差", xaxis_title="speed m/s", yaxis_title="translation error %", barmode="group", height=360)
-    return fig
-
-
-def make_sim3_scale_time_series(df: pd.DataFrame) -> go.Figure:
-    """局部 Sim3 尺度随时间戳变化图。
-
-    优先读取 trajectory_exports.scale_per_frame.local_sim3_scale：
-    每个时间戳从当前帧向后取用户设置的帧数/距离窗口，计算 GT 窗口路程 / VO 原始窗口路程。
-    如果旧报告没有 scale_per_frame，则兼容读取 sim3_scale。
-    """
-    fig = go.Figure()
-    scale_col = "local_sim3_scale" if "local_sim3_scale" in df.columns else "sim3_scale"
-    if {"timestamp", scale_col}.issubset(df.columns):
-        clean = df.copy()
-        clean["timestamp"] = pd.to_numeric(clean["timestamp"], errors="coerce")
-        clean[scale_col] = pd.to_numeric(clean[scale_col], errors="coerce")
-        if "scale_available" in clean.columns:
-            clean = clean[clean["scale_available"].astype(bool)]
-        clean = clean.dropna(subset=["timestamp", scale_col])
-        if not clean.empty:
-            timestamps, scales = segmented_values(clean, ["timestamp", scale_col])
-            fig.add_trace(go.Scatter(x=timestamps, y=scales, mode="lines+markers", name="local_sim3_scale"))
-    fig.update_layout(title="局部 Sim3 尺度随时间戳变化", xaxis_title="timestamp s", yaxis_title="GT/VO local scale", height=360)
-    return fig
-
-
-def make_gt_vo_time_series(
-    df: pd.DataFrame,
-    title: str,
-    gt_col: str,
-    est_col: str,
-    unit: str,
-    unwrap_angles: bool = False,
-) -> go.Figure:
-    """GT 和 VO 对齐后某个 x/y/z/yaw/pitch/roll 分量随时间变化。"""
-    fig = go.Figure()
-    if {"timestamp", gt_col, est_col}.issubset(df.columns):
-        t_gt, gt_values = segmented_values(df, ["timestamp", gt_col])
-        t_est, est_values = segmented_values(df, ["timestamp", est_col])
-        if unwrap_angles:
-            gt_values = unwrap_degrees(gt_values)
-            est_values = unwrap_degrees(est_values)
-        fig.add_trace(go.Scatter(x=t_gt, y=gt_values, mode="lines", name="Ground truth"))
-        fig.add_trace(go.Scatter(x=t_est, y=est_values, mode="lines", name="VO aligned"))
-    fig.update_layout(title=title, xaxis_title="timestamp s", yaxis_title=unit, height=360)
-    return fig
 
 
 def unwrap_degrees(values: list[float | None]) -> list[float | None]:
@@ -724,24 +1233,6 @@ def unwrap_degrees(values: list[float | None]) -> list[float | None]:
     return out
 
 
-def make_error_time_series(
-    df: pd.DataFrame,
-    title: str,
-    error_col: str,
-    unit: str,
-    unwrap_angles: bool = False,
-) -> go.Figure:
-    """某个 x/y/z/yaw/pitch/roll 误差随时间变化。"""
-    fig = go.Figure()
-    if {"timestamp", error_col}.issubset(df.columns):
-        timestamps, values = segmented_values(df, ["timestamp", error_col])
-        if unwrap_angles:
-            values = unwrap_degrees(values)
-        fig.add_trace(go.Scatter(x=timestamps, y=values, mode="lines", name=error_col))
-    fig.update_layout(title=title, xaxis_title="timestamp s", yaxis_title=f"error {unit}", height=360)
-    return fig
-
-
 def make_rpe_time_series(df: pd.DataFrame, title: str, error_col: str, unit: str) -> go.Figure:
     """当前 RPE 帧数/距离配置下，每个起点时间戳对应的 RPE 误差。"""
     fig = go.Figure()
@@ -755,12 +1246,17 @@ def make_rpe_time_series(df: pd.DataFrame, title: str, error_col: str, unit: str
     return fig
 
 
-def render_figure_grid(figures: list[go.Figure]) -> None:
-    """两列展示一组 Plotly 图。"""
-    for start in range(0, len(figures), 2):
-        cols = st.columns(2)
-        for col, fig in zip(cols, figures[start : start + 2]):
-            col.plotly_chart(fig, use_container_width=True)
+def make_scale_time_series(df: pd.DataFrame) -> go.Figure:
+    """当前尺度图帧数/距离配置下，每个起点时间戳对应的局部 Sim3 尺度。"""
+    fig = go.Figure()
+    if {"timestamp", "local_sim3_scale", "scale_available"}.issubset(df.columns):
+        clean = df[df["scale_available"].astype(bool)].copy()
+        clean = clean[pd.to_numeric(clean["local_sim3_scale"], errors="coerce").notna()]
+        if not clean.empty:
+            timestamps, values = segmented_values(clean, ["timestamp", "local_sim3_scale"])
+            fig.add_trace(go.Scatter(x=timestamps, y=values, mode="lines+markers", name="local_sim3_scale"))
+    fig.update_layout(title="局部 Sim3 尺度随时间变化", xaxis_title="timestamp s", yaxis_title="scale", height=360)
+    return fig
 
 
 def metric(col: Any, label: str, value: Any, unit: str) -> None:
@@ -862,37 +1358,28 @@ def build_report_metric_cards(report: dict[str, Any]) -> list[dict[str, str]]:
     vertical = report.get("ate_vertical_m") or {}
     alignment = report.get("alignment") or {}
     breaks = nested(report, "discontinuities", "all_matches", "break_count", default="N/A")
-    assoc = report.get("association") or {}
     correction = report.get("orientation_correction") or {}
-    divergence = report.get("divergence") or {}
     return [
         {"label": "#01 ATE RMSE", "value": report_value(ate.get("rmse"), "m"), "note": f"{report_number(100 * ate.get('rmse', math.nan) / summary.get('gt_path_length_m', math.nan))} % 路程；p95 {report_value(ate.get('p95'), 'm')}"},
         {"label": "#02 RPE RMSE", "value": report_value(rpe.get("rmse"), "m"), "note": f"{rpe_delta_label(report.get('rpe_frame_delta', {}))}；p95 {report_value(rpe.get('p95'), 'm')}"},
+        {"label": "#03 长航程路程", "value": report_value(summary.get("gt_path_length_m"), "m"), "note": f"{report_value(summary.get('duration_s'), 's')} / {summary.get('matched_poses', 'N/A')} 帧"},
+        {"label": "#04 垂直 RMSE", "value": report_value(vertical.get("rmse"), "m"), "note": f"p95 {report_value(vertical.get('p95'), 'm')}"},
         {
-            "label": "#03 终点漂移",
-            "value": report_value(summary.get("endpoint_error_m"), "m"),
-            "note": f"{report_number(summary.get('endpoint_error_percent_of_path'))} % 路程",
-        },
-        {"label": "#04 长航程路程", "value": report_value(summary.get("gt_path_length_m"), "m"), "note": f"{report_value(summary.get('duration_s'), 's')} / {summary.get('matched_poses', 'N/A')} 帧"},
-        {"label": "#05 垂直 RMSE", "value": report_value(vertical.get("rmse"), "m"), "note": f"p95 {report_value(vertical.get('p95'), 'm')}"},
-        {"label": "#06 发散状态", "value": "是" if divergence.get("diverged") else "否", "note": divergence_summary_label(divergence)},
-        {
-            "label": "#07 GT 覆盖率",
+            "label": "#05 GT 覆盖率",
             "value": report_value(100 * summary.get("gt_time_coverage_ratio", summary.get("gt_pose_coverage_ratio", math.nan)), "%"),
             "note": "仅表示评估覆盖的 GT 段",
         },
-        {"label": "#08 Raw 尺度比", "value": report_number(summary.get("raw_path_scale_ratio_est_over_gt")), "note": "VO 原始路程 / GT 路程"},
-        {"label": "#09 对齐尺度", "value": report_number(alignment.get("scale")), "note": scale_range_text(alignment)},
-        {"label": "#10 匹配位姿", "value": report_value(summary.get("matched_poses")), "note": f"{summary.get('original_matched_poses', 'N/A')} 原始匹配"},
+        {"label": "#06 Raw 尺度比", "value": report_number(summary.get("raw_path_scale_ratio_est_over_gt")), "note": "VO 原始路程 / GT 路程"},
+        {"label": "#07 对齐尺度", "value": report_number(alignment.get("scale")), "note": scale_range_text(alignment)},
+        {"label": "#08 匹配位姿", "value": report_value(summary.get("matched_poses")), "note": f"{summary.get('original_matched_poses', 'N/A')} 原始匹配"},
         {
-            "label": "#11 VO 匹配率",
+            "label": "#09 VO 匹配率",
             "value": report_value(100 * summary.get("est_pose_coverage_ratio", math.nan), "%"),
             "note": f"{summary.get('matched_poses', 'N/A')} / {summary.get('est_poses', 'N/A')} 帧",
         },
-        {"label": "#12 断点数量", "value": str(breaks), "note": f"策略 {nested(report, 'discontinuities', 'selected_segment', 'policy', default='N/A')}"},
-        {"label": "#13 时间同步", "value": association_label(assoc), "note": association_summary_label(assoc)},
-        {"label": "#14 姿态修正", "value": orientation_correction_label(correction), "note": orientation_summary_label(correction)},
-        {"label": "#15 耗时", "value": report_value(summary.get("duration_s"), "s"), "note": "有效评估窗口，不是算法运行耗时"},
+        {"label": "#10 断点数量", "value": str(breaks), "note": f"策略 {nested(report, 'discontinuities', 'selected_segment', 'policy', default='N/A')}"},
+        {"label": "#11 姿态修正", "value": orientation_correction_label(correction), "note": orientation_summary_label(correction)},
+        {"label": "#12 耗时", "value": report_value(summary.get("duration_s"), "s"), "note": "有效评估窗口，不是算法运行耗时"},
     ]
 
 

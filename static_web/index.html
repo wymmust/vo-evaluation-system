@@ -5,8 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>VO 评估系统</title>
     <link rel="stylesheet" href="./style.css" />
-    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+    <script src="./vendor/plotly/plotly-2.35.2.min.js"></script>
   </head>
   <body>
     <header class="topbar">
@@ -20,116 +19,41 @@
     <main class="layout">
       <aside class="panel controls" aria-label="评估设置">
         <section>
-          <h2>输入文件</h2>
+          <h2>输入目录</h2>
           <label>
-            Ground truth
-            <input id="gtFile" type="file" accept=".txt,.csv,.tsv,.log" />
+            评估入口
+            <select id="entryMode">
+              <option value="vloc" selected>VLOC 评估</option>
+              <option value="vo">VO 评估</option>
+            </select>
           </label>
           <label>
-            VO 输出
-            <input id="estFile" type="file" accept=".txt,.csv,.tsv,.log" />
+            data_dir 目录
+            <div class="directory-picker-row">
+              <button id="dataDirButton" type="button" class="directory-picker-button">选择 data_dir 目录</button>
+              <div id="dataDirStatus" class="directory-status">未选择目录</div>
+            </div>
+            <input id="dataDirFiles" class="directory-input-hidden" type="file" webkitdirectory directory multiple />
           </label>
+          <p class="section-hint">固定读取 <code>data_dir/imu.txt</code>。</p>
+          <label>
+            log_dir 目录
+            <div class="directory-picker-row">
+              <button id="logDirButton" type="button" class="directory-picker-button">选择 log_dir 目录</button>
+              <div id="logDirStatus" class="directory-status">未选择目录</div>
+            </div>
+            <input id="logDirFiles" class="directory-input-hidden" type="file" webkitdirectory directory multiple />
+          </label>
+          <p id="entryModeHint" class="section-hint">当前模式会读取 <code>log_dir/vloc.txt</code>、<code>home_point.txt</code> 和 <code>calib_raw.yaml</code>。</p>
+          <p class="section-hint" data-entry-show="vloc">VLOC 固定使用 GT 插值到 VLOC 时间戳，最大 GT 插值间隔 1.0 s；超过 1.0 s 的 VLOC 帧直接丢弃，不允许外推，时间偏移固定为 0。</p>
+          <p class="section-hint" data-entry-show="vo">VO 固定使用 GT 插值到 VO 时间戳，最大 GT 插值间隔 1.0 s；按 reset_count 有效连续段分别做 Sim3，不允许外推，时间偏移固定为 0。</p>
+          <p class="section-hint">浏览器不会暴露本地绝对路径，这里只显示目录名和文件数量。</p>
         </section>
 
-        <section>
-          <h2>格式与对齐</h2>
-          <label>
-            Ground truth 格式
-            <select id="gtFormat">
-              <option value="auto">自动识别</option>
-              <option value="sf">SF</option>
-              <option value="tum">TUM</option>
-              <option value="kitti">KITTI</option>
-              <option value="csv">CSV/TSV 表格</option>
-              <option value="xyz">XYZ</option>
-            </select>
-          </label>
-          <label>
-            VO 输出格式
-            <select id="estFormat">
-              <option value="auto">自动识别</option>
-              <option value="sf">SF</option>
-              <option value="vloc">VLOC</option>
-              <option value="tum">TUM</option>
-              <option value="kitti">KITTI</option>
-              <option value="csv">CSV/TSV 表格</option>
-              <option value="xyz">XYZ</option>
-            </select>
-          </label>
-          <label>
-            轨迹对齐
-            <select id="alignment">
-              <option value="sim3">Sim3 相似变换</option>
-              <option value="se3">SE3 刚体对齐</option>
-              <option value="first_pose">首帧对齐</option>
-              <option value="none">不对齐</option>
-            </select>
-          </label>
-          <label>
-            VO 姿态修正
-            <select id="orientationCorrection">
-              <option value="auto">自动选择最优姿态修正</option>
-              <option value="none">不修正</option>
-              <option value="ignore">忽略姿态，只评估位置</option>
-              <option value="inverse">取逆 R^T</option>
-              <option value="rz180_right">右乘 Rz(180)</option>
-              <option value="rz180_left">左乘 Rz(180)</option>
-              <option value="rx180_right">右乘 Rx(180)</option>
-              <option value="ry180_right">右乘 Ry(180)</option>
-              <option value="enu_ned_left">ENU/NED 左乘</option>
-              <option value="enu_ned_right">ENU/NED 右乘</option>
-              <option value="enu_ned_both">ENU/NED 两侧变换</option>
-            </select>
-          </label>
-          <label>
-            时间同步方式
-            <select id="associationMode">
-              <option value="interpolate_gt">GT 插值到 VO 时间戳</option>
-              <option value="nearest">TUM 最近邻时间戳匹配</option>
-              <option value="index">按索引匹配</option>
-            </select>
-          </label>
-        </section>
+        <button id="runButton" disabled>运行评估</button>
 
-        <section>
+        <section id="evaluationParametersSection" data-entry-hide="vloc">
           <h2>评估参数</h2>
-          <label>
-            时间关联最大误差 s（不按时间填 -1）
-            <input id="maxTimeDiff" type="number" value="0.02" step="0.01" />
-          </label>
-          <label>
-            Reference 频率 / 插值间隔预设
-            <select id="interpolationPreset">
-              <option value="0.15" selected>20 Hz reference（0.15 s 推荐）</option>
-              <option value="0.05">100 Hz reference（0.05 s）</option>
-              <option value="0.08">50 Hz reference（0.08 s）</option>
-              <option value="0.30">10 Hz reference（0.30 s）</option>
-              <option value="-1">不限制 GT gap</option>
-              <option value="custom">自定义</option>
-            </select>
-          </label>
-          <label>
-            GT 插值最大间隔 s（不限制填 -1）
-            <input id="maxInterpolationGap" type="number" value="0.15" step="0.01" />
-          </label>
-          <label>
-            插值外推
-            <select id="allowExtrapolation">
-              <option value="false" selected>不允许外推（推荐）</option>
-              <option value="true">允许外推</option>
-            </select>
-          </label>
-          <label>
-            姿态插值
-            <select id="interpolateRotation">
-              <option value="true" selected>GT 姿态用 SLERP 插值</option>
-              <option value="false">只插位置，不插姿态</option>
-            </select>
-          </label>
-          <label>
-            VO 时间戳偏移 s
-            <input id="timeOffset" type="number" value="0" step="0.01" />
-          </label>
           <label>
             RPE 统计间隔
             <div class="inline-fields">
@@ -150,53 +74,34 @@
               </select>
             </div>
           </label>
-          <label>
-            长航程子轨迹长度 m
-            <input id="segmentLengths" type="text" value="50,100,200,500,1000,2000,5000" />
-          </label>
-          <label>
-            每个长度最多抽样段数
-            <input id="maxSegments" type="number" value="10000" min="100" step="1000" />
-          </label>
-          <label>
-            子轨迹起点步长 frames
-            <input id="segmentStep" type="number" value="10" min="1" step="1" />
-          </label>
-          <label>
-            子轨迹长度容差比例
-            <input id="lengthTolerance" type="number" value="0.05" min="0" max="1" step="0.01" />
-          </label>
         </section>
 
-        <section>
-          <h2>诊断阈值</h2>
-          <label>
-            VO 重置/断点处理
-            <select id="segmentPolicy">
-              <option value="vo_timestamps">按 VO 时间戳统一评估</option>
-              <option value="segments" selected>按 VO 连续段逐段评估</option>
-              <option value="longest">只评估最长连续段</option>
-            </select>
-          </label>
-          <label>
-            断点步长阈值 m
-            <input id="discontinuityStep" type="number" value="100" min="0" step="10" />
-          </label>
-          <label>
-            断点时间间隔阈值 s
-            <input id="discontinuityGap" type="number" value="5" min="0" step="1" />
-          </label>
-          <label>
-            发散绝对阈值 m
-            <input id="divergenceAbs" type="number" value="30" min="0" step="1" />
-          </label>
-          <label>
-            发散相对阈值 % 路程
-            <input id="divergenceRel" type="number" value="3" min="0" step="0.5" />
-          </label>
+        <section id="vlocChartDirectorySection" data-entry-show="vloc">
+          <h2>图表目录</h2>
+          <p class="section-hint">选择右侧展示的 VLOC 图表，评估后默认全开。</p>
+          <div id="vlocChartList" class="chart-directory-list"></div>
+          <div class="chart-directory-actions">
+            <button id="vlocChartSelectAll" type="button">全选</button>
+            <button id="vlocChartClear" type="button">清除</button>
+          </div>
         </section>
 
-        <button id="runButton" disabled>运行评估</button>
+        <section id="voChartDirectorySection" data-entry-show="vo">
+          <h2>图表目录</h2>
+          <p class="section-hint">选择右侧展示的 VO 图表，评估后默认全开。</p>
+          <div id="voChartList" class="chart-directory-list"></div>
+          <div class="chart-directory-actions">
+            <button id="voChartSelectAll" type="button">全选</button>
+            <button id="voChartClear" type="button">清除</button>
+          </div>
+        </section>
+
+        <section id="pointSelectionOutputSection" data-entry-show="vloc,vo" hidden>
+          <h2>输出对比</h2>
+          <p class="section-hint">选取图中点后，这里按图表汇总点所在曲线、点标记、时间戳和值。</p>
+          <div id="pointSelectionOutput" class="point-selection-output"></div>
+          <button id="clearAllPointSelections" type="button" class="clear-point-selections">清除所有点</button>
+        </section>
       </aside>
 
       <section class="content">
@@ -205,44 +110,39 @@
         <section class="panel">
           <div class="section-head">
             <div>
-              <div class="section-kicker">Evaluation Summary</div>
-              <h2>运行结果</h2>
+              <div id="summaryKicker" class="section-kicker">VLOC Evaluation Summary</div>
+              <h2 id="summaryTitle">VLOC 运行结果</h2>
             </div>
           </div>
           <div id="metrics" class="metric-grid">
-            <div class="empty-state">上传 Ground truth 和 VO 输出后运行评估。</div>
+            <div class="empty-state">选择评估入口并导入 data_dir / log_dir 后运行评估。</div>
           </div>
         </section>
 
         <section class="panel">
           <div class="section-head">
             <div>
-              <div class="section-kicker">Trajectory & Drift</div>
-              <h2>可视化</h2>
+              <div id="visualKicker" class="section-kicker">Navigation & Estimation</div>
+              <h2 id="visualTitle">VLOC 可视化</h2>
             </div>
           </div>
           <div class="chart-grid">
             <div id="trajectory3d" class="chart"></div>
             <div id="trajectoryXY" class="chart"></div>
             <div id="errorDistance" class="chart"></div>
-            <div id="altitudeDistance" class="chart"></div>
-            <div id="segmentError" class="chart"></div>
-            <div id="speedError" class="chart"></div>
-            <div id="sim3ScaleTime" class="chart"></div>
-            <div id="seriesXTime" class="chart"></div>
-            <div id="seriesYTime" class="chart"></div>
-            <div id="seriesZTime" class="chart"></div>
-            <div id="seriesYawTime" class="chart"></div>
-            <div id="seriesPitchTime" class="chart"></div>
-            <div id="seriesRollTime" class="chart"></div>
-            <div id="errorXTime" class="chart"></div>
-            <div id="errorYTime" class="chart"></div>
-            <div id="errorZTime" class="chart"></div>
-            <div id="errorYawTime" class="chart"></div>
-            <div id="errorPitchTime" class="chart"></div>
-            <div id="errorRollTime" class="chart"></div>
+            <div id="heightComparison" class="chart"></div>
+            <div id="navStatusModes" class="chart"></div>
+            <div id="navVelocity" class="chart"></div>
+            <div id="navResetCounts" class="chart"></div>
+            <div id="vlocStatus" class="chart"></div>
+            <div id="voStatus" class="chart"></div>
+            <div id="positionCompareComposite" class="chart"></div>
+            <div id="attitudeCompareComposite" class="chart"></div>
+            <div id="positionErrorComposite" class="chart"></div>
+            <div id="attitudeErrorComposite" class="chart"></div>
             <div id="rpeTranslationTime" class="chart"></div>
             <div id="rpeRotationTime" class="chart"></div>
+            <div id="scaleFrameTime" class="chart" data-entry-show="vo"></div>
           </div>
         </section>
 
