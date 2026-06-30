@@ -21,11 +21,9 @@
 - ATE 三维位置误差：pos_error_m -> report["ate_position_m"]。
 - ATE 水平误差：horizontal_error_m -> report["ate_horizontal_m"]。
 - ATE 垂直/高度误差：vertical_error_m -> report["ate_vertical_m"]。
-- 姿态修正：select_orientation_correction()/apply_orientation_correction() -> report["orientation_correction"]；
-  当前 sf_vloc/sf_vo 固定 none，旧的 auto/手动修正只保留给通用评估入口。
 - 姿态/yaw 误差：rotation_errors()/yaw_from_rot() -> ate_orientation_deg / ate_yaw_deg。
 - RPE 帧数/距离间隔误差：rpe_frame_dataframe()/relative_error() -> report["rpe_frame_delta"] 和 rpe_per_frame。
-- KITTI/rpg 风格子轨迹误差：segment_errors() -> report["segment_errors"] 和 segment_records。
+- 局部尺度：scale_frame_dataframe() -> report["scale_frame_delta"] 和 scale_per_frame。
 - 覆盖率、路程、耗时、原始尺度比等汇总量：summary dict。
 - reset/gap/大跳变诊断：detect_associated_discontinuities() -> report["discontinuities"]。
 - runtime/资源统计：summarize_runtime() -> report["runtime"]。
@@ -34,18 +32,18 @@
 - [Sturm12] Sturm et al., "A Benchmark for the Evaluation of RGB-D SLAM Systems", IROS 2012。
   直接来源：TUM trajectory 格式、timestamp association 思路、ATE、RPE。
 - [Geiger12] Geiger et al., "Are we ready for Autonomous Driving? The KITTI Vision Benchmark Suite", CVPR 2012。
-  直接来源：按子轨迹长度统计平移误差百分比、旋转误差 deg/m，以及按速度/长度看误差。
+  参考来源：长距离轨迹评估应关注路程尺度和累计漂移。
 - [Schubert18] Schubert et al., "The TUM VI Benchmark for Evaluating Visual-Inertial Odometry", IROS 2018。
   参考来源：VIO 数据的高频 GT、传感器时间同步、长序列/起止段评估和 VI 姿态评估语境。
 - [Delmerico18] Delmerico and Scaramuzza, "A Benchmark Comparison of Monocular Visual-Inertial Odometry Algorithms for Flying Robots", ICRA 2018。
   参考来源：飞行机器人场景下同时关注轨迹精度、低延迟、每帧处理时间、CPU 和内存负载。
 - [Zhang18] Zhang and Scaramuzza, "A Tutorial on Quantitative Trajectory Evaluation for Visual(-Inertial) Odometry", IROS 2018。
-  直接来源：按传感器可观性选择 SE3/Sim3/首帧等对齐方式，ATE 与相对误差的统一解释。
+  直接来源：按传感器可观性选择 Sim3/不对齐口径，ATE 与相对误差的统一解释。
 
 每个输出指标对应的论文方法：
 - report["association"]：Sturm12 的 TUM greedy timestamp association；interpolate_gt 是本系统为“GT 高频、estimate 低频或错位”
   增加的工程扩展，动机来自 Schubert18 的高频同步 GT 和 Zhang18 对时间关联问题的强调。
-- report["alignment"]：Sturm12 ATE 需要先对齐轨迹；Zhang18 明确按单目/双目/VIO 选择 Sim3、SE3 或其他变换。
+- report["alignment"]：Sturm12 ATE 需要先明确轨迹配准口径；Zhang18 明确单目无尺度通常看 Sim3。
 - report["ate_position_m"]：Sturm12 的 Absolute Trajectory Error；Zhang18 也把 ATE 作为常用全局误差。
 - report["ate_horizontal_m"]：ATE 的 XY 分量拆分，论文中不是独立排行榜指标；为物流无人机横向航线偏差扩展，
   应和 Sturm12/Zhang18 的 ATE 一起理解。
@@ -55,15 +53,13 @@
 - report["rpe_frame_delta"]：Sturm12 的 Relative Pose Error；frames 模式对应固定帧 RPE，meters 模式是在同一
   relative_error 公式上按 GT 距离窗口选终点的工程扩展；Schubert18/TUM VI 使用固定时间间隔 RPE 评估 VIO；
   Zhang18 将其归入相对误差。
-- report["segment_errors"]：Geiger12/KITTI odometry 的固定长度子轨迹平移百分比和旋转 deg/m；
-  Zhang18/rpg 轨迹评估也使用相对误差和尺度漂移思想。
+- report["scale_frame_delta"]：局部尺度窗口统计，用来观察 VO 局部尺度是否随时间或距离漂移。
 - report["summary"]["gt_coverage_ratio"] 和 report["summary"]["est_coverage_ratio"]：工程扩展，动机来自 Schubert18/Delmerico18
   对长序列 VIO 跟踪成功率、鲁棒性和飞行可用性的关注。
 - report["summary"]["raw_path_scale_ratio"]：Zhang18 的尺度可观性和 Sim3/SE3 对齐讨论；用于判断估计轨迹是否无尺度或尺度不稳。
 - report["summary"]["duration_s"]、["gt_path_m"]、["est_path_m"]：工程基础量，用于把 Geiger12 的长度/速度误差、
   Delmerico18 的运行时间约束和无人机长航程需求放到同一报告。
-- report["divergence"]：工程扩展，论文中没有统一阈值公式；用于把 Schubert18/Delmerico18 的长序列鲁棒性需求落到可报警字段。
-- report["discontinuities"]：工程扩展，处理 estimate 重定位/重置/丢跟踪后的大跳变，避免跨断点污染 Geiger12 式子轨迹统计。
+- report["discontinuities"]：工程扩展，处理 estimate 重定位/重置/丢跟踪后的大跳变，避免跨断点污染 RPE 和分段 Sim3。
 - report["runtime"]：Delmerico18 直接关注每帧处理时间、CPU 和内存负载；本系统从 estimate extras 字段中统计这些量。
 """
 
@@ -73,7 +69,7 @@ import io
 import json
 import math
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -136,20 +132,11 @@ SUPPORTED_EVALUATION_FORMATS: tuple[str, ...] = tuple(EVALUATION_FORMAT_SPECS)
 def normalize_evaluation_format(fmt: str) -> str:
     """把用户/页面传入的评估格式规范化为三种公开模式之一。
 
-    支持大小写、空格、短横线的宽松写法，例如 SF-VLOC、sf vo、Tum。
-    但不会把 auto/csv/kitti/xyz/sf/vloc 这些旧单文件 parser 名称当成评估入口，
-    这样后端边界和 docs/需求梳理.md 的“一、可接受数据格式”保持一致。
+    当前公开入口要求严格传入 sf_vloc、sf_vo 或 tum，不再把 SF-VLOC、
+    sf vo 这类旧前端宽松写法自动转成合法模式。
     """
 
-    token = re.sub(r"[^a-z0-9]+", "_", str(fmt).strip().lower()).strip("_")
-    aliases = {
-        "sfvloc": "sf_vloc",
-        "sf_vloc": "sf_vloc",
-        "sfvo": "sf_vo",
-        "sf_vo": "sf_vo",
-        "tum": "tum",
-    }
-    normalized = aliases.get(token)
+    normalized = str(fmt).strip()
     if normalized in EVALUATION_FORMAT_SPECS:
         return normalized
     allowed = ", ".join(SUPPORTED_EVALUATION_FORMATS)
@@ -168,7 +155,7 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
     {
         "metric": "时间同步 / GT 插值到 estimate",
         "report_field": 'report["association"]',
-        "code": "prepare_evaluation_trajectories(); build_associated_trajectories(); interpolate_reference_to_estimate(); associate_trajectories()",
+        "code": "prepare_evaluation_trajectories(); build_associated_trajectories(); interpolate_reference_to_estimate()",
     },
     {
         "metric": "轨迹对齐 / 对齐尺度",
@@ -176,14 +163,9 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "code": "compute_alignment(); umeyama_alignment(); aggregate_alignment(); apply_alignment()",
     },
     {
-        "metric": "estimate 姿态修正",
-        "report_field": 'report["orientation_correction"]',
-        "code": "select_orientation_correction(); score_orientation_correction_candidate(); apply_orientation_correction()",
-    },
-    {
         "metric": "ATE 三维位置误差",
         "report_field": 'report["ate_position_m"]; report["ate"]["primary_position_m"]',
-        "code": "evaluate_trajectories(): errors/pos_error_m; describe(); build_ate_report()",
+        "code": "evaluate_trajectories(): errors/pos_error_m; describe()",
     },
     {
         "metric": "ATE 水平误差",
@@ -209,21 +191,6 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "metric": "RPE 帧数/距离间隔误差",
         "report_field": 'report["rpe_frame_delta"]',
         "code": "rpe_frame_dataframe(); normalize_rpe_delta_config(); relative_error(); describe()",
-    },
-    {
-        "metric": "RPE 固定时间间隔误差",
-        "report_field": 'report["rpe_time_delta"]',
-        "code": "rpe_error_arrays_by_time(); nearest_time_index(); summarize_time_rpe()",
-    },
-    {
-        "metric": "按距离子轨迹平移 / 旋转 / 尺度误差",
-        "report_field": 'report["segment_errors"]',
-        "code": "segment_errors(); find_segment_end(); relative_error(); summarize_segment_records()",
-    },
-    {
-        "metric": "每个子轨迹明细",
-        "report_field": 'report["segment_records"]',
-        "code": "segment_errors(): records; summarize_segment_records()",
     },
     {
         "metric": "航程 / 耗时 / 匹配数量 / 覆盖率 / 原始尺度比",
@@ -270,11 +237,11 @@ class Trajectory:
 
         代码意义：
         - 所有输入格式最终都会走到 Trajectory，因此这里统一做 shape 校验、类型转换和时间排序。
-        - 时间排序很重要：后续 path_distance()、插值、RPE、子轨迹搜索都默认轨迹按时间递增。
+        - 时间排序很重要：后续 path_distance()、插值、RPE 和断点检测都默认轨迹按时间递增。
         - extras 会跟随相同排序同步重排，确保状态、reset_count、runtime 等字段仍然和位姿一一对应。
 
         指标影响：
-        - 如果这里不排序，summary.duration_s、speed_bins、RPE 和断点检测都会被乱序时间污染。
+        - 如果这里不排序，summary.duration_s、RPE、尺度窗口和断点检测都会被乱序时间污染。
         - 如果 rotations 维度不一致，姿态 ATE/RPE 会直接变成错误指标，所以这里提前报错。
         """
         self.stamps = np.asarray(self.stamps, dtype=float).reshape(-1)
@@ -373,6 +340,13 @@ class SfVoBundle:
 
 VLOC_FIXED_MAX_INTERPOLATION_GAP_S = 1.0
 VO_FIXED_MAX_INTERPOLATION_GAP_S = 1.0
+VLOC_ALIGNMENT_MODE = "none"
+VO_ALIGNMENT_MODE = "sim3"
+VLOC_SEGMENT_POLICY = "vo_timestamps"
+VO_SEGMENT_POLICY = "segments"
+FIXED_TIME_OFFSET_S = 0.0
+FIXED_DISCONTINUITY_STEP_M = 100.0
+FIXED_DISCONTINUITY_TIME_GAP_S = 5.0
 VO_MIN_VALID_SEGMENT_DURATION_S = 10.0
 VO_MIN_VALID_SEGMENT_FRAMES = 200
 WGS84_A_M = 6378137.0
@@ -385,36 +359,14 @@ class EvaluationConfig:
     """评估配置。
 
     当前前端只暴露少量必要参数：
-    - sf_vloc: 页面不暴露对齐/时间同步/RPE 配置，evaluate_vloc_bundle() 会强制使用固定规则。
-    - sf_vo: 页面只保留 RPE 统计间隔和尺度图间隔；其余对齐、时间同步和分段规则由 normalized_vo_evaluation_config() 固化。
-
-    其余字段仍保留，是为了：
-    - 支持通用 evaluate_trajectories()、TUM 回归测试和后端自动化调用。
-    - 让 VO/VLOC 固定入口可以通过 replace() 明确写出“哪些参数被强制固定”。
+    - sf_vloc: 页面不暴露对齐/时间同步/RPE 配置，固定 GT 插值到 VLOC 时间戳、最大 GT 插值间隔 1.0s、禁止外推、不做 Sim3。
+    - sf_vo: 页面只保留 RPE 统计间隔和尺度图间隔，固定 GT 插值到 VO 时间戳、最大 GT 插值间隔 1.0s、禁止外推、按 reset 连续段分别 Sim3。
 
     配置与指标/流程的对应关系：
-    - alignment: 通用对齐方式；sf_vloc 固定 none，sf_vo 固定 sim3 并按 segment 逐段对齐。
-    - orientation_correction: 通用姿态修正；当前 sf_vloc/sf_vo 固定 none。
-    - association_mode/max_interpolation_gap_s/time_offset_s/allow_extrapolation:
-      控制 GT/reference 如何插值到 estimate 时间戳；当前 sf_vloc/sf_vo 固定 interpolate_gt、1.0 s、0、False。
     - rpe_delta_value/rpe_delta_unit: 控制 VO 页面 RPE 按帧数或按 GT 距离统计，对应 report["rpe_frame_delta"] 和 rpe_per_frame。
     - scale_delta_value/scale_delta_unit: 控制 VO 页面局部尺度图按帧数或按 GT 距离取窗口，对应 report["scale_frame_delta"] 和 scale_per_frame。
-    - segment_lengths_m/segment_step_frames/max_segments_per_length/max_segment_length_diff_ratio:
-      控制 Geiger/KITTI 风格长航程子轨迹抽样，对应 report["segment_errors"] 和 report["segment_records"]。
-    - continuous_segment_policy/discontinuity_*: 控制断点诊断和跨 reset 轨迹如何纳入评估，对应 report["discontinuities"]。
     """
 
-    profile: str = "monocular_long_range_uav"
-    alignment: str = "sim3"
-    orientation_correction: str = "none"
-    association_mode: str = "interpolate_gt"
-    max_time_diff_s: float | None = 0.02
-    max_interpolation_gap_s: float | None = 0.15
-    allow_extrapolation: bool = False
-    interpolate_rotation: bool = True
-    interpolation_position_method: str = "linear"
-    interpolation_rotation_method: str = "slerp"
-    time_offset_s: float = 0.0
     rpe_delta_frames: int = 1
     rpe_delta_value: float | None = None
     rpe_delta_unit: str = "frames"
@@ -422,9 +374,6 @@ class EvaluationConfig:
     scale_delta_value: float | None = None
     scale_delta_unit: str = "frames"
     scale_distance_tolerance_ratio: float = 0.05
-    continuous_segment_policy: str = "segments"
-    discontinuity_step_m: float = 100.0
-    discontinuity_time_gap_s: float = 5.0
 
 
 IMU_FIXED_COLUMNS = (
@@ -591,11 +540,10 @@ def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None =
     report["inputs"]["log_dir_name"] = bundle.log_dir.name or "log_dir"
     report["inputs"]["fixed_rules"] = {
         "alignment": "none",
-        "orientation_correction": "none",
         "association_mode": "interpolate_gt",
         "max_interpolation_gap_s": float(VLOC_FIXED_MAX_INTERPOLATION_GAP_S),
         "allow_extrapolation": False,
-        "time_offset_s": 0.0,
+        "time_offset_s": float(FIXED_TIME_OFFSET_S),
     }
     report["association"]["dropped_est_invalid_mode"] = dropped_invalid_mode
     report["association"]["valid_est_after_mode_filter"] = int(len(vloc_valid.positions))
@@ -642,11 +590,10 @@ def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = Non
     report["inputs"]["log_dir_name"] = bundle.log_dir.name or "log_dir"
     report["inputs"]["fixed_rules"] = {
         "alignment": "sim3",
-        "orientation_correction": "none",
         "association_mode": "interpolate_gt",
         "max_interpolation_gap_s": float(VO_FIXED_MAX_INTERPOLATION_GAP_S),
         "allow_extrapolation": False,
-        "time_offset_s": 0.0,
+        "time_offset_s": float(FIXED_TIME_OFFSET_S),
         "continuous_segment_policy": "segments",
         "min_valid_segment_duration_s": float(VO_MIN_VALID_SEGMENT_DURATION_S),
         "min_valid_segment_frames": int(VO_MIN_VALID_SEGMENT_FRAMES),
@@ -669,9 +616,13 @@ def build_vloc_detail_report(
     - vloc_status: 与有效 VLOC 样本对应的 vloc_mode、num_inliers、reset_count；
     - summary: VLOC 轨迹长度、水平/垂直平均和最大误差。
     """
-    nav_eval, vloc_eval, _assoc = build_associated_trajectories(nav, vloc, cfg)
+    nav_eval, vloc_eval, _assoc = build_associated_trajectories(
+        nav,
+        vloc,
+        max_interpolation_gap_s=VLOC_FIXED_MAX_INTERPOLATION_GAP_S,
+    )
     timestamps = vloc_eval.stamps
-    target_stamps = np.asarray(vloc_eval.extras.get("target_stamp", timestamps + float(cfg.time_offset_s)), dtype=float)
+    target_stamps = np.asarray(vloc_eval.extras.get("target_stamp", timestamps + FIXED_TIME_OFFSET_S), dtype=float)
     if len(timestamps) == 0:
         empty = pd.DataFrame()
         return {"summary": {}, "comparison": empty, "nav_status": empty, "vloc_status": empty}
@@ -716,9 +667,13 @@ def build_vo_detail_report(
     comparison 使用通用 evaluator 已经算好的 Sim3 后 per_pose 数据：
     这样页面看到的 VO 轨迹、ATE/RPE 和导出结果使用同一套对齐结果。
     """
-    nav_eval, vo_eval, _assoc = build_associated_trajectories(nav, vo, cfg)
+    nav_eval, vo_eval, _assoc = build_associated_trajectories(
+        nav,
+        vo,
+        max_interpolation_gap_s=VO_FIXED_MAX_INTERPOLATION_GAP_S,
+    )
     timestamps = vo_eval.stamps
-    target_stamps = np.asarray(vo_eval.extras.get("target_stamp", timestamps + float(cfg.time_offset_s)), dtype=float)
+    target_stamps = np.asarray(vo_eval.extras.get("target_stamp", timestamps + FIXED_TIME_OFFSET_S), dtype=float)
     if len(timestamps) == 0:
         empty = pd.DataFrame()
         return {"summary": {}, "comparison": empty, "nav_status": empty, "vo_status": empty, "segment_filter": {}}
@@ -1074,21 +1029,7 @@ def parse_calib_raw_fixed(text: str, name: str = "calib_raw.yaml") -> Calibratio
 
 def normalized_vloc_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
     """把用户配置收敛成 sf_vloc 固定评估参数。"""
-    base = config if config is not None else EvaluationConfig()
-    return replace(
-        base,
-        alignment="none",
-        orientation_correction="none",
-        association_mode="interpolate_gt",
-        max_time_diff_s=None,
-        max_interpolation_gap_s=float(VLOC_FIXED_MAX_INTERPOLATION_GAP_S),
-        allow_extrapolation=False,
-        interpolate_rotation=True,
-        interpolation_position_method="linear",
-        interpolation_rotation_method="slerp",
-        time_offset_s=0.0,
-        continuous_segment_policy="vo_timestamps",
-    )
+    return _copy_user_delta_config(config)
 
 
 def normalized_vo_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
@@ -1097,20 +1038,20 @@ def normalized_vo_evaluation_config(config: EvaluationConfig | None = None) -> E
     VO 和 VLOC 的关键区别是：VO 是可能无尺度且会 reset 的轨迹，因此固定走 Sim3，
     并把 reset_count 形成的连续段交给 evaluate_trajectories() 逐段对齐。
     """
+    return _copy_user_delta_config(config)
+
+
+def _copy_user_delta_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
+    """只复制仍允许用户控制的 RPE/尺度窗口参数。"""
     base = config if config is not None else EvaluationConfig()
-    return replace(
-        base,
-        alignment="sim3",
-        orientation_correction="none",
-        association_mode="interpolate_gt",
-        max_time_diff_s=None,
-        max_interpolation_gap_s=float(VO_FIXED_MAX_INTERPOLATION_GAP_S),
-        allow_extrapolation=False,
-        interpolate_rotation=True,
-        interpolation_position_method="linear",
-        interpolation_rotation_method="slerp",
-        time_offset_s=0.0,
-        continuous_segment_policy="segments",
+    return EvaluationConfig(
+        rpe_delta_frames=base.rpe_delta_frames,
+        rpe_delta_value=base.rpe_delta_value,
+        rpe_delta_unit=base.rpe_delta_unit,
+        rpe_distance_tolerance_ratio=base.rpe_distance_tolerance_ratio,
+        scale_delta_value=base.scale_delta_value,
+        scale_delta_unit=base.scale_delta_unit,
+        scale_distance_tolerance_ratio=base.scale_distance_tolerance_ratio,
     )
 
 
@@ -1491,23 +1432,29 @@ def evaluate_trajectories(
     1. 时间同步 -> association / coverage。
     2. 大跳变诊断 -> discontinuities。
     3. 对每个选中连续段做对齐和误差计算。
-    4. 汇总 ATE/RPE/子轨迹/速度分箱/runtime/发散等指标。
+    4. 汇总 ATE/RPE/局部尺度/runtime 等指标。
     5. 返回 report dict，app.py 只负责展示这个 report。
 
     来源对应：
     - ATE/RPE 主干来自 Sturm12 和 Zhang18。
-    - 长度/速度子轨迹误差来自 Geiger12/KITTI。
-    - 长序列覆盖率、断点和发散是 Schubert18/Delmerico18 场景下的工程扩展。
+    - 长序列覆盖率和断点是 Schubert18/Delmerico18 场景下的工程扩展。
     - runtime 统计来自 Delmerico18 对飞行机器人实时性的关注。
     """
     cfg = config or EvaluationConfig()
+    is_vo_workflow = "evaluation_segment_id" in est.extras
+    alignment_mode = VO_ALIGNMENT_MODE if is_vo_workflow else VLOC_ALIGNMENT_MODE
+    segment_policy = VO_SEGMENT_POLICY if is_vo_workflow else VLOC_SEGMENT_POLICY
+    max_interpolation_gap_s = VO_FIXED_MAX_INTERPOLATION_GAP_S if is_vo_workflow else VLOC_FIXED_MAX_INTERPOLATION_GAP_S
 
     # 1. 时间同步：默认以 estimate 时间戳为评估基准，把 GT/reference 插值到 estimate 时刻。
     #    这样 GT=0.1/0.3/0.5、estimate=0.2/0.4/0.6 的相位错开数据不会被错误丢弃。
-    #    如果选择 nearest，则退回 TUM RGB-D benchmark 的 greedy timestamp association。
     original_gt = gt
     original_est = est
-    gt, est, gt_idx, est_idx, assoc = prepare_evaluation_trajectories(original_gt, original_est, cfg)
+    gt, est, gt_idx, est_idx, assoc = prepare_evaluation_trajectories(
+        original_gt,
+        original_est,
+        max_interpolation_gap_s=max_interpolation_gap_s,
+    )
     if len(gt_idx) < 2:
         raise ValueError("Need at least two associated poses to evaluate a trajectory")
 
@@ -1527,21 +1474,13 @@ def evaluate_trajectories(
         original_stamps,
         original_gt_pos,
         original_est_pos,
-        step_threshold_m=cfg.discontinuity_step_m,
-        time_gap_threshold_s=cfg.discontinuity_time_gap_s,
+        step_threshold_m=FIXED_DISCONTINUITY_STEP_M,
+        time_gap_threshold_s=FIXED_DISCONTINUITY_TIME_GAP_S,
         forced_segment_ids=forced_segment_ids,
     )
-    eval_ranges = select_evaluation_segments(discontinuities_all["segments"], cfg.continuous_segment_policy, original_match_count)
+    eval_ranges = select_evaluation_segments(discontinuities_all["segments"], segment_policy, original_match_count)
     if not eval_ranges:
         raise ValueError("No continuous segment contains at least two matched poses")
-    orientation_selection = {
-        "requested": cfg.orientation_correction,
-        "selected": "none",
-        "auto": False,
-        "available": bool(gt.rotations is not None and est.rotations is not None),
-        "uses_rotations": bool(gt.rotations is not None and est.rotations is not None),
-        "note": "fixed workflow; no orientation correction is applied",
-    }
     # 这些列表会收集每个连续段的结果，最后统一 concat/describe。
     per_pose_frames: list[pd.DataFrame] = []
     pos_error_parts: list[np.ndarray] = []
@@ -1587,7 +1526,7 @@ def evaluate_trajectories(
         # 5. 对齐 estimate 到 GT 坐标系。
         #    sf_vloc 固定 alignment=none，位置误差就是 nav-vloc 原始坐标差；
         #    sf_vo 固定 alignment=sim3，位置误差基于每段 Sim3 后的 aligned VO。
-        alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode=cfg.alignment)
+        alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode=alignment_mode)
         alignment["segment_id"] = int(seg_id)
         alignment["start_match_index"] = start
         alignment["end_match_index"] = end
@@ -1769,9 +1708,9 @@ def evaluate_trajectories(
         per_pose["visual_segment_id"] = visual_segment_ids[used_match_idx]
     else:
         per_pose["visual_segment_id"] = per_pose["segment_id"].to_numpy(dtype=int)
-    alignment = aggregate_alignment(alignments, cfg.alignment)
+    alignment = aggregate_alignment(alignments, alignment_mode)
     ate_report = {
-        "primary_label": f"{cfg.alignment.upper()} ATE",
+        "primary_label": f"{alignment_mode.upper()} ATE",
         "primary_position_m": describe(pos_error_m),
     }
     rpe_delta_info = normalize_rpe_delta_config(cfg)
@@ -1794,14 +1733,14 @@ def evaluate_trajectories(
         "local_scale_drift_percent": describe(local_scale_drift),
     }
     selected_segment = {
-        "policy": cfg.continuous_segment_policy,
+        "policy": segment_policy,
         "segments": [{"start_index": int(seg["start"]), "end_index": int(seg["end"]), "count": int(seg["count"])} for seg in eval_ranges],
         "selected_matches": int(len(used_gt_idx)),
         "dropped_matches": int(original_match_count - len(used_gt_idx)),
     }
 
     # 14. summary 是页面第一屏指标卡的主要来源。
-    #     endpoint/coverage/divergence 不是论文标准排行榜字段，是物流无人机长航程可用性扩展；
+    #     coverage/path/runtime 是物流无人机长航程可用性扩展；
     #     这些扩展的动机来自 Schubert18 长序列 VIO 和 Delmerico18 飞行机器人 benchmark。
     summary = {
         "gt_path_length_m": float(total_gt_path_m),
@@ -1812,8 +1751,8 @@ def evaluate_trajectories(
         "original_matched_poses": original_match_count,
         "gt_poses": int(len(original_gt.positions)),
         "est_poses": int(len(original_est.positions)),
-        "coverage_ratio": _gt_coverage_ratio(assoc, total_duration_s, original_gt, len(used_gt_idx)),
-        "gt_pose_coverage_ratio": _gt_coverage_ratio(assoc, total_duration_s, original_gt, len(used_gt_idx)),
+        "coverage_ratio": _gt_coverage_ratio(total_duration_s, original_gt),
+        "gt_pose_coverage_ratio": _gt_coverage_ratio(total_duration_s, original_gt),
         "gt_time_coverage_ratio": float(total_duration_s / original_gt.duration_s) if original_gt.duration_s > 0 else 1.0,
         "est_pose_coverage_ratio": float(len(used_est_idx) / max(1, len(original_est.positions))),
         "raw_path_scale_ratio_est_over_gt": float(total_raw_est_path_m / total_gt_path_m) if total_gt_path_m > 0 else math.nan,
@@ -1844,7 +1783,6 @@ def evaluate_trajectories(
             "selected_segment": selected_segment,
         },
         "alignment": alignment,
-        "orientation_correction": orientation_selection,
         "summary": summary,
         "ate": ate_report,
         "ate_position_m": describe(pos_error_m),
@@ -1867,15 +1805,14 @@ def evaluate_trajectories(
 def prepare_evaluation_trajectories(
     gt: Trajectory,
     est: Trajectory,
-    cfg: EvaluationConfig,
+    *,
+    max_interpolation_gap_s: float,
 ) -> tuple[Trajectory, Trajectory, np.ndarray, np.ndarray, dict[str, Any]]:
     """把 GT/reference 和 estimate 准备成同一时间轴上的评估序列。
 
     代码意义：
-    - 默认 interpolate_gt: 以 estimate 时间戳为基准，把 GT/reference 插值到 estimate 时刻。
+    - 固定以 estimate 时间戳为基准，把 GT/reference 插值到 estimate 时刻。
       这适合物流无人机/IMU GT 长时间记录场景，算法输出只有运行段也不会引入无关 GT。
-    - nearest: 保留 TUM RGB-D benchmark 的最近邻贪心匹配口径，用于复现论文/开源工具。
-    - index: 忽略时间戳，按行号配对，用于已经离线同步好的文件。
 
     指标对应：
     - 返回的 assoc 会进入 report["association"]。
@@ -1883,11 +1820,14 @@ def prepare_evaluation_trajectories(
       这里返回的 gt_idx/est_idx 只是兼容旧评估主流程的等长索引，不再表示插值模式下的原始离散 GT 索引。
 
     来源对应：
-    - nearest 模式直接对应 Sturm12/TUM 工具的时间戳匹配。
     - interpolate_gt 是工程扩展：Schubert18/TUM VI 提供高频同步 GT 的评估语境；
       对物流无人机这种“GT 全程跑、estimate 只在算法段输出”的数据，按 estimate 时间戳插 GT 更合理。
     """
-    gt_eval, est_eval, assoc = build_associated_trajectories(gt, est, cfg)
+    gt_eval, est_eval, assoc = build_associated_trajectories(
+        gt,
+        est,
+        max_interpolation_gap_s=max_interpolation_gap_s,
+    )
     idx = np.arange(len(gt_eval.positions), dtype=int)
     return gt_eval, est_eval, idx, idx, assoc
 
@@ -1895,34 +1835,30 @@ def prepare_evaluation_trajectories(
 def build_associated_trajectories(
     gt: Trajectory,
     est: Trajectory,
-    cfg: EvaluationConfig,
+    max_interpolation_gap_s: float = VLOC_FIXED_MAX_INTERPOLATION_GAP_S,
 ) -> tuple[Trajectory, Trajectory, dict[str, Any]]:
-    """按配置构造同一时间轴上的 GT/reference 和 estimate 评估轨迹。
+    """构造同一时间轴上的 GT/reference 和 estimate 评估轨迹。
 
     代码意义：
-    - interpolate_gt: 默认模式，以 estimate 时间戳为基准，把 GT position 线性插值、GT rotation 用 SLERP 插值到 estimate 时刻。
-    - nearest/tum_greedy_timestamp: 保留 TUM-style greedy timestamp association，不做插值。
-    - index: 不看时间戳，显式按行号对齐，主要用于已经离线同步好的调试数据。
+    - 固定以 estimate 时间戳为基准，把 GT position 线性插值、GT rotation 用 SLERP 插值到 estimate 时刻。
 
     指标对应：
-    - 返回的 assoc 直接进入 report["association"]，报告可以据此区分“真实插值”和“最近邻匹配”。
+    - 返回的 assoc 直接进入 report["association"]，报告可以看到插值覆盖率、丢帧数量和 GT 插值间隔。
     - 后续 ATE/RPE/RE/断点检测都只看返回的 gt_eval/est_eval，不再关心原始采样频率是否相同。
     """
-    mode = cfg.association_mode.lower()
-    if mode in {"interpolate_gt", "gt_interpolate", "interpolate", "vo_timestamps"}:
-        return interpolate_gt_to_est_timestamps(gt, est, cfg)
-    raise ValueError(f"Unknown association mode: {cfg.association_mode}")
+    return interpolate_gt_to_est_timestamps(gt, est, max_interpolation_gap_s=max_interpolation_gap_s)
 
 
 def interpolate_gt_to_est_timestamps(
     gt: Trajectory,
     est: Trajectory,
-    cfg: EvaluationConfig,
+    *,
+    max_interpolation_gap_s: float,
 ) -> tuple[Trajectory, Trajectory, dict[str, Any]]:
     """将 GT/reference 插值到 estimate 时间戳。
 
     代码意义：
-    - 先把 estimate 时间戳加上 time_offset_s，解决 GT/reference 与 estimate 两套时钟固定偏移。
+    - estimate 时间戳作为评估时间戳，时间偏移固定为 0。
     - 只保留落在 GT 时间范围内的 estimate 点，避免拿没有 GT 的算法输出段做统计。
     - max_interpolation_gap_s 用来阻止跨很长 GT 缺口插值，避免虚假的平滑 GT。
     - 位置用线性插值；姿态如果存在，后续 interpolate_rotations_from_brackets() 使用 SLERP。
@@ -1940,12 +1876,7 @@ def interpolate_gt_to_est_timestamps(
     return interpolate_reference_to_estimate(
         gt,
         est,
-        time_offset_s=cfg.time_offset_s,
-        max_interpolation_gap_s=cfg.max_interpolation_gap_s,
-        allow_extrapolation=cfg.allow_extrapolation,
-        interpolate_rotation=cfg.interpolate_rotation,
-        interpolation_position_method=cfg.interpolation_position_method,
-        interpolation_rotation_method=cfg.interpolation_rotation_method,
+        max_interpolation_gap_s=max_interpolation_gap_s,
     )
 
 
@@ -1953,48 +1884,30 @@ def interpolate_reference_to_estimate(
     reference: Trajectory,
     estimate: Trajectory,
     *,
-    time_offset_s: float = 0.0,
-    max_interpolation_gap_s: float | None = 0.15,
-    allow_extrapolation: bool = False,
-    interpolate_rotation: bool = True,
-    interpolation_position_method: str = "linear",
-    interpolation_rotation_method: str = "slerp",
+    max_interpolation_gap_s: float = VLOC_FIXED_MAX_INTERPOLATION_GAP_S,
 ) -> tuple[Trajectory, Trajectory, dict[str, Any]]:
     """把 reference 轨迹插值到 estimate 时间戳。
 
     这是当前 sf_vloc/sf_vo 的固定时间同步方法：
     - estimate 自己的时间戳作为评估行；
-    - reference 的查询时刻是 estimate.stamps + time_offset_s；
-    - 超出 reference 时间范围、时间戳非法或左右 reference 样本间隔超过 max_interpolation_gap_s 的 estimate 帧会被丢弃；
+    - reference 的查询时刻是 estimate.stamps；
+    - 超出 reference 时间范围、时间戳非法或左右 reference 样本间隔超过 max_interpolation_gap_s 的 estimate 帧会被丢弃，不允许外推；
     - 返回的 ref_interp 和 est_matched 等长，且都使用原始 estimate 时间戳，target_stamp 会保存在 extras 中方便排查固定时间偏移。
     """
-    position_method = interpolation_position_method.lower()
-    rotation_method = interpolation_rotation_method.lower()
-    if position_method != "linear":
-        raise ValueError(f"Unsupported interpolation_position_method: {interpolation_position_method}")
-    if rotation_method != "slerp":
-        raise ValueError(f"Unsupported interpolation_rotation_method: {interpolation_rotation_method}")
-
     ref_unique = _unique_timestamp_trajectory(reference)
     duplicate_timestamp_count = int(len(reference.stamps) - len(ref_unique.stamps))
-    shifted_est_stamps = estimate.stamps + float(time_offset_s)
+    shifted_est_stamps = estimate.stamps + FIXED_TIME_OFFSET_S
     finite_est = np.isfinite(shifted_est_stamps)
     before_range = finite_est & (shifted_est_stamps < ref_unique.stamps[0])
     after_range = finite_est & (shifted_est_stamps > ref_unique.stamps[-1])
-    if allow_extrapolation:
-        in_range = finite_est
-    else:
-        in_range = finite_est & ~before_range & ~after_range
+    in_range = finite_est & ~before_range & ~after_range
 
     candidate_est_indices = np.flatnonzero(in_range)
     target_candidates = shifted_est_stamps[candidate_est_indices]
-    bracket_info = interpolation_brackets(ref_unique.stamps, target_candidates, allow_extrapolation=allow_extrapolation)
+    bracket_info = interpolation_brackets(ref_unique.stamps, target_candidates)
     candidate_gaps = bracket_info["gap_s"]
     candidate_valid_timestamp = bracket_info["valid_timestamp"]
-    if max_interpolation_gap_s is None:
-        valid_gap = np.ones(len(candidate_est_indices), dtype=bool)
-    else:
-        valid_gap = candidate_gaps <= float(max_interpolation_gap_s)
+    valid_gap = candidate_gaps <= float(max_interpolation_gap_s)
     valid = candidate_valid_timestamp & valid_gap
 
     est_indices = candidate_est_indices[valid]
@@ -2009,20 +1922,17 @@ def interpolate_reference_to_estimate(
     nearest_side_offsets = bracket_info["nearest_side_offset_s"][valid]
 
     dropped_invalid_timestamp = int(np.count_nonzero(~finite_est) + np.count_nonzero(in_range) - np.count_nonzero(candidate_valid_timestamp))
-    dropped_before = int(np.count_nonzero(before_range)) if not allow_extrapolation else 0
-    dropped_after = int(np.count_nonzero(after_range)) if not allow_extrapolation else 0
+    dropped_before = int(np.count_nonzero(before_range))
+    dropped_after = int(np.count_nonzero(after_range))
     dropped_gap = int(np.count_nonzero(candidate_valid_timestamp & ~valid_gap))
 
     ref_positions = interpolate_positions_from_brackets(ref_unique.positions, left_indices, right_indices, alphas)
-    if interpolate_rotation and ref_unique.rotations is not None:
+    if ref_unique.rotations is not None:
         ref_rotations = interpolate_rotations_from_brackets(ref_unique.rotations, left_indices, right_indices, alphas)
         rotation_method_report = "slerp"
-    elif ref_unique.rotations is None:
-        ref_rotations = None
-        rotation_method_report = "skipped_no_reference_rotation"
     else:
         ref_rotations = None
-        rotation_method_report = "disabled"
+        rotation_method_report = "skipped_no_reference_rotation"
 
     est_matched = subset_trajectory(estimate, est_indices, stamps_override=common_stamps)
     est_matched.extras["source_index"] = est_indices
@@ -2052,11 +1962,11 @@ def interpolate_reference_to_estimate(
         "interpolated": True,
         "position_method": "linear",
         "rotation_method": rotation_method_report,
-        "time_offset_s": float(time_offset_s),
+        "time_offset_s": float(FIXED_TIME_OFFSET_S),
         "max_interpolation_gap_s": max_interpolation_gap_s,
         "max_interpolation_gap_s_allowed": max_interpolation_gap_s,
         "max_interpolation_gap_config_s": max_interpolation_gap_s,
-        "allow_extrapolation": bool(allow_extrapolation),
+        "allow_extrapolation": False,
         "estimate_count_input": int(len(estimate.stamps)),
         "reference_count_input": int(len(reference.stamps)),
         "estimate_pose_count": int(len(estimate.positions)),
@@ -2088,13 +1998,9 @@ def interpolate_reference_to_estimate(
         "max_abs_time_offset_to_left_sample_s": float(np.max(left_offsets)) if len(left_offsets) else 0.0,
         "max_abs_time_offset_to_right_sample_s": float(np.max(right_offsets)) if len(right_offsets) else 0.0,
         "mean_abs_time_offset_to_left_or_right_s": float(np.mean(nearest_side_offsets)) if len(nearest_side_offsets) else 0.0,
-        "max_time_diff_s": 0.0,
-        "mean_time_diff_s": 0.0,
         "gt_time_coverage_ratio": float(matched_duration / reference.duration_s) if reference.duration_s > 0 else 1.0,
     }
-    if not interpolate_rotation:
-        info["rotation_interpolation_note"] = "rotation interpolation disabled by config"
-    elif ref_unique.rotations is None:
+    if ref_unique.rotations is None:
         info["rotation_interpolation_note"] = "rotation interpolation skipped: no reference rotation"
     if info["coverage_estimate_ratio"] < 0.8:
         info["warning"] = "low interpolate_gt coverage; check timestamp units, GT/estimate time ranges, time_offset_s, and max_interpolation_gap_s"
@@ -2139,7 +2045,6 @@ def interpolate_positions_from_brackets(
 def interpolation_brackets(
     src_stamps: np.ndarray,
     target_stamps: np.ndarray,
-    allow_extrapolation: bool = False,
 ) -> dict[str, np.ndarray]:
     """找到每个目标时间戳两侧的 GT 样本，并计算插值诊断量。
 
@@ -2169,31 +2074,22 @@ def interpolation_brackets(
     before = (~exact) & (insert <= 0)
     after = (~exact) & (insert >= len(src))
     outside = before | after
-    if allow_extrapolation and len(src) >= 2:
-        left[before] = 0
-        right[before] = 1
-        left[after] = len(src) - 2
-        right[after] = len(src) - 1
-    else:
-        left[outside] = np.clip(insert[outside] - 1, 0, max(0, len(src) - 1))
-        right[outside] = np.clip(insert[outside], 0, max(0, len(src) - 1))
+    left[outside] = np.clip(insert[outside] - 1, 0, max(0, len(src) - 1))
+    right[outside] = np.clip(insert[outside], 0, max(0, len(src) - 1))
 
     gaps = np.zeros(len(target), dtype=float)
     gaps[middle] = src[right[middle]] - src[left[middle]]
-    extrapolated = outside & allow_extrapolation & (len(src) >= 2)
-    gaps[extrapolated] = src[right[extrapolated]] - src[left[extrapolated]]
-    gaps[outside & ~extrapolated] = math.inf
+    gaps[outside] = math.inf
 
     alpha = np.zeros(len(target), dtype=float)
     valid_denominator = gaps > 0
     alpha[valid_denominator] = (target[valid_denominator] - src[left[valid_denominator]]) / gaps[valid_denominator]
-    if not allow_extrapolation:
-        alpha = np.clip(alpha, 0.0, 1.0)
+    alpha = np.clip(alpha, 0.0, 1.0)
 
     left_offset = np.abs(target - src[left])
     right_offset = np.abs(src[right] - target)
     nearest_side_offset = np.minimum(left_offset, right_offset)
-    invalid = outside & ~extrapolated
+    invalid = outside
     nearest_side_offset[invalid] = math.inf
     left_offset[invalid] = math.inf
     right_offset[invalid] = math.inf
@@ -2258,11 +2154,9 @@ def slerp_quaternion(q0: np.ndarray, q1: np.ndarray, alpha: float) -> np.ndarray
     return s0 * q0 + s1 * q1
 
 
-def _gt_coverage_ratio(assoc: dict[str, Any], total_duration_s: float, original_gt: Trajectory, used_count: int) -> float:
-    """GT 覆盖率口径：插值模式按时间覆盖率，最近邻/索引模式按位姿数量覆盖率。"""
-    if assoc.get("mode") == "interpolate_gt":
-        return float(total_duration_s / original_gt.duration_s) if original_gt.duration_s > 0 else 1.0
-    return float(used_count / max(1, len(original_gt.positions)))
+def _gt_coverage_ratio(total_duration_s: float, original_gt: Trajectory) -> float:
+    """GT 覆盖率口径：按有效评估时间窗口占原始 GT 总时长计算。"""
+    return float(total_duration_s / original_gt.duration_s) if original_gt.duration_s > 0 else 1.0
 
 
 def compute_alignment(
@@ -2270,31 +2164,28 @@ def compute_alignment(
     est_pos: np.ndarray,
     gt_rot: np.ndarray | None = None,
     est_rot: np.ndarray | None = None,
-    mode: str = "se3",
+    mode: str = VLOC_ALIGNMENT_MODE,
 ) -> dict[str, Any]:
     """计算 estimate 到 GT 的轨迹对齐变换。
 
     指标对应：
-    - SE3: 尺度固定为 1，适合双目/VIO/尺度已知。
-    - Sim3: 同时估计尺度，适合单目 VO 或其他尺度未知 estimate。
-    - first_pose: 只把首帧对齐，用于观察误差随航程增长。
+    - none: VLOC 固定不做轨迹对齐，直接统计 nav-vloc 坐标差。
+    - sim3: VO 固定同时估计尺度/旋转/平移，适合单目 VO 或其他尺度未知 estimate。
     - alignment["scale"] 最终显示为页面“对齐尺度”。
 
     实现细节：
     - 位置对齐用 Umeyama SVD。输入 src=estimate，dst=GT，输出 scale/rotation/translation。
-    - 姿态只在 first_pose 模式中用于首帧旋转对齐；SE3/Sim3 的旋转主要由位置轨迹估计。
-    - 所有 ATE、RPE、segment_errors 都基于对齐后的 est_pos_aligned 计算。
+    - 所有 ATE、RPE 都基于对齐后的 est_pos_aligned 计算。
 
     来源对应：
     - Sturm12 的 ATE 需要先把估计轨迹配准到 GT 后再算绝对误差。
-    - Zhang18 明确说明轨迹对齐方式要随传感器可观性变化：
-      单目无尺度通常看 Sim3，尺度已知的双目/VIO 更应看 SE3。
+    - Zhang18 明确说明单目无尺度通常看 Sim3；VLOC 当前按需求固定为已有尺度，不做对齐。
     """
     mode = mode.lower()
-    if mode in {"none", "identity"}:
+    if mode == "none":
         # 不对齐模式用于调试原始坐标系；如果 GT/estimate 不在同一坐标系，误差会很大。
         return _alignment_dict(mode, 1.0, np.eye(3), np.zeros(3))
-    if mode in {"sim3", "similarity"}:
+    if mode == "sim3":
         # Sim3 允许估计全局尺度。单目无尺度 VO 或其他无尺度 estimate 用它可以评估“轨迹形状”，
         # 但不能证明原始输出已经具备真实米制尺度。
         scale, rot, trans = umeyama_alignment(est_pos, gt_pos, with_scale=True)
@@ -2362,7 +2253,7 @@ def apply_alignment(positions: np.ndarray, alignment: dict[str, Any]) -> np.ndar
     - per_pose.error_m / horizontal_error_m / vertical_error_m
     - ate_position_m / ate_horizontal_m / ate_vertical_m
     - rpe_frame_delta.translation_m
-    - segment_errors.translation_error_*
+    - scale_frame_delta / scale_per_frame 中的局部尺度统计
     """
     scale = float(alignment["scale"])
     rot = np.asarray(alignment["rotation"], dtype=float)
@@ -2525,30 +2416,24 @@ def detect_associated_discontinuities(
 def select_evaluation_segments(segments: list[dict[str, int]], policy: str, total_count: int) -> list[dict[str, int]]:
     """根据断点策略选择实际参与误差计算的连续段。
 
-    三种策略：
-    - vo_timestamps/all: 历史命名，表示保留所有 estimate 时间戳统一评估，断点只作为诊断提示。
+    固定策略：
+    - vo_timestamps: VLOC 使用，保留所有 estimate 时间戳统一评估，断点只作为诊断提示。
     - segments: 按检测出的连续段逐段评估，每段单独对齐，适合 sf_vo reset 后局部坐标系变化的情况。
-    - longest: 只评估最长连续段，适合想排除重置前后不连续影响的情况。
 
     指标影响：
-    - 这里决定 used_gt_idx/used_est_idx，进而影响 ATE、RPE、segment_errors、speed_bins 和 summary coverage。
+    - 这里决定 used_gt_idx/used_est_idx，进而影响 ATE、RPE、尺度图和 summary coverage。
     - dropped_matches 会告诉用户断点策略丢掉了多少匹配点。
 
     来源对应：
-    - all/segments/longest 是工程策略，不是论文标准公式。
+    - vo_timestamps/segments 是工程策略，不是论文标准公式。
     - 这些策略用于在 Schubert18/Delmerico18 关注的长序列、可能丢跟踪场景里解释指标。
     """
     valid_segments = [seg for seg in segments if int(seg.get("count", 0)) >= 2]
-    if policy in {"vo_timestamps", "all"}:
+    if policy == VLOC_SEGMENT_POLICY:
         return [{"start": 0, "end": int(total_count), "count": int(total_count)}] if total_count >= 2 else []
-    if policy == "segments":
+    if policy == VO_SEGMENT_POLICY:
         return valid_segments
-    if policy == "longest":
-        if not valid_segments:
-            return []
-        start, end = longest_segment_bounds(valid_segments)
-        return [{"start": start, "end": end, "count": end - start}]
-    raise ValueError(f"Unknown continuous_segment_policy: {policy}")
+    raise ValueError(f"Unknown fixed segment policy: {policy}")
 
 
 def segments_from_breaks(n: int, break_after: np.ndarray) -> list[dict[str, int]]:
@@ -2561,14 +2446,6 @@ def segments_from_breaks(n: int, break_after: np.ndarray) -> list[dict[str, int]
             starts.append(idx + 1)
     ends.append(n)
     return [{"start": int(start), "end": int(end), "count": int(end - start)} for start, end in zip(starts, ends) if end > start]
-
-
-def longest_segment_bounds(segments: list[dict[str, int]]) -> tuple[int, int]:
-    """返回最长连续段的起止索引。"""
-    if not segments:
-        return 0, 0
-    best = max(segments, key=lambda seg: seg["count"])
-    return int(best["start"]), int(best["end"])
 
 
 def relative_error(
@@ -2978,14 +2855,14 @@ def ate_frame_dataframe(per_pose: pd.DataFrame) -> pd.DataFrame:
 def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
     """把 RPE 的 UI/API 配置统一成 report 可读字段。
 
-    rpe_delta_unit 支持 frames/f 和 meters/m 两类：
+    rpe_delta_unit 只支持 frames 和 meters 两类：
     - frames: 终点固定为 j=i+N。
     - meters: 终点从 GT 累计路程的 target*(1±tolerance) 范围内选择。
 
     rpe_delta_value 是新参数；如果为空则退回旧的 rpe_delta_frames，保证旧配置还能复现。
     """
     unit_raw = str(cfg.rpe_delta_unit or "frames").strip().lower()
-    if unit_raw in {"f", "frame", "frames"}:
+    if unit_raw == "frames":
         value = cfg.rpe_delta_value if cfg.rpe_delta_value is not None else cfg.rpe_delta_frames
         frames = max(1, int(round(float(value))))
         return {
@@ -2996,7 +2873,7 @@ def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
             "distance_tolerance_ratio": None,
             "distance_tolerance_percent": None,
         }
-    if unit_raw in {"m", "meter", "meters"}:
+    if unit_raw == "meters":
         value = cfg.rpe_delta_value if cfg.rpe_delta_value is not None else cfg.rpe_delta_frames
         distance_m = float(value)
         if distance_m <= 0:
@@ -3024,7 +2901,7 @@ def normalize_scale_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
     不按误差最小选择，避免把尺度问题人为挑好。
     """
     unit_raw = str(cfg.scale_delta_unit or "frames").strip().lower()
-    if unit_raw in {"f", "frame", "frames"}:
+    if unit_raw == "frames":
         value = cfg.scale_delta_value if cfg.scale_delta_value is not None else cfg.rpe_delta_frames
         frames = max(1, int(round(float(value))))
         return {
@@ -3035,7 +2912,7 @@ def normalize_scale_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
             "distance_tolerance_ratio": None,
             "distance_tolerance_percent": None,
         }
-    if unit_raw in {"m", "meter", "meters"}:
+    if unit_raw == "meters":
         value = cfg.scale_delta_value if cfg.scale_delta_value is not None else cfg.rpe_delta_frames
         distance_m = float(value)
         if distance_m <= 0:
@@ -3083,9 +2960,9 @@ def rpe_frame_dataframe(
     match_indices = np.asarray(match_indices, dtype=int)
     n = len(stamps)
     unit_raw = str(delta_unit or "frames").strip().lower()
-    if unit_raw in {"f", "frame", "frames"}:
+    if unit_raw == "frames":
         unit = "frames"
-    elif unit_raw in {"m", "meter", "meters"}:
+    elif unit_raw == "meters":
         unit = "meters"
     else:
         raise ValueError(f"Unknown rpe_delta_unit: {delta_unit}")
@@ -3190,9 +3067,9 @@ def scale_frame_dataframe(
     match_indices = np.asarray(match_indices, dtype=int)
     n = len(stamps)
     unit_raw = str(delta_unit or "frames").strip().lower()
-    if unit_raw in {"f", "frame", "frames"}:
+    if unit_raw == "frames":
         unit = "frames"
-    elif unit_raw in {"m", "meter", "meters"}:
+    elif unit_raw == "meters":
         unit = "meters"
     else:
         raise ValueError(f"Unknown scale_delta_unit: {delta_unit}")
@@ -3351,7 +3228,7 @@ def _jsonable_value(value: Any) -> Any:
     """把 report 递归转成标准 JSON 值。
 
     代码意义：
-    - DataFrame -> records list，供 per_pose/segment_records 导出。
+    - DataFrame -> records list，供 per_pose/rpe_per_frame/scale_per_frame 导出。
     - numpy scalar/array -> Python 原生类型，避免 json.dumps 不认识。
     - NaN/Infinity -> None，浏览器 JSON.parse 会把它读成 null。
 
@@ -3381,17 +3258,6 @@ def _dataclass_to_jsonable(cfg: EvaluationConfig) -> dict[str, Any]:
     - 这些配置不是算法结果，但会改变所有指标的解释方式。
     """
     return {
-        "profile": cfg.profile,
-        "alignment": cfg.alignment,
-        "orientation_correction": cfg.orientation_correction,
-        "association_mode": cfg.association_mode,
-        "max_time_diff_s": cfg.max_time_diff_s,
-        "max_interpolation_gap_s": cfg.max_interpolation_gap_s,
-        "allow_extrapolation": cfg.allow_extrapolation,
-        "interpolate_rotation": cfg.interpolate_rotation,
-        "interpolation_position_method": cfg.interpolation_position_method,
-        "interpolation_rotation_method": cfg.interpolation_rotation_method,
-        "time_offset_s": cfg.time_offset_s,
         "rpe_delta_frames": cfg.rpe_delta_frames,
         "rpe_delta_value": cfg.rpe_delta_value,
         "rpe_delta_unit": cfg.rpe_delta_unit,
@@ -3399,9 +3265,6 @@ def _dataclass_to_jsonable(cfg: EvaluationConfig) -> dict[str, Any]:
         "scale_delta_value": cfg.scale_delta_value,
         "scale_delta_unit": cfg.scale_delta_unit,
         "scale_distance_tolerance_ratio": cfg.scale_distance_tolerance_ratio,
-        "continuous_segment_policy": cfg.continuous_segment_policy,
-        "discontinuity_step_m": cfg.discontinuity_step_m,
-        "discontinuity_time_gap_s": cfg.discontinuity_time_gap_s,
     }
 
 

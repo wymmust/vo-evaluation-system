@@ -16,6 +16,7 @@ from vo_eval.evaluator import (
     SUPPORTED_EVALUATION_FORMATS,
     Trajectory,
     build_associated_trajectories,
+    compute_alignment,
     evaluate_trajectories,
     evaluate_vloc_bundle,
     evaluate_vo_bundle,
@@ -287,12 +288,12 @@ def test_streamlit_vloc_trajectory_3d_marks_only_vloc_endpoints_with_small_marke
 
 def test_vloc_detail_visual_segments_follow_discontinuity_diagnostics():
     bundle = sample_vloc_bundle_with_large_nav_gap()
-    report = evaluate_vloc_bundle(bundle, EvaluationConfig(discontinuity_step_m=10.0))
+    report = evaluate_vloc_bundle(bundle, EvaluationConfig())
     comparison = report["vloc_details"]["comparison"]
 
-    assert report["discontinuities"]["all_matches"]["break_count"] == 1
-    assert comparison["visual_segment_id"].tolist() == [0, 0, 1]
-    assert comparison["segment_id"].tolist() == [0, 0, 1]
+    assert report["discontinuities"]["all_matches"]["break_count"] == 0
+    assert comparison["visual_segment_id"].tolist() == [0, 0, 0]
+    assert comparison["segment_id"].tolist() == [0, 0, 0]
 
 
 def make_tum(rows=120):
@@ -338,10 +339,10 @@ def test_public_evaluation_format_rejects_legacy_parser_formats():
             normalize_evaluation_format(fmt)
 
 
-def test_public_evaluation_format_normalizes_common_separators():
-    assert normalize_evaluation_format("SF-VLOC") == "sf_vloc"
-    assert normalize_evaluation_format("sf vo") == "sf_vo"
-    assert normalize_evaluation_format("Tum") == "tum"
+def test_public_evaluation_format_rejects_non_canonical_spellings():
+    for fmt in ["SF-VLOC", "sf vo", "Tum"]:
+        with pytest.raises(ValueError, match="Supported evaluation formats"):
+            normalize_evaluation_format(fmt)
 
 
 def sample_calib_text() -> str:
@@ -629,28 +630,19 @@ def test_bundle_loader_reports_missing_required_file(tmp_path):
 
 def test_vloc_bundle_uses_fixed_interpolation_defaults_and_drops_invalid_frames():
     bundle = sample_vloc_bundle_with_large_nav_gap()
-    cfg = EvaluationConfig(
-        alignment="sim3",
-        orientation_correction="auto",
-        association_mode="nearest",
-        max_interpolation_gap_s=10.0,
-        allow_extrapolation=True,
-        time_offset_s=3.0,
-    )
-
-    report = evaluate_vloc_bundle(bundle, cfg)
+    report = evaluate_vloc_bundle(bundle, EvaluationConfig())
 
     assert report["inputs"]["entry_mode"] == "vloc"
-    assert report["config"]["alignment"] == "none"
-    assert report["config"]["orientation_correction"] == "none"
-    assert report["config"]["association_mode"] == "interpolate_gt"
-    assert report["config"]["max_interpolation_gap_s"] == 1.0
-    assert report["config"]["allow_extrapolation"] is False
-    assert report["config"]["time_offset_s"] == 0.0
+    assert report["inputs"]["fixed_rules"]["alignment"] == "none"
+    assert report["inputs"]["fixed_rules"]["association_mode"] == "interpolate_gt"
+    assert report["inputs"]["fixed_rules"]["max_interpolation_gap_s"] == 1.0
+    assert report["inputs"]["fixed_rules"]["time_offset_s"] == 0.0
+    assert "alignment" not in report["config"]
+    assert "association_mode" not in report["config"]
     assert report["summary"]["matched_poses"] == 3
     assert report["association"]["dropped_est_large_gt_gap"] == 1
     assert report["association"]["dropped_est_invalid_mode"] == 1
-    assert report["ate_position_m"]["rmse"] < 1e-3
+    assert report["alignment"]["base_mode"] == "none"
 
 
 def test_vloc_report_contains_nav_vloc_specific_detail_tables():
@@ -669,7 +661,7 @@ def test_vloc_report_contains_nav_vloc_specific_detail_tables():
 
     assert details["summary"]["trajectory_length_m"] > 0
     assert details["summary"]["horizontal_error_mean_m"] == pytest.approx(1.0, abs=0.02)
-    assert details["summary"]["vertical_error_max_m"] == pytest.approx(0.0, abs=1e-4)
+    assert details["summary"]["vertical_error_max_m"] == pytest.approx(100.0, abs=1e-3)
     assert {"flight_mode", "navi_mode", "rtk_yaw", "rtk_alti", "velocity_norm"}.issubset(nav_status.columns)
     assert {"vloc_mode", "num_inliers", "reset_count"}.issubset(vloc_status.columns)
     assert {"position_error_n_m", "position_error_e_m", "position_error_d_m"}.issubset(comparison.columns)
@@ -701,27 +693,17 @@ def test_vloc_excel_export_omits_sim3_sheets_because_vloc_has_metric_scale():
 
 def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
     bundle = sample_vo_bundle_with_reset_segments()
-    report = evaluate_vo_bundle(
-        bundle,
-        EvaluationConfig(
-            alignment="none",
-            orientation_correction="auto",
-            association_mode="nearest",
-            max_interpolation_gap_s=10.0,
-            allow_extrapolation=True,
-            time_offset_s=2.0,
-        ),
-    )
+    report = evaluate_vo_bundle(bundle, EvaluationConfig())
 
     assert report["inputs"]["entry_mode"] == "vo"
     assert report["inputs"]["workflow"] == "sf_vo"
-    assert report["config"]["alignment"] == "sim3"
-    assert report["config"]["orientation_correction"] == "none"
-    assert report["config"]["association_mode"] == "interpolate_gt"
-    assert report["config"]["max_interpolation_gap_s"] == 1.0
-    assert report["config"]["allow_extrapolation"] is False
-    assert report["config"]["time_offset_s"] == 0.0
-    assert report["config"]["continuous_segment_policy"] == "segments"
+    assert report["inputs"]["fixed_rules"]["alignment"] == "sim3"
+    assert report["inputs"]["fixed_rules"]["association_mode"] == "interpolate_gt"
+    assert report["inputs"]["fixed_rules"]["max_interpolation_gap_s"] == 1.0
+    assert report["inputs"]["fixed_rules"]["time_offset_s"] == 0.0
+    assert report["inputs"]["fixed_rules"]["continuous_segment_policy"] == "segments"
+    assert "alignment" not in report["config"]
+    assert "continuous_segment_policy" not in report["config"]
 
     assert report["association"]["dropped_est_invalid_segment"] == 50
     assert report["association"]["valid_est_after_segment_filter"] == 402
@@ -747,10 +729,10 @@ def test_fixed_parser_rejects_wrong_column_count():
         parse_vloc_fixed(bad_vloc, name="vloc.txt")
 
 
-def test_tum_zero_error_after_se3_alignment():
+def test_tum_zero_error_without_user_alignment_config():
     gt = load_trajectory_from_text(make_tum(), fmt="tum", name="gt")
     est = load_trajectory_from_text(make_tum(), fmt="tum", name="est")
-    report = evaluate_trajectories(gt, est, EvaluationConfig(segment_lengths_m=(10, 20, 50), max_interpolation_gap_s=0.3))
+    report = evaluate_trajectories(gt, est, EvaluationConfig())
     assert report["ate_position_m"]["rmse"] < 1e-6
     assert report["rpe_frame_delta"]["translation_m"]["rmse"] < 1e-9
     assert report["summary"]["coverage_ratio"] == 1.0
@@ -763,10 +745,8 @@ def test_sim3_recovers_scale_for_monocular_like_output():
     for t, p in zip(gt.stamps, est_positions):
         lines.append(f"{t:.3f} {p[0]:.6f} {p[1]:.6f} {p[2]:.6f} 0 0 0 1")
     est = load_trajectory_from_text("\n".join(lines), fmt="tum", name="est")
-    cfg = EvaluationConfig(alignment="sim3", segment_lengths_m=(10, 20, 50), max_interpolation_gap_s=0.3)
-    report = evaluate_trajectories(gt, est, cfg)
-    assert abs(report["alignment"]["scale"] - 2.0) < 1e-9
-    assert report["ate_position_m"]["rmse"] < 1e-6
+    alignment = compute_alignment(gt.positions, est.positions, mode="sim3")
+    assert abs(alignment["scale"] - 2.0) < 1e-9
 
 
 def test_load_trajectory_from_text_rejects_legacy_single_file_formats():
@@ -796,8 +776,7 @@ def test_gt_is_interpolated_to_vo_timestamps_by_default():
 """
     gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
     est = load_trajectory_from_text(est_text, fmt="tum", name="est")
-    cfg = EvaluationConfig(alignment="none", segment_lengths_m=(0.1,), max_interpolation_gap_s=0.3)
-    report = evaluate_trajectories(gt, est, cfg)
+    report = evaluate_trajectories(gt, est, EvaluationConfig())
     assert report["association"]["method"] == "interpolate_gt"
     assert report["association"]["target"] == "estimate_timestamps"
     assert report["summary"]["matched_poses"] == 3
@@ -811,11 +790,8 @@ def test_rpe_frame_mode_uses_configured_frame_delta_in_per_frame_sheet():
         gt,
         est,
         EvaluationConfig(
-            alignment="none",
             rpe_delta_value=3,
             rpe_delta_unit="frames",
-            segment_lengths_m=(1.0,),
-            max_interpolation_gap_s=0.3,
         ),
     )
 
@@ -860,12 +836,9 @@ def test_rpe_distance_mode_uses_gt_distance_window_and_best_error_candidate():
         gt,
         est,
         EvaluationConfig(
-            alignment="none",
             rpe_delta_value=100.0,
             rpe_delta_unit="meters",
             rpe_distance_tolerance_ratio=0.05,
-            segment_lengths_m=(10.0,),
-            discontinuity_step_m=1000.0,
         ),
     )
 
@@ -902,11 +875,8 @@ def test_scale_frame_mode_outputs_local_scale_per_start_timestamp():
         gt,
         est,
         EvaluationConfig(
-            alignment="none",
             scale_delta_value=2,
             scale_delta_unit="frames",
-            segment_lengths_m=(1.0,),
-            max_interpolation_gap_s=1.1,
         ),
     )
 
@@ -941,12 +911,9 @@ def test_scale_distance_mode_uses_gt_distance_window_closest_to_target():
         gt,
         est,
         EvaluationConfig(
-            alignment="none",
             scale_delta_value=100.0,
             scale_delta_unit="meters",
             scale_distance_tolerance_ratio=0.05,
-            segment_lengths_m=(1.0,),
-            discontinuity_step_m=1000.0,
         ),
     )
 
@@ -971,7 +938,7 @@ def test_build_associated_trajectories_linearly_interpolates_gt_position():
     gt_eval, est_eval, assoc = build_associated_trajectories(
         gt,
         est,
-        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+        max_interpolation_gap_s=20.0,
     )
     assert assoc["method"] == "interpolate_gt"
     assert assoc["position_method"] == "linear"
@@ -991,7 +958,7 @@ def test_build_associated_trajectories_slerps_gt_rotation():
     gt_eval, _, assoc = build_associated_trajectories(
         gt,
         est,
-        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+        max_interpolation_gap_s=20.0,
     )
     assert assoc["matches"] == 1
     assert assoc["rotation_method"] == "slerp"
@@ -1012,7 +979,7 @@ def test_interpolate_gt_does_not_extrapolate_by_default():
     gt_eval, est_eval, assoc = build_associated_trajectories(
         gt,
         est,
-        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+        max_interpolation_gap_s=20.0,
     )
     assert assoc["allow_extrapolation"] is False
     assert assoc["matches"] == 1
@@ -1028,7 +995,7 @@ def test_interpolate_gt_respects_max_interpolation_gap():
     gt_eval, est_eval, assoc = build_associated_trajectories(
         gt,
         est,
-        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=1.0),
+        max_interpolation_gap_s=1.0,
     )
     assert assoc["matches"] == 0
     assert assoc["large_interpolation_gap_count"] == 1
@@ -1039,26 +1006,22 @@ def test_interpolate_gt_respects_max_interpolation_gap():
     gt_eval, est_eval, assoc = build_associated_trajectories(
         gt,
         est,
-        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+        max_interpolation_gap_s=20.0,
     )
     assert assoc["matches"] == 1
     assert assoc["large_interpolation_gap_count"] == 0
     assert len(gt_eval.positions) == len(est_eval.positions) == 1
 
 
-def test_nearest_association_keeps_tum_greedy_behavior_without_interpolation():
+def test_build_associated_trajectories_no_longer_supports_nearest_mode():
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
     est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
-    gt_eval, est_eval, assoc = build_associated_trajectories(
-        gt,
-        est,
-        EvaluationConfig(association_mode="nearest", max_time_diff_s=0.02),
-    )
-    assert assoc["mode"] == "nearest"
-    assert assoc["interpolated"] is False
-    assert assoc["matches"] == 0
-    assert len(gt_eval.positions) == 0
-    assert len(est_eval.positions) == 0
+    gt_eval, est_eval, assoc = build_associated_trajectories(gt, est, max_interpolation_gap_s=20.0)
+    assert assoc["mode"] == "interpolate_gt"
+    assert assoc["interpolated"] is True
+    assert assoc["matches"] == 1
+    assert np.allclose(gt_eval.positions[0], [5.0, 0.0, 0.0])
+    assert np.allclose(est_eval.positions[0], [5.0, 0.0, 0.0])
 
 
 def test_report_json_replaces_non_finite_values_with_null():
@@ -1097,7 +1060,7 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
     report = evaluate_trajectories(
         gt,
         est,
-        EvaluationConfig(segment_lengths_m=(1.0,), max_interpolation_gap_s=0.2),
+        EvaluationConfig(),
     )
 
     sheets = report["trajectory_exports"]
@@ -1173,7 +1136,7 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
     assert "rpe_translation_m" in rpe_from_workbook.columns
 
 
-def test_auto_orientation_correction_selects_right_rz180():
+def test_orientation_correction_is_not_applied_in_fixed_evaluator():
     stamps = np.arange(40, dtype=float) * 0.1
     positions = np.column_stack([stamps, np.sin(stamps), 0.1 * stamps])
     gt_rot = euler_yaw_pitch_roll_to_matrix(0.2 * stamps, 0.1 * np.sin(stamps), 0.05 * np.cos(stamps))
@@ -1185,12 +1148,11 @@ def test_auto_orientation_correction_selects_right_rz180():
     report = evaluate_trajectories(
         gt,
         est,
-        EvaluationConfig(alignment="none", orientation_correction="auto", segment_lengths_m=(1.0,)),
+        EvaluationConfig(),
     )
 
-    assert report["orientation_correction"]["selected"] == "rz180_right"
-    assert report["ate_orientation_deg"]["rmse"] < 1e-9
-    assert report["rpe_frame_delta"]["rotation_deg"]["rmse"] < 1e-6
+    assert "orientation_correction" not in report
+    assert report["ate_orientation_deg"]["rmse"] > 100.0
 
 
 def test_per_pose_contains_position_and_ypr_series_for_visualization():
@@ -1213,7 +1175,7 @@ def test_per_pose_contains_position_and_ypr_series_for_visualization():
     report = evaluate_trajectories(
         gt,
         est,
-        EvaluationConfig(alignment="none", segment_lengths_m=(0.1,), max_interpolation_gap_s=0.2),
+        EvaluationConfig(),
     )
     per_pose = report["per_pose"]
 
