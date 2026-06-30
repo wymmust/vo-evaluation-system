@@ -551,6 +551,19 @@ def test_static_runtime_uses_worker_and_layered_report_slices():
     runner = Path("static_web/py/browser_runner.py").read_text()
     html = Path("static_web/index.html").read_text()
     headers = Path("static_web/_headers").read_text()
+    required_vendor_files = [
+        "static_web/vendor/plotly/plotly-2.35.2.min.js",
+        "static_web/vendor/pyodide/v0.26.4/full/pyodide.js",
+        "static_web/vendor/pyodide/v0.26.4/full/pyodide.asm.js",
+        "static_web/vendor/pyodide/v0.26.4/full/pyodide.asm.wasm",
+        "static_web/vendor/pyodide/v0.26.4/full/pyodide-lock.json",
+        "static_web/vendor/pyodide/v0.26.4/full/python_stdlib.zip",
+        "static_web/vendor/pyodide/v0.26.4/full/numpy-1.26.4-cp312-cp312-pyodide_2024_0_wasm32.whl",
+        "static_web/vendor/pyodide/v0.26.4/full/pandas-2.2.0-cp312-cp312-pyodide_2024_0_wasm32.whl",
+        "static_web/vendor/pyodide/v0.26.4/full/python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+        "static_web/vendor/pyodide/v0.26.4/full/pytz-2024.1-py2.py3-none-any.whl",
+        "static_web/vendor/pyodide/v0.26.4/full/six-1.16.0-py2.py3-none-any.whl",
+    ]
 
     assert 'new Worker("./worker.js")' in app_js
     assert 'workerRequest("evaluate"' in app_js
@@ -572,6 +585,8 @@ def test_static_runtime_uses_worker_and_layered_report_slices():
     assert "def _light_report" in runner
     assert '"per_pose", "segment_records", "trajectory_exports"' in runner
     assert "download_slices_available" in runner
+    for vendor_file in required_vendor_files:
+        assert Path(vendor_file).is_file(), f"missing static runtime vendor file: {vendor_file}"
 
 
 def test_static_scale_interval_controls_are_wired_into_config():
