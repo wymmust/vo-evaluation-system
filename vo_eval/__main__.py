@@ -6,14 +6,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from .evaluator import (
-    EvaluationConfig,
-    evaluate_vloc_bundle,
-    evaluate_vo_bundle,
-    load_vloc_evaluation_bundle,
-    load_vo_evaluation_bundle,
-    report_to_json,
-)
+from .data_loader import load_vloc_evaluation_bundle, load_vo_evaluation_bundle
+from .processing import EvaluationConfig, evaluate_vloc_bundle, evaluate_vo_bundle
+from .report import report_to_json
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(

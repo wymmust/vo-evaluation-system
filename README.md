@@ -115,11 +115,11 @@ docker run --rm -p 8501:8501 vo-evaluation-system
 
 仓库不包含测试数据、飞行日志、导出报告或轨迹样例。请在本地页面中上传自己的 ground truth 与 VO 输出文件运行评估。
 
-## 指标与 evaluator.py 代码总表
+## 指标与代码总表
 
-本表是 `README.md` 和 `vo_eval/evaluator.py` 的统一索引。代码内同一份索引位于 `METRIC_CODE_MAP`；如果后续新增或改名 `report` 指标，需要同时更新 `METRIC_CODE_MAP` 和本表。
+本表是 `README.md` 和 `vo_eval` 拆分模块的统一索引。代码内同一份索引位于 `vo_eval/data_loader.py` 的 `METRIC_CODE_MAP`；如果后续新增或改名 `report` 指标，需要同时更新 `METRIC_CODE_MAP` 和本表。
 
-| 指标 / 报告项 | report 字段 | evaluator.py 对应代码 | README 详细说明 |
+| 指标 / 报告项 | report 字段 | 对应代码 | README 详细说明 |
 | --- | --- | --- | --- |
 | 时间同步 / GT 插值到 VO | `report["association"]` | `prepare_evaluation_trajectories()`、`build_associated_trajectories()`、`interpolate_reference_to_estimate()`、`associate_trajectories()` | `时间同步方式`、`#13 时间同步`、`HTML 调参报告新增参数与代码/公式对应 / 时间同步诊断细项` |
 | 轨迹对齐 / 对齐尺度 | `report["alignment"]` | `compute_alignment()`、`umeyama_alignment()`、`aggregate_alignment()`、`apply_alignment()` | `对齐方式`、`#09 对齐尺度`、`尺度比与尺度漂移` |
@@ -144,7 +144,7 @@ docker run --rm -p 8501:8501 vo-evaluation-system
 
 ## 运行结果截图指标卡与代码/公式对应
 
-本节对应页面第一屏 `EVALUATION SUMMARY / 运行结果` 的 15 个卡片。前端卡片由 `vo-evaluation-system/static_web/app.js:242-268` 生成，后端指标主要由 `vo-evaluation-system/vo_eval/evaluator.py:evaluate_trajectories()` 生成。所有 `rmse/mean/median/std/min/max/p95/p99` 统计最终都走 `describe()`：
+本节对应页面第一屏 `EVALUATION SUMMARY / 运行结果` 的 15 个卡片。前端卡片由 `vo-evaluation-system/static_web/app.js` 生成，后端指标主要由 `vo-evaluation-system/vo_eval/processing.py:evaluate_trajectories()` 生成。所有 `rmse/mean/median/std/min/max/p95/p99` 统计最终都走 `describe()`：
 
 ```python
 "rmse": float(np.sqrt(np.mean(arr * arr)))

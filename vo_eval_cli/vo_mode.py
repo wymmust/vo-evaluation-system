@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .evo_compat import RpeDelta, _failure_row, _load_vo_evaluator, _stat, _sse, parse_id_list
+from vo_eval.data_loader import load_vo_evaluation_bundle
+from vo_eval.processing import EvaluationConfig, evaluate_vo_bundle
+
+from .evo_compat import RpeDelta, _failure_row, _stat, _sse, parse_id_list
 
 
 @dataclass(frozen=True)
@@ -63,12 +66,11 @@ def evaluate_vo_task(task: VoTask, settings: VoEvalSettings) -> dict[str, Any]:
     """Evaluate one SF VO directory and flatten the report for Excel."""
 
     try:
-        evaluator = _load_vo_evaluator()
-        bundle = evaluator.load_vo_evaluation_bundle(task.data_dir, task.log_dir)
+        bundle = load_vo_evaluation_bundle(task.data_dir, task.log_dir)
         rpe_deltas = _configured_rpe_deltas(settings)
         base_delta = rpe_deltas[0] if rpe_deltas else None
-        cfg = _make_vo_config(evaluator, settings, rpe_delta=base_delta)
-        report = evaluator.evaluate_vo_bundle(bundle, cfg)
+        cfg = _make_vo_config(settings, rpe_delta=base_delta)
+        report = evaluate_vo_bundle(bundle, cfg)
 
         row: dict[str, Any] = {
             "log_id": task.log_id,
@@ -77,9 +79,9 @@ def evaluate_vo_task(task: VoTask, settings: VoEvalSettings) -> dict[str, Any]:
         }
         _add_ate_metrics(row, report)
         for index, delta in enumerate(rpe_deltas):
-            delta_report = report if index == 0 else evaluator.evaluate_vo_bundle(
+            delta_report = report if index == 0 else evaluate_vo_bundle(
                 bundle,
-                _make_vo_config(evaluator, settings, rpe_delta=delta),
+                _make_vo_config(settings, rpe_delta=delta),
             )
             _add_vo_rpe_metrics(row, delta_report, delta)
         _add_vo_summary(row, report)
@@ -98,21 +100,10 @@ def _configured_rpe_deltas(settings: VoEvalSettings) -> tuple[RpeDelta, ...]:
     return ()
 
 
-def _make_vo_config(evaluator, settings: VoEvalSettings, rpe_delta: RpeDelta | None = None):
+def _make_vo_config(settings: VoEvalSettings, rpe_delta: RpeDelta | None = None):
     rpe_delta = rpe_delta or settings.rpe_delta
     scale_delta = settings.scale_delta or rpe_delta
     kwargs: dict[str, Any] = {
-        "alignment": "sim3",
-        "orientation_correction": "none",
-        "association_mode": "interpolate_gt",
-        "max_time_diff_s": None,
-        "max_interpolation_gap_s": settings.max_interpolation_gap_s,
-        "allow_extrapolation": False,
-        "interpolate_rotation": True,
-        "interpolation_position_method": "linear",
-        "interpolation_rotation_method": "slerp",
-        "time_offset_s": 0.0,
-        "continuous_segment_policy": settings.continuous_segment_policy,
         "rpe_distance_tolerance_ratio": settings.rpe_distance_tolerance_ratio,
         "scale_distance_tolerance_ratio": settings.rpe_distance_tolerance_ratio,
     }
@@ -127,7 +118,7 @@ def _make_vo_config(evaluator, settings: VoEvalSettings, rpe_delta: RpeDelta | N
             scale_delta_value=float(scale_delta.value),
             scale_delta_unit=scale_delta.unit,
         )
-    return evaluator.EvaluationConfig(**kwargs)
+    return EvaluationConfig(**kwargs)
 
 
 def _add_ate_metrics(row: dict[str, Any], report: dict[str, Any]) -> None:

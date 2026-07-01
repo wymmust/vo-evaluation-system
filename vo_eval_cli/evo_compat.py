@@ -1,4 +1,4 @@
-"""Evo-compatible batch metrics built on top of ``vo_eval.evaluator``.
+"""Evo-compatible batch metrics built on top of the split ``vo_eval`` modules.
 
 This module intentionally lives outside the core ``vo_eval`` package.  It adapts
 pipeline-style TUM log directories to a small summary table that matches the
@@ -15,6 +15,10 @@ import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from vo_eval.data_loader import load_trajectory_from_text
+from vo_eval.processing import EvaluationConfig, evaluate_trajectories
+from vo_eval.utils import describe, euler_yaw_pitch_roll_to_matrix, relative_error
 
 
 @dataclass(frozen=True)
@@ -40,7 +44,7 @@ class TumTask:
 
 @dataclass(frozen=True)
 class TumEvalSettings:
-    """Evaluation parameters passed to ``vo_eval.evaluator``."""
+    """Evaluation parameters passed to the core VO/VLOC evaluator."""
 
     alignment: str = "sim3"
     association_mode: str = "interpolate_gt"
@@ -162,13 +166,12 @@ def evaluate_tum_task(
     """Evaluate one TUM pair and return a flat Excel row."""
 
     try:
-        evaluator = _load_vo_evaluator()
-        gt = evaluator.load_trajectory_from_text(
+        gt = load_trajectory_from_text(
             task.gt_file.read_text(encoding="utf-8", errors="replace"),
             "tum",
             str(task.gt_file),
         )
-        est = evaluator.load_trajectory_from_text(
+        est = load_trajectory_from_text(
             task.est_file.read_text(encoding="utf-8", errors="replace"),
             "tum",
             str(task.est_file),
@@ -182,11 +185,11 @@ def evaluate_tum_task(
 
         base_report: dict[str, Any] | None = None
         for delta in deltas:
-            cfg = _make_config(evaluator, settings, delta)
-            report = evaluator.evaluate_trajectories(gt, est, cfg)
+            cfg = _make_config(settings, delta)
+            report = evaluate_trajectories(gt, est, cfg)
             if base_report is None:
                 base_report = report
-            _add_evo_compatible_rpe_metrics(row, delta, report, evaluator)
+            _add_evo_compatible_rpe_metrics(row, delta, report)
 
         if base_report is not None:
             _add_ape_metrics(row, base_report)
@@ -200,30 +203,8 @@ def evaluate_tum_task(
         return _failure_row(task.log_id, str(task.nav_path), f"ERR:{type(exc).__name__}", str(exc))
 
 
-def _load_vo_evaluator():
-    try:
-        from vo_eval import evaluator
-    except ModuleNotFoundError as exc:
-        missing = exc.name or "dependency"
-        raise RuntimeError(
-            f"Cannot import vo_eval dependency '{missing}'. "
-            "Install vo-evaluation-system requirements first: "
-            "python3 -m pip install -r requirements.txt"
-        ) from exc
-    return evaluator
-
-
-def _make_config(evaluator, settings: TumEvalSettings, delta: RpeDelta):
-    return evaluator.EvaluationConfig(
-        alignment=settings.alignment,
-        association_mode=settings.association_mode,
-        max_time_diff_s=settings.max_time_diff_s,
-        max_interpolation_gap_s=settings.max_interpolation_gap_s,
-        allow_extrapolation=settings.allow_extrapolation,
-        interpolate_rotation=True,
-        interpolation_position_method="linear",
-        interpolation_rotation_method="slerp",
-        time_offset_s=0.0,
+def _make_config(settings: TumEvalSettings, delta: RpeDelta):
+    return EvaluationConfig(
         rpe_delta_frames=max(1, int(round(delta.value))) if delta.unit == "frames" else 1,
         rpe_delta_value=float(delta.value),
         rpe_delta_unit=delta.unit,
@@ -231,7 +212,6 @@ def _make_config(evaluator, settings: TumEvalSettings, delta: RpeDelta):
         scale_delta_value=float(delta.value),
         scale_delta_unit=delta.unit,
         scale_distance_tolerance_ratio=settings.rpe_distance_tolerance_ratio,
-        continuous_segment_policy=settings.continuous_segment_policy,
     )
 
 
@@ -239,7 +219,6 @@ def _add_evo_compatible_rpe_metrics(
     row: dict[str, Any],
     delta: RpeDelta,
     report: dict[str, Any],
-    evaluator,
 ) -> None:
     """Add RPE metrics using evo's default pair selection.
 
@@ -250,7 +229,7 @@ def _add_evo_compatible_rpe_metrics(
     without changing the core evaluator.
     """
 
-    stats = _evo_compatible_rpe_stats(delta, report, evaluator)
+    stats = _evo_compatible_rpe_stats(delta, report)
     if stats is None:
         # Fallback keeps a useful row if report internals change.
         stats = ((report.get("rpe_frame_delta") or {}).get("translation_m") or {})
@@ -268,7 +247,7 @@ def _add_rpe_stat_metrics(row: dict[str, Any], label: str, trans: dict[str, Any]
     row[f"{prefix}_std"] = _stat(trans, "std")
 
 
-def _evo_compatible_rpe_stats(delta: RpeDelta, report: dict[str, Any], evaluator) -> dict[str, Any] | None:
+def _evo_compatible_rpe_stats(delta: RpeDelta, report: dict[str, Any]) -> dict[str, Any] | None:
     per_pose = report.get("per_pose")
     if per_pose is None or len(per_pose) < 2:
         return None
@@ -283,13 +262,13 @@ def _evo_compatible_rpe_stats(delta: RpeDelta, report: dict[str, Any], evaluator
     if not pairs:
         return None
 
-    gt_rot, est_rot = _rotations_from_per_pose(per_pose, evaluator)
+    gt_rot, est_rot = _rotations_from_per_pose(per_pose)
     errors: list[float] = []
     for i, j in pairs:
-        trans_error, _rot_error = evaluator.relative_error(gt_pos, est_pos, gt_rot, est_rot, i, j)
+        trans_error, _rot_error = relative_error(gt_pos, est_pos, gt_rot, est_rot, i, j)
         errors.append(float(trans_error))
 
-    stats = evaluator.describe(np.asarray(errors, dtype=float))
+    stats = describe(np.asarray(errors, dtype=float))
     return stats if stats is not None else None
 
 
@@ -315,7 +294,7 @@ def _evo_default_pairs(est_positions: np.ndarray, delta: RpeDelta) -> list[tuple
     return [(int(i), int(j)) for i, j in zip(ids, ids[1:])]
 
 
-def _rotations_from_per_pose(per_pose, evaluator) -> tuple[np.ndarray | None, np.ndarray | None]:
+def _rotations_from_per_pose(per_pose) -> tuple[np.ndarray | None, np.ndarray | None]:
     gt_cols = ["gt_yaw_deg", "gt_pitch_deg", "gt_roll_deg"]
     est_cols = ["est_yaw_aligned_deg", "est_pitch_aligned_deg", "est_roll_aligned_deg"]
     if not all(col in per_pose for col in gt_cols + est_cols):
@@ -323,8 +302,8 @@ def _rotations_from_per_pose(per_pose, evaluator) -> tuple[np.ndarray | None, np
     try:
         gt_ypr = np.radians(per_pose[gt_cols].to_numpy(dtype=float))
         est_ypr = np.radians(per_pose[est_cols].to_numpy(dtype=float))
-        gt_rot = evaluator.euler_yaw_pitch_roll_to_matrix(gt_ypr[:, 0], gt_ypr[:, 1], gt_ypr[:, 2])
-        est_rot = evaluator.euler_yaw_pitch_roll_to_matrix(est_ypr[:, 0], est_ypr[:, 1], est_ypr[:, 2])
+        gt_rot = euler_yaw_pitch_roll_to_matrix(gt_ypr[:, 0], gt_ypr[:, 1], gt_ypr[:, 2])
+        est_rot = euler_yaw_pitch_roll_to_matrix(est_ypr[:, 0], est_ypr[:, 1], est_ypr[:, 2])
         return gt_rot, est_rot
     except Exception:
         return None, None

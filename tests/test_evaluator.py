@@ -7,20 +7,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from vo_eval.evaluator import (
+from vo_eval.data_loader import (
     Calibration,
-    EvaluationConfig,
     HomePoint,
     SfVlocBundle,
     SfVoBundle,
     SUPPORTED_EVALUATION_FORMATS,
     Trajectory,
-    build_associated_trajectories,
-    compute_alignment,
-    evaluate_trajectories,
-    evaluate_vloc_bundle,
-    evaluate_vo_bundle,
-    euler_yaw_pitch_roll_to_matrix,
     get_evaluation_format_spec,
     load_vloc_evaluation_bundle,
     load_vo_evaluation_bundle,
@@ -31,8 +24,13 @@ from vo_eval.evaluator import (
     parse_imu_fixed,
     parse_vloc_fixed,
     parse_vo_fixed,
-    report_to_excel,
-    report_to_json,
+)
+from vo_eval.processing import EvaluationConfig, evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle
+from vo_eval.report import report_to_excel, report_to_json
+from vo_eval.utils import (
+    build_associated_trajectories,
+    compute_alignment,
+    euler_yaw_pitch_roll_to_matrix,
     yaw_from_rot,
 )
 
@@ -783,7 +781,7 @@ def test_gt_is_interpolated_to_vo_timestamps_by_default():
     assert report["ate_position_m"]["rmse"] < 1e-12
 
 
-def test_rpe_frame_mode_uses_configured_frame_delta_in_per_frame_sheet():
+def test_rpe_frame_mode_uses_evo_consecutive_frame_pairs_in_per_frame_sheet():
     gt = load_trajectory_from_text(make_tum(rows=8), fmt="tum", name="gt")
     est = load_trajectory_from_text(make_tum(rows=8), fmt="tum", name="est")
     report = evaluate_trajectories(
@@ -799,15 +797,15 @@ def test_rpe_frame_mode_uses_configured_frame_delta_in_per_frame_sheet():
     assert rpe["delta_unit"] == "frames"
     assert rpe["delta_value"] == 3
     assert rpe["delta_frames"] == 3
-    assert rpe["count"] == 5
+    assert rpe["count"] == 2
 
     sheet = report["trajectory_exports"]["rpe_per_frame"]
     assert sheet["rpe_delta_unit"].tolist() == ["frames"] * len(sheet)
-    assert sheet["rpe_end_match_index"].tolist()[:2] == [3, 4]
-    assert sheet["rpe_available"].tolist() == [True, True, True, True, True, False, False, False]
+    assert sheet["rpe_end_match_index"].tolist() == [3, -1, -1, 6, -1, -1, -1, -1]
+    assert sheet["rpe_available"].tolist() == [True, False, False, True, False, False, False, False]
 
 
-def test_rpe_distance_mode_uses_gt_distance_window_and_best_error_candidate():
+def test_rpe_distance_mode_uses_evo_consecutive_estimate_path_pairs():
     stamps = np.arange(6, dtype=float)
     gt_pos = np.array(
         [
@@ -846,16 +844,15 @@ def test_rpe_distance_mode_uses_gt_distance_window_and_best_error_candidate():
     assert rpe["delta_unit"] == "meters"
     assert rpe["delta_distance_m"] == 100.0
     assert rpe["distance_tolerance_ratio"] == 0.05
-    assert rpe["count"] == 4
+    assert rpe["count"] == 1
 
     sheet = report["trajectory_exports"]["rpe_per_frame"]
-    first = sheet.iloc[0]
-    assert bool(first["rpe_available"]) is True
-    assert first["rpe_end_match_index"] == 3
-    assert first["rpe_actual_distance_m"] == 104.0
-    assert first["rpe_candidate_count"] == 3
-    assert first["rpe_translation_m"] == 1.0
-    assert sheet["rpe_available"].tolist()[-2:] == [False, False]
+    assert sheet["rpe_available"].tolist() == [False, True, False, False, False, False]
+    active = sheet[sheet["rpe_available"]].iloc[0]
+    assert active["rpe_end_match_index"] == 5
+    assert active["rpe_actual_distance_m"] == 109.0
+    assert active["rpe_candidate_count"] == 1
+    assert active["rpe_translation_m"] == 10.0
 
 
 def test_scale_frame_mode_outputs_local_scale_per_start_timestamp():

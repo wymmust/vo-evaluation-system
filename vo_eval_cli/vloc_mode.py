@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .evo_compat import RpeDelta, _failure_row, _load_vo_evaluator, parse_id_list
+from vo_eval.data_loader import load_vloc_evaluation_bundle
+from vo_eval.processing import EvaluationConfig, evaluate_vloc_bundle
+
+from .evo_compat import RpeDelta, _failure_row, parse_id_list
 
 
 @dataclass(frozen=True)
@@ -59,10 +62,9 @@ def evaluate_vloc_task(task: VlocTask, settings: VlocEvalSettings) -> dict[str, 
     """Evaluate one SF VLOC directory and flatten the report for Excel."""
 
     try:
-        evaluator = _load_vo_evaluator()
-        bundle = evaluator.load_vloc_evaluation_bundle(task.data_dir, task.log_dir)
-        cfg = _make_vloc_config(evaluator, settings)
-        report = evaluator.evaluate_vloc_bundle(bundle, cfg)
+        bundle = load_vloc_evaluation_bundle(task.data_dir, task.log_dir)
+        cfg = _make_vloc_config(settings)
+        report = evaluate_vloc_bundle(bundle, cfg)
 
         row: dict[str, Any] = {
             "log_id": task.log_id,
@@ -76,19 +78,8 @@ def evaluate_vloc_task(task: VlocTask, settings: VlocEvalSettings) -> dict[str, 
         return _failure_row(task.log_id, str(task.data_dir), f"ERR:{type(exc).__name__}", str(exc))
 
 
-def _make_vloc_config(evaluator, settings: VlocEvalSettings):
+def _make_vloc_config(settings: VlocEvalSettings):
     kwargs: dict[str, Any] = {
-        "alignment": "none",
-        "orientation_correction": "none",
-        "association_mode": "interpolate_gt",
-        "max_time_diff_s": None,
-        "max_interpolation_gap_s": 1.0,
-        "allow_extrapolation": False,
-        "interpolate_rotation": True,
-        "interpolation_position_method": "linear",
-        "interpolation_rotation_method": "slerp",
-        "time_offset_s": 0.0,
-        "continuous_segment_policy": "vo_timestamps",
         "rpe_distance_tolerance_ratio": settings.rpe_distance_tolerance_ratio,
     }
     if settings.rpe_delta is not None:
@@ -97,7 +88,7 @@ def _make_vloc_config(evaluator, settings: VlocEvalSettings):
             rpe_delta_value=float(settings.rpe_delta.value),
             rpe_delta_unit=settings.rpe_delta.unit,
         )
-    return evaluator.EvaluationConfig(**kwargs)
+    return EvaluationConfig(**kwargs)
 
 
 

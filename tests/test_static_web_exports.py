@@ -10,7 +10,7 @@ from openpyxl import load_workbook
 
 
 def test_static_browser_evaluator_exports_new_vloc_summary_metrics():
-    source = Path("static_web/py/evaluator.py").read_text()
+    source = Path("vo_eval/report.py").read_text()
     assert "mean_error_pos_xy" in source
     assert "mean_error_pos_z" in source
     assert "mean_error_euler" in source
@@ -128,10 +128,6 @@ def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
     source = Path("app.py").read_text()
     assert 'st.radio("评估入口", list(EVALUATION_ENTRY_OPTIONS), index=0)' in source
     assert 'if entry_mode == "vloc":' in source
-    assert 'alignment="none"' in source
-    assert 'orientation_correction="none"' in source
-    assert 'association_mode="interpolate_gt"' in source
-    assert 'max_interpolation_gap_s=1.0' in source
     assert "st.number_input(\"RPE 统计间隔\"" in source
     assert "st.number_input(\"尺度图间隔\"" in source
     for removed_widget_call in [
@@ -146,7 +142,7 @@ def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
     ]:
         assert removed_widget_call not in source
     assert 'if entry_mode == "vo":' in source
-    assert 'report = evaluator.evaluate_vo_bundle(bundle, cfg)' in source
+    assert 'report = evaluate_vo_bundle(bundle, cfg)' in source
     assert 'segment_policy_label = "按VO连续段逐段评估"' in source
     assert 'entry_mode == "vo" and st.selectbox("轨迹对齐"' not in source
     assert "VO_CHART_OPTIONS" in source
@@ -565,7 +561,8 @@ def test_static_runtime_uses_worker_and_layered_report_slices():
         "static_web/vendor/pyodide/v0.26.4/full/six-1.16.0-py2.py3-none-any.whl",
     ]
 
-    assert 'new Worker("./worker.js")' in app_js
+    assert 'new Worker(`./worker.js?v=${APP_ASSET_VERSION}`)' in app_js
+    assert 'const APP_ASSET_VERSION = "20260701-split-evaluator";' in app_js
     assert 'workerRequest("evaluate"' in app_js
     assert 'workerRequest("slice"' in app_js
     assert "loadPyodide" not in app_js

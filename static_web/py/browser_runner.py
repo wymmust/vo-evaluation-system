@@ -21,19 +21,17 @@ _REPO_ROOT = _MODULE_PATH.parents[2] if len(_MODULE_PATH.parents) > 2 else Path(
 if (_REPO_ROOT / "vo_eval").exists() and str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from vo_eval.evaluator import (  # noqa: E402
-    EvaluationConfig,
-    evaluate_vloc_bundle,
-    evaluate_vo_bundle,
+from vo_eval.data_loader import (  # noqa: E402
     parse_calib_raw_fixed,
     parse_home_point_fixed,
     parse_imu_fixed,
     parse_vloc_fixed,
     parse_vo_fixed,
-    report_to_json,
     SfVlocBundle,
     SfVoBundle,
 )
+from vo_eval.processing import EvaluationConfig, evaluate_vloc_bundle, evaluate_vo_bundle  # noqa: E402
+from vo_eval.report import report_to_json  # noqa: E402
 
 _LAST_REPORT: dict | None = None
 

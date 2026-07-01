@@ -40,14 +40,20 @@ async function initPyodideWorker(pyodideIndexUrl) {
   pyodide = await loadPyodide({ indexURL: pyodideIndexUrl });
   await pyodide.loadPackage(["numpy", "pandas"]);
 
-  const [evaluatorCode, runnerCode] = await Promise.all([
-    fetchText("./py/evaluator.py"),
+  const [dataLoaderCode, utilsCode, reportCode, processingCode, runnerCode] = await Promise.all([
+    fetchText("./py/vo_eval/data_loader.py"),
+    fetchText("./py/vo_eval/utils.py"),
+    fetchText("./py/vo_eval/report.py"),
+    fetchText("./py/vo_eval/processing.py"),
     fetchText("./py/browser_runner.py"),
   ]);
 
   pyodide.FS.mkdirTree("/vo_eval");
   pyodide.FS.writeFile("/vo_eval/__init__.py", "");
-  pyodide.FS.writeFile("/vo_eval/evaluator.py", evaluatorCode);
+  pyodide.FS.writeFile("/vo_eval/data_loader.py", dataLoaderCode);
+  pyodide.FS.writeFile("/vo_eval/utils.py", utilsCode);
+  pyodide.FS.writeFile("/vo_eval/report.py", reportCode);
+  pyodide.FS.writeFile("/vo_eval/processing.py", processingCode);
   pyodide.FS.writeFile("/browser_runner.py", runnerCode);
   pyodide.runPython(`
 import sys

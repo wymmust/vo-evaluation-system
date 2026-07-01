@@ -14,6 +14,7 @@ const state = {
 
 const PYODIDE_INDEX_URL = "./vendor/pyodide/v0.26.4/full/";
 const PLOTLY_SCRIPT_URL = "./vendor/plotly/plotly-2.35.2.min.js";
+const APP_ASSET_VERSION = "20260701-split-evaluator";
 
 const els = {
   status: document.getElementById("runtimeStatus"),
@@ -173,7 +174,7 @@ async function initPyodide() {
   }
   state.loadingStep = "worker";
   els.status.textContent = "加载后台运行环境...";
-  state.worker = new Worker("./worker.js");
+  state.worker = new Worker(`./worker.js?v=${APP_ASSET_VERSION}`);
   state.worker.addEventListener("message", handleWorkerMessage);
   state.worker.addEventListener("error", (event) => {
     rejectPendingWorkerRequests(event.message || "worker_error");

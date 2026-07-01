@@ -5,13 +5,12 @@
 2. 按固定目录契约读取 data_dir / log_dir。
 3. 把 report 中的指标映射到页面指标卡、Plotly 图表和下载文件。
 
-核心计算不在这里，核心指标都由 vo_eval/evaluator.py 产生。
+核心计算不在这里，核心指标由 vo_eval/processing.py、vo_eval/data_loader.py 和 vo_eval/report.py 产生。
 """
 
 from __future__ import annotations
 
 import html
-import importlib
 import math
 import re
 from typing import Any
@@ -21,7 +20,9 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-import vo_eval.evaluator as vo_evaluator
+from vo_eval.data_loader import load_vloc_evaluation_bundle, load_vo_evaluation_bundle
+from vo_eval.processing import EvaluationConfig, evaluate_vloc_bundle, evaluate_vo_bundle
+from vo_eval.report import report_to_excel, report_to_json
 
 
 EVALUATION_ENTRY_OPTIONS = {
@@ -137,11 +138,7 @@ def main() -> None:
         return
 
     try:
-        # Streamlit 热更新有时不会重载普通 Python 模块。
-        # 每次评估前 reload evaluator，确保页面使用最新的解析/指标逻辑。
-        evaluator = latest_evaluator()
-        segment_lengths = parse_float_list(segment_text)
-        common_cfg = dict(
+        cfg = EvaluationConfig(
             rpe_delta_frames=max(1, int(round(float(rpe_delta_value)))) if rpe_delta_unit_label == "f" else 1,
             rpe_delta_value=float(rpe_delta_value),
             rpe_delta_unit="frames" if rpe_delta_unit_label == "f" else "meters",
@@ -149,50 +146,13 @@ def main() -> None:
             scale_delta_value=float(scale_delta_value),
             scale_delta_unit="frames" if scale_delta_unit_label == "f" else "meters",
             scale_distance_tolerance_ratio=0.05,
-            segment_lengths_m=tuple(segment_lengths),
-            max_segments_per_length=int(max_segments),
-            segment_step_frames=int(segment_step),
-            max_segment_length_diff_ratio=float(length_tolerance),
-            continuous_segment_policy=SEGMENT_POLICY_OPTIONS[segment_policy_label],
-            discontinuity_step_m=float(discontinuity_step),
-            discontinuity_time_gap_s=float(discontinuity_gap),
-            divergence_abs_m=float(divergence_abs),
-            divergence_rel_percent=float(divergence_rel),
         )
         if entry_mode == "vloc":
-            cfg = evaluator.EvaluationConfig(
-                alignment="none",
-                orientation_correction="none",
-                association_mode="interpolate_gt",
-                max_time_diff_s=None,
-                max_interpolation_gap_s=1.0,
-                allow_extrapolation=False,
-                interpolate_rotation=True,
-                interpolation_position_method="linear",
-                interpolation_rotation_method="slerp",
-                time_offset_s=0.0,
-                **common_cfg,
-            )
+            bundle = load_vloc_evaluation_bundle(data_dir, log_dir)
+            report = evaluate_vloc_bundle(bundle, cfg)
         else:
-            cfg = evaluator.EvaluationConfig(
-                alignment="sim3",
-                orientation_correction="none",
-                association_mode="interpolate_gt",
-                max_time_diff_s=None,
-                max_interpolation_gap_s=1.0,
-                allow_extrapolation=False,
-                interpolate_rotation=True,
-                interpolation_position_method="linear",
-                interpolation_rotation_method="slerp",
-                time_offset_s=0.0,
-                **common_cfg,
-            )
-        if entry_mode == "vloc":
-            bundle = evaluator.load_vloc_evaluation_bundle(data_dir, log_dir)
-            report = evaluator.evaluate_vloc_bundle(bundle, cfg)
-        else:
-            bundle = evaluator.load_vo_evaluation_bundle(data_dir, log_dir)
-            report = evaluator.evaluate_vo_bundle(bundle, cfg)
+            bundle = load_vo_evaluation_bundle(data_dir, log_dir)
+            report = evaluate_vo_bundle(bundle, cfg)
     except Exception as exc:
         st.error(f"评估失败：{exc}")
         return
@@ -200,11 +160,6 @@ def main() -> None:
     show_summary(report, entry_mode)
     show_visuals(report, entry_mode, selected_vloc_chart_ids, selected_vo_chart_ids)
     show_tables_and_downloads(report)
-
-
-def latest_evaluator():
-    return importlib.reload(vo_evaluator)
-
 
 def evaluation_export_filename(report: dict[str, Any], kind: str, extension: str) -> str:
     """生成导出文件名：数据目录 + 入口模式 + 导出类型。
@@ -863,7 +818,7 @@ def show_tables_and_downloads(report: dict[str, Any]) -> None:
     col1, col2, col3, col4 = st.columns(4)
     col1.download_button(
         "下载 JSON 指标",
-        vo_evaluator.report_to_json(report),
+        report_to_json(report),
         file_name="vo_evaluation_metrics.json",
         mime="application/json",
     )
@@ -873,7 +828,8 @@ def show_tables_and_downloads(report: dict[str, Any]) -> None:
         file_name="vo_per_pose_errors.csv",
         mime="text/csv",
     )
-    segment_csv = report["segment_records"].to_csv(index=False) if not report["segment_records"].empty else ""
+    segment_records = report.get("segment_records")
+    segment_csv = segment_records.to_csv(index=False) if isinstance(segment_records, pd.DataFrame) and not segment_records.empty else ""
     col3.download_button(
         "下载子轨迹误差 CSV",
         segment_csv,
@@ -883,7 +839,7 @@ def show_tables_and_downloads(report: dict[str, Any]) -> None:
     )
     col4.download_button(
         "下载轨迹 Excel",
-        vo_evaluator.report_to_excel(report),
+        report_to_excel(report),
         file_name=evaluation_export_filename(report, "trajectory_exports", "xlsx"),
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         disabled=not bool(report.get("trajectory_exports")),
@@ -2090,7 +2046,7 @@ def build_html_report(report: dict[str, Any], figures: list[go.Figure]) -> str:
     segment_rows = build_segment_summary_rows(report)
     config_rows = build_config_rows(report)
     metric_rows = flatten_full_report_metrics(report)
-    raw_json = vo_evaluator.report_to_json(report)
+    raw_json = report_to_json(report)
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'><title>VO Evaluation Report</title>",
         """
