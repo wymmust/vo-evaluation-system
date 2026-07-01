@@ -558,23 +558,25 @@ def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = Non
 
     这条入口和 VLOC 分开：
     - 固定读取 data_dir/imu.txt 和 log_dir/vo.txt；
-    - 固定把 VO cam 位姿通过 calib_raw.yaml 外参转到 body；
+    - 固定把 nav body 位姿通过 calib_raw.yaml 外参转到 cam；VO 保持在 cam frame；
     - 固定按 reset_count 连续段切分，丢弃小于 10 s 或小于 200 帧的短段；
     - 固定把 GT 插值到有效 VO 时间戳，最大 GT 插值间隔 1.0 s；
     - 固定按连续段分别做 Sim3，让每个 VO 重置后的局部坐标系单独对齐。
     """
 
     cfg = normalized_vo_evaluation_config(config)
-    nav_body = sf_nav_to_body_trajectory(bundle.nav)
-    vo_body = sf_vo_to_body_trajectory(bundle.vo, bundle.calibration)
+    # nav_body = sf_nav_to_body_trajectory(bundle.nav)
+    # vo_body = sf_vo_to_body_trajectory(bundle.vo, bundle.calibration)
+    nav_cam = sf_nav_to_camera_trajectory(bundle.nav, bundle.calibration)
+    vo_cam = bundle.vo
 
-    valid_indices, valid_segment_ids, segment_filter = vo_valid_segment_indices(vo_body)
+    valid_indices, valid_segment_ids, segment_filter = vo_valid_segment_indices(vo_cam)
     if len(valid_indices) < 2:
         raise ValueError("No VO reset segment remains after filtering duration >= 10s and frame count >= 200")
 
-    vo_valid = subset_trajectory(vo_body, valid_indices)
+    vo_valid = subset_trajectory(vo_cam, valid_indices)
     vo_valid.extras["evaluation_segment_id"] = np.asarray(valid_segment_ids, dtype=int)
-    report = evaluate_trajectories(nav_body, vo_valid, cfg)
+    report = evaluate_trajectories(nav_cam, vo_valid, cfg)
     report["association"]["dropped_est_invalid_segment"] = int(segment_filter["dropped_pose_count"])
     report["association"]["valid_est_after_segment_filter"] = int(len(vo_valid.positions))
     report["association"]["vo_reset_segment_filter"] = segment_filter
@@ -583,7 +585,7 @@ def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = Non
         if "visual_segment_id" in report["per_pose"]
         else None
     )
-    report["vo_details"] = build_vo_detail_report(nav_body, vo_valid, cfg, report, visual_segment_ids=visual_segment_ids)
+    report["vo_details"] = build_vo_detail_report(nav_cam, vo_valid, cfg, report, visual_segment_ids=visual_segment_ids)
     report["inputs"]["entry_mode"] = "vo"
     report["inputs"]["workflow"] = "sf_vo"
     report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
@@ -1133,6 +1135,54 @@ def sf_vloc_to_body_ned_trajectory(vloc: Trajectory, home_point: HomePoint, cali
         body_rot,
         extras=extras,
         source_format="sf_vloc_body_ned",
+    )
+
+
+def sf_nav_to_camera_trajectory(nav: Trajectory, calibration: Calibration) -> Trajectory:
+    """把 nav 从 body/IMU 系转到 camera 系，使 nav 与 VO 在同一坐标系下评估。
+
+    数学（参考 convert_nav_to_tum.py）：
+      R_b_c = R_b_i @ R_c_i^T
+      P_b_c = P_b_i - R_b_c @ P_c_i
+    对每一帧 nav：
+      R_w_c = R_w_b @ R_b_c
+      P_w_c = P_w_b + R_w_b @ P_b_c
+
+    来源对应：需求明确 VO 在 cam frame 输出，因此把 GT 转到 cam frame 比较，
+    而不是把 VO 转到 body frame。单位外参时输出应与原始 nav 完全一致。
+    """
+    t_imu_body = np.asarray(calibration.t_imu_body, dtype=float)
+    t_cam_imu = np.asarray(calibration.t_cam_imu, dtype=float)
+
+    rot_b_i = t_imu_body[:3, :3]
+    trans_b_i = t_imu_body[:3, 3]
+    rot_c_i = t_cam_imu[:3, :3]
+    trans_c_i = t_cam_imu[:3, 3]
+
+    rot_b_c = rot_b_i @ rot_c_i.T
+    trans_b_c = trans_b_i - rot_b_c @ trans_c_i
+
+    rotations = nav.rotations
+    cam_positions = np.asarray(nav.positions, dtype=float)
+    cam_rotations = rotations
+    if rotations is not None:
+        cam_positions = cam_positions + np.einsum("nij,j->ni", rotations, trans_b_c)
+        cam_rotations = np.einsum("nij,jk->nik", rotations, rot_b_c)
+
+    extras = dict(nav.extras)
+    extras["body_x_m"] = nav.positions[:, 0]
+    extras["body_y_m"] = nav.positions[:, 1]
+    extras["body_z_m"] = nav.positions[:, 2]
+    extras["cam_x_m"] = cam_positions[:, 0]
+    extras["cam_y_m"] = cam_positions[:, 1]
+    extras["cam_z_m"] = cam_positions[:, 2]
+    return Trajectory(
+        nav.name,
+        nav.stamps,
+        cam_positions,
+        cam_rotations,
+        extras=extras,
+        source_format="sf_imu_camera",
     )
 
 
@@ -2483,6 +2533,9 @@ def relative_error(
     gt_delta = gt_pos[j] - gt_pos[i]
     est_delta = est_pos[j] - est_pos[i]
     return float(np.linalg.norm(est_delta - gt_delta)), None
+    # gt_dist = float(np.linalg.norm(gt_pos[j] - gt_pos[i]))
+    # est_dist = float(np.linalg.norm(est_pos[j] - est_pos[i]))
+    # return abs(est_dist - gt_dist), None
 
 
 def relative_pose(r_i: np.ndarray, p_i: np.ndarray, r_j: np.ndarray, p_j: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -2985,14 +3038,45 @@ def rpe_frame_dataframe(
     candidate_count = np.zeros(n, dtype=int)
     available = np.zeros(n, dtype=bool)
 
+    # evo 的 filter_pairs_by_path(all_pairs=False) 口径：
+    # 按累计路程每走过 delta 就记录一个起点 ids[k]，pair 是 (ids[k], ids[k+1])，
+    # 这样每段路程至少为 delta，且不重叠。仅在 meters 模式下启用。
+    # evo 使用 reference 轨迹（Sim3 对齐后的 est）计算累计路程，这里对齐 evo。
+    evo_ids: list[int] = []
+    if unit == "meters":
+        evo_path = 0.0
+        for k in range(1, n):
+            evo_path += float(np.linalg.norm(est_pos[k] - est_pos[k - 1]))
+            if evo_path >= target_distance_m:
+                evo_ids.append(k)
+                evo_path = 0.0
+
     for i in range(n):
         if unit == "frames":
-            candidates = [i + delta_frames] if i + delta_frames < n else []
+            # candidates = [i + delta_frames] if i + delta_frames < n else []
+            # evo 的 filter_pairs_by_index(all_pairs=False) 口径：
+            # 起点为 delta 的整数倍，终点 = 起点 + delta，非重叠覆盖。
+            if i % delta_frames == 0 and i + delta_frames < n:
+                candidates = [i + delta_frames]
+            else:
+                candidates = []
+            
         else:
-            start_distance = gt_distance[i]
-            left = int(np.searchsorted(gt_distance, start_distance + min_distance_m, side="left"))
-            right = int(np.searchsorted(gt_distance, start_distance + max_distance_m, side="right"))
-            candidates = [idx for idx in range(max(i + 1, left), min(right, n))]
+            # evo 的 filter_pairs_by_path(all_pairs=False) 口径：
+            # 只有 i 出现在 evo_ids 里时才计算 RPE，候选终点固定为 evo_ids 的下一个。
+            if i in evo_ids:
+                idx_in_evo = evo_ids.index(i)
+                if idx_in_evo + 1 < len(evo_ids):
+                    candidates = [evo_ids[idx_in_evo + 1]]
+                else:
+                    candidates = []
+            else:
+                candidates = []
+            # 旧口径（tolerance 窗口内选最小误差候选），保留参考：
+            # start_distance = gt_distance[i]
+            # left = int(np.searchsorted(gt_distance, start_distance + min_distance_m, side="left"))
+            # right = int(np.searchsorted(gt_distance, start_distance + max_distance_m, side="right"))
+            # candidates = [idx for idx in range(max(i + 1, left), min(right, n))]
         candidate_count[i] = len(candidates)
         if not candidates:
             continue
