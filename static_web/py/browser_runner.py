@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import fields
 from pathlib import Path
 
 _MODULE_PATH = Path(__file__).resolve()
@@ -39,7 +40,8 @@ _LAST_REPORT: dict | None = None
 
 def _config_from_json(config_json: str) -> EvaluationConfig:
     config_data = json.loads(config_json)
-    return EvaluationConfig(**config_data)
+    allowed_keys = {field.name for field in fields(EvaluationConfig)}
+    return EvaluationConfig(**{key: value for key, value in config_data.items() if key in allowed_keys})
 
 
 def _remember_report(report: dict) -> dict:
