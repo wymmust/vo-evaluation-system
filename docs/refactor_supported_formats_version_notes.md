@@ -16,7 +16,7 @@
 评估时需要选择两个目录：
 
 - `data_dir`：固定读取 `imu.txt`，作为 ground truth / nav 参考。
-- `log_dir`：VLOC 模式读取 `vloc.txt`、`home_point.txt`、`calib_raw.yaml`；VO 模式读取 `vo.txt`、`home_point.txt`、`calib_raw.yaml`。
+- `log_dir`：VLOC 模式读取 `vloc.txt`、`home_point.txt`、`calib_raw.yaml`；VO 模式读取 `vo.txt`、`calib_raw.yaml`。
 
 浏览器不会暴露本地绝对路径，页面只显示目录名和文件数量。目录名不强制必须叫 `data_dir` / `log_dir`，但目录内部的文件名必须符合上述约定。
 
@@ -233,6 +233,20 @@ python3 -m http.server 8765
 ```text
 http://localhost:8765/
 ```
+
+如果要使用页面左侧的 `data_dir` / `log_dir` 本地路径输入框，请从仓库根目录启动本地路径服务：
+
+```bash
+python3 static_web/local_server.py --host 127.0.0.1 --port 8766
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:8766/
+```
+
+该模式由本机 Python 读取固定文件契约：`data_dir/imu.txt`；VO 的 `log_dir/vo.txt`、`log_dir/calib_raw.yaml`；VLOC 的 `log_dir/vloc.txt`、`log_dir/home_point.txt`、`log_dir/calib_raw.yaml`。
 
 不要直接双击 `index.html`，否则浏览器可能阻止本地资源读取。
 

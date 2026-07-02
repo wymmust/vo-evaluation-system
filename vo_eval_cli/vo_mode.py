@@ -53,7 +53,7 @@ def discover_vo_tasks(
 
     for item in selected:
         data_dir = data_root / str(item)
-        missing = [name for name in ("imu.txt", "vo.txt", "home_point.txt", "calib_raw.yaml") if not (data_dir / name).is_file()]
+        missing = [name for name in ("imu.txt", "vo.txt", "calib_raw.yaml") if not (data_dir / name).is_file()]
         if missing:
             failures.append(_failure_row(str(item), str(data_dir), "MISSING_FILES", ",".join(missing)))
             continue

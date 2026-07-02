@@ -81,19 +81,34 @@ async function fetchText(url) {
 }
 
 function evaluateBundle(payload) {
-  const fn = payload.entryMode === "vloc" ? evaluateVlocBundleJsonLight : evaluateVoBundleJsonLight;
-  if (!fn) {
+  if (payload.entryMode === "vloc") {
+    if (!evaluateVlocBundleJsonLight) {
+      throw new Error("worker_evaluator_missing");
+    }
+    return evaluateVlocBundleJsonLight(
+      payload.imuText,
+      payload.estimateText,
+      payload.homePointText,
+      payload.calibRawText,
+      payload.configJson,
+      payload.imuName,
+      payload.estimateName,
+      payload.homePointName,
+      payload.calibRawName,
+      payload.dataDirName,
+      payload.logDirName,
+    );
+  }
+  if (!evaluateVoBundleJsonLight) {
     throw new Error("worker_evaluator_missing");
   }
-  return fn(
+  return evaluateVoBundleJsonLight(
     payload.imuText,
     payload.estimateText,
-    payload.homePointText,
     payload.calibRawText,
     payload.configJson,
     payload.imuName,
     payload.estimateName,
-    payload.homePointName,
     payload.calibRawName,
     payload.dataDirName,
     payload.logDirName,

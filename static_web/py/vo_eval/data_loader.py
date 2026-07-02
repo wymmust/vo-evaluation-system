@@ -44,10 +44,9 @@ EVALUATION_FORMAT_SPECS: dict[str, EvaluationFormatSpec] = {
         required_files=(
             "data_dir/imu.txt",
             "log_dir/vo.txt",
-            "log_dir/home_point.txt",
             "log_dir/calib_raw.yaml",
         ),
-        description="SF VO 评估：读取 IMU/nav GT、VO 输出、home point 和相机/IMU/body 外参。",
+        description="SF VO 评估：读取 IMU/nav GT、VO 输出和相机/IMU/body 外参。",
     ),
     "tum": EvaluationFormatSpec(
         mode="tum",
@@ -247,7 +246,6 @@ class SfVoBundle:
 
     nav: Trajectory
     vo: Trajectory
-    home_point: HomePoint
     calibration: Calibration
     data_dir: Path
     log_dir: Path
@@ -360,7 +358,6 @@ def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVo
     固定目录契约：
     - data_dir/imu.txt
     - log_dir/vo.txt
-    - log_dir/home_point.txt
     - log_dir/calib_raw.yaml
 
     这个入口不接受 vloc.txt，也不会调用旧的自动表头识别 parser。
@@ -370,20 +367,17 @@ def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVo
     log_path = _require_directory(log_dir, "log_dir")
     imu_path = _required_bundle_file(data_path, "imu.txt", "data_dir/imu.txt")
     vo_path = _required_bundle_file(log_path, "vo.txt", "log_dir/vo.txt")
-    home_path = _required_bundle_file(log_path, "home_point.txt", "log_dir/home_point.txt")
     calib_path = _required_bundle_file(log_path, "calib_raw.yaml", "log_dir/calib_raw.yaml")
 
     return SfVoBundle(
         nav=parse_imu_fixed(imu_path.read_text(encoding="utf-8", errors="replace"), name=str(imu_path)),
         vo=parse_vo_fixed(vo_path.read_text(encoding="utf-8", errors="replace"), name=str(vo_path)),
-        home_point=parse_home_point_fixed(home_path.read_text(encoding="utf-8", errors="replace"), name=str(home_path)),
         calibration=parse_calib_raw_fixed(calib_path.read_text(encoding="utf-8", errors="replace"), name=str(calib_path)),
         data_dir=data_path,
         log_dir=log_path,
         files={
             "nav": imu_path,
             "estimate": vo_path,
-            "home_point": home_path,
             "calib_raw": calib_path,
         },
     )

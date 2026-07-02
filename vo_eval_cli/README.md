@@ -44,7 +44,6 @@ data_root/
   102/
     imu.txt
     vo.txt
-    home_point.txt
     calib_raw.yaml
 ```
 

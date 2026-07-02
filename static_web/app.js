@@ -5,6 +5,7 @@ const state = {
   workerRequests: new Map(),
   report: null,
   loadingStep: "",
+  reportSource: "worker",
   chartRenderToken: 0,
   activePointSelectionChartId: null,
   focusedPointSelectionId: null,
@@ -29,6 +30,8 @@ const els = {
   visualTitle: document.getElementById("visualTitle"),
   dataDirFiles: document.getElementById("dataDirFiles"),
   logDirFiles: document.getElementById("logDirFiles"),
+  dataDirPath: document.getElementById("dataDirPath"),
+  logDirPath: document.getElementById("logDirPath"),
   dataDirButton: document.getElementById("dataDirButton"),
   logDirButton: document.getElementById("logDirButton"),
   dataDirStatus: document.getElementById("dataDirStatus"),
@@ -140,8 +143,11 @@ async function init() {
 
 function wireEvents() {
   [els.entryMode, els.dataDirFiles, els.logDirFiles].forEach((input) => input.addEventListener("change", updateRunButton));
+  [els.dataDirPath, els.logDirPath].forEach((input) => input?.addEventListener("input", updateRunButton));
   els.dataDirFiles.addEventListener("change", () => updateDirectoryStatus("data"));
   els.logDirFiles.addEventListener("change", () => updateDirectoryStatus("log"));
+  els.dataDirPath?.addEventListener("input", () => updateDirectoryStatus("data"));
+  els.logDirPath?.addEventListener("input", () => updateDirectoryStatus("log"));
   els.entryMode.addEventListener("change", handleEntryModeChange);
   els.dataDirButton.addEventListener("click", () => els.dataDirFiles.click());
   els.logDirButton.addEventListener("click", () => els.logDirFiles.click());
@@ -242,7 +248,8 @@ function describeRuntimeError(error) {
 function updateRunButton() {
   const hasRuntime = Boolean(state.workerReady);
   const missing = missingBundleFiles();
-  els.runButton.disabled = !(hasRuntime && missing.length === 0);
+  const hasLocalPaths = hasLocalPathInputs();
+  els.runButton.disabled = !((hasRuntime && missing.length === 0) || hasLocalPaths);
 }
 
 async function runEvaluation() {
@@ -250,22 +257,10 @@ async function runEvaluation() {
   setBusy(true);
   try {
     const entryMode = valueOf("entryMode");
-    const payload = await buildBundlePayload(entryMode);
     const config = buildConfig();
-    const reportJson = await workerRequest("evaluate", {
-      entryMode,
-      imuText: payload.imuText,
-      estimateText: payload.estimateText,
-      homePointText: payload.homePointText,
-      calibRawText: payload.calibRawText,
-      configJson: JSON.stringify(config),
-      imuName: payload.imuName,
-      estimateName: payload.estimateName,
-      homePointName: payload.homePointName,
-      calibRawName: payload.calibRawName,
-      dataDirName: payload.dataDirName,
-      logDirName: payload.logDirName,
-    });
+    const reportJson = hasLocalPathInputs()
+      ? await evaluateLocalPathBundle(entryMode, config)
+      : await evaluateSelectedFileBundle(entryMode, config);
     state.report = JSON.parse(String(reportJson));
     renderReport(state.report);
     enableDownloads(true);
@@ -275,6 +270,61 @@ async function runEvaluation() {
   } finally {
     setBusy(false);
   }
+}
+
+function hasLocalPathInputs() {
+  return Boolean((els.dataDirPath?.value || "").trim() && (els.logDirPath?.value || "").trim());
+}
+
+async function evaluateSelectedFileBundle(entryMode, config) {
+  const payload = await buildBundlePayload(entryMode);
+  state.reportSource = "worker";
+  return workerRequest("evaluate", {
+    entryMode,
+    imuText: payload.imuText,
+    estimateText: payload.estimateText,
+    homePointText: payload.homePointText,
+    calibRawText: payload.calibRawText,
+    configJson: JSON.stringify(config),
+    imuName: payload.imuName,
+    estimateName: payload.estimateName,
+    homePointName: payload.homePointName,
+    calibRawName: payload.calibRawName,
+    dataDirName: payload.dataDirName,
+    logDirName: payload.logDirName,
+  });
+}
+
+async function evaluateLocalPathBundle(entryMode, config) {
+  const response = await fetch("/api/evaluate-paths", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      entryMode,
+      dataDirPath: (els.dataDirPath?.value || "").trim(),
+      logDirPath: (els.logDirPath?.value || "").trim(),
+      config,
+    }),
+  });
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!response.ok || payload?.ok === false) {
+    const detail = localPathServerErrorMessage(response, payload);
+    throw new Error(`本地路径评估失败：${detail}`);
+  }
+  state.reportSource = "local_paths";
+  return JSON.stringify(payload.report || payload);
+}
+
+function localPathServerErrorMessage(response, payload) {
+  if ([404, 405, 501].includes(response.status)) {
+    return "当前页面不是通过 static_web/local_server.py 启动，不能直接读取本地路径。请在仓库根目录运行 python static_web/local_server.py --host 127.0.0.1 --port 8766 后打开 http://127.0.0.1:8766/，或者改用目录选择按钮导入文件。";
+  }
+  return payload?.error || `HTTP ${response.status}`;
 }
 
 function buildConfig() {
@@ -322,9 +372,10 @@ function buildConfig() {
 
 function requiredBundleFiles(entryMode) {
   const estimateName = entryMode === "vloc" ? "vloc.txt" : "vo.txt";
+  const logFiles = entryMode === "vloc" ? [estimateName, "home_point.txt", "calib_raw.yaml"] : [estimateName, "calib_raw.yaml"];
   return {
     data: ["imu.txt"],
-    log: [estimateName, "home_point.txt", "calib_raw.yaml"],
+    log: logFiles,
   };
 }
 
@@ -332,13 +383,17 @@ function selectedFiles(input) {
   return Array.from(input?.files || []);
 }
 
-function directoryFileMap(input) {
+function directoryFileMap(input, allowedNames = null) {
   const files = selectedFiles(input);
   const out = new Map();
+  const allowed = allowedNames ? new Set(allowedNames) : null;
   for (const file of files) {
     const relative = file.webkitRelativePath || file.name;
     const parts = relative.split("/");
     const basename = parts[parts.length - 1];
+    if (allowed && !allowed.has(basename)) {
+      continue;
+    }
     if (!out.has(basename)) {
       out.set(basename, file);
     }
@@ -360,10 +415,12 @@ function directoryNameFromFiles(files) {
 function updateDirectoryStatus(kind) {
   const isData = kind === "data";
   const input = isData ? els.dataDirFiles : els.logDirFiles;
+  const pathInput = isData ? els.dataDirPath : els.logDirPath;
   const target = isData ? els.dataDirStatus : els.logDirStatus;
   const files = selectedFiles(input);
   if (!files.length) {
-    target.textContent = "未选择目录";
+    const typedPath = (pathInput?.value || "").trim();
+    target.textContent = typedPath ? "已填写路径，静态网页仍需选择必需文件" : "未选择目录";
     return;
   }
   const name = directoryNameFromFiles(files) || (isData ? "data_dir" : "log_dir");
@@ -373,8 +430,8 @@ function updateDirectoryStatus(kind) {
 function missingBundleFiles() {
   const entryMode = valueOf("entryMode");
   const required = requiredBundleFiles(entryMode);
-  const dataFiles = directoryFileMap(els.dataDirFiles);
-  const logFiles = directoryFileMap(els.logDirFiles);
+  const dataFiles = directoryFileMap(els.dataDirFiles, required.data);
+  const logFiles = directoryFileMap(els.logDirFiles, required.log);
   const missing = [];
   for (const name of required.data) {
     if (!dataFiles.has(name)) {
@@ -392,39 +449,52 @@ function missingBundleFiles() {
 async function buildBundlePayload(entryMode) {
   const missing = missingBundleFiles();
   if (missing.length) {
+    if ((els.dataDirPath?.value || els.logDirPath?.value || "").trim()) {
+      throw new Error(`静态网页不能直接读取本地路径，请用选择按钮导入必需文件：${missing.join("，")}`);
+    }
     throw new Error(`缺少必需文件：${missing.join("，")}`);
   }
   const required = requiredBundleFiles(entryMode);
-  const dataFiles = directoryFileMap(els.dataDirFiles);
-  const logFiles = directoryFileMap(els.logDirFiles);
+  const dataFiles = directoryFileMap(els.dataDirFiles, required.data);
+  const logFiles = directoryFileMap(els.logDirFiles, required.log);
   const imuFile = dataFiles.get(required.data[0]);
   const estimateFile = logFiles.get(required.log[0]);
-  const homePointFile = logFiles.get("home_point.txt");
   const calibRawFile = logFiles.get("calib_raw.yaml");
-  const [imuText, estimateText, homePointText, calibRawText] = await Promise.all([
+  const readTasks = [
     imuFile.text(),
     estimateFile.text(),
-    homePointFile.text(),
     calibRawFile.text(),
-  ]);
-  return {
-    imuText,
-    estimateText,
-    homePointText,
-    calibRawText,
+  ];
+  let homePointFile = null;
+  if (entryMode === "vloc") {
+    homePointFile = logFiles.get("home_point.txt");
+    readTasks.splice(2, 0, homePointFile.text());
+  }
+  const texts = await Promise.all(readTasks);
+  const payload = {
+    imuText: texts[0],
+    estimateText: texts[1],
+    calibRawText: entryMode === "vloc" ? texts[3] : texts[2],
     dataDirName: directoryNameFromFiles(selectedFiles(els.dataDirFiles)) || "data_dir",
     logDirName: directoryNameFromFiles(selectedFiles(els.logDirFiles)) || "log_dir",
     imuName: imuFile.name,
     estimateName: estimateFile.name,
-    homePointName: homePointFile.name,
     calibRawName: calibRawFile.name,
   };
+  if (entryMode === "vloc") {
+    payload.homePointText = texts[2];
+    payload.homePointName = homePointFile.name;
+  }
+  return payload;
 }
 
 function updateEntryModeHint() {
   const entryMode = valueOf("entryMode");
   const estimateName = entryMode === "vloc" ? "vloc.txt" : "vo.txt";
-  els.entryModeHint.innerHTML = `当前模式会读取 <code>log_dir/${estimateName}</code>、<code>home_point.txt</code> 和 <code>calib_raw.yaml</code>。`;
+  const logFiles = entryMode === "vloc"
+    ? `<code>log_dir/${estimateName}</code>、<code>home_point.txt</code> 和 <code>calib_raw.yaml</code>`
+    : `<code>log_dir/${estimateName}</code> 和 <code>calib_raw.yaml</code>`;
+  els.entryModeHint.innerHTML = `当前模式会读取 ${logFiles}。`;
 }
 
 function reportEntryMode(report = null) {
@@ -1148,9 +1218,12 @@ function numberOf(id) {
 }
 
 function setBusy(isBusy) {
-  const hasRuntime = Boolean(state.workerReady);
-  els.runButton.disabled = isBusy || !hasRuntime || missingBundleFiles().length > 0;
   els.runButton.textContent = isBusy ? "计算中..." : "运行评估";
+  if (isBusy) {
+    els.runButton.disabled = true;
+    return;
+  }
+  updateRunButton();
 }
 
 function renderReport(report) {
@@ -2198,9 +2271,7 @@ function enableDownloads(enabled) {
 
 async function downloadReportJson() {
   try {
-    const text = state.workerReady
-      ? String(await workerRequest("slice", { sliceName: "full_report" }))
-      : JSON.stringify(state.report || {}, null, 2);
+    const text = JSON.stringify(await fetchReportSlice("full_report"), null, 2);
     downloadText("vo_evaluation_metrics.json", text, "application/json");
   } catch (error) {
     showMessage(`导出 JSON 失败：${error.message}`, "error");
@@ -2287,6 +2358,14 @@ function sanitizeFilenamePart(value) {
 }
 
 async function fetchReportSlice(sliceName) {
+  if (state.reportSource === "local_paths") {
+    const response = await fetch(`/api/report-slice?slice=${encodeURIComponent(sliceName)}`, { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    return payload.data;
+  }
   if (!state.workerReady) {
     if (sliceName === "full_report") return state.report || {};
     if (sliceName === "trajectory_exports") return state.report?.trajectory_exports || {};

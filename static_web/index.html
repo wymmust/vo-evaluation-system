@@ -37,6 +37,10 @@
           </label>
           <p class="section-hint">固定读取 <code>data_dir/imu.txt</code>。</p>
           <label>
+            data_dir 本地路径
+            <input id="dataDirPath" type="text" placeholder="/path/to/data_dir" autocomplete="off" />
+          </label>
+          <label>
             log_dir 目录
             <div class="directory-picker-row">
               <button id="logDirButton" type="button" class="directory-picker-button">选择 log_dir 目录</button>
@@ -45,9 +49,13 @@
             <input id="logDirFiles" class="directory-input-hidden" type="file" webkitdirectory directory multiple />
           </label>
           <p id="entryModeHint" class="section-hint">当前模式会读取 <code>log_dir/vloc.txt</code>、<code>home_point.txt</code> 和 <code>calib_raw.yaml</code>。</p>
+          <label>
+            log_dir 本地路径
+            <input id="logDirPath" type="text" placeholder="/path/to/log_dir" autocomplete="off" />
+          </label>
           <p class="section-hint" data-entry-show="vloc">VLOC 固定使用 GT 插值到 VLOC 时间戳，最大 GT 插值间隔 1.0 s；超过 1.0 s 的 VLOC 帧直接丢弃，不允许外推，时间偏移固定为 0。</p>
           <p class="section-hint" data-entry-show="vo">VO 固定使用 GT 插值到 VO 时间戳，最大 GT 插值间隔 1.0 s；按 reset_count 有效连续段分别做 Sim3，不允许外推，时间偏移固定为 0。</p>
-          <p class="section-hint">浏览器不会暴露本地绝对路径，这里只显示目录名和文件数量。</p>
+          <p class="section-hint">浏览器不会暴露或直接读取本地绝对路径；静态网页请用选择按钮导入必需文件，路径输入用于本地服务/CLI 对齐。</p>
         </section>
 
         <button id="runButton" disabled>运行评估</button>
@@ -57,20 +65,20 @@
           <label>
             RPE 统计间隔
             <div class="inline-fields">
-              <input id="rpeDeltaValue" type="number" value="1" min="0.001" step="1" />
+              <input id="rpeDeltaValue" type="number" value="100" min="0.001" step="1" />
               <select id="rpeDeltaUnit" aria-label="RPE unit">
-                <option value="frames" selected>f</option>
-                <option value="meters">m</option>
+                <option value="frames">f</option>
+                <option value="meters" selected>m</option>
               </select>
             </div>
           </label>
           <label>
             尺度图间隔
             <div class="inline-fields">
-              <input id="scaleDeltaValue" type="number" value="1" min="0.001" step="1" />
+              <input id="scaleDeltaValue" type="number" value="100" min="0.001" step="1" />
               <select id="scaleDeltaUnit" aria-label="Scale unit">
-                <option value="frames" selected>f</option>
-                <option value="meters">m</option>
+                <option value="frames">f</option>
+                <option value="meters" selected>m</option>
               </select>
             </div>
           </label>

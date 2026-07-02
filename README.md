@@ -30,6 +30,14 @@ python3 -m http.server 8765
 
 然后打开 `http://localhost:8765/`。不要直接双击 `index.html`，因为浏览器通常会限制本地文件读取，导致 Pyodide 或评估代码无法加载。
 
+如果要在网页左侧直接输入 `data_dir` / `log_dir` 本地路径运行评估，请使用带本地读取接口的启动方式：
+
+```bash
+python3 static_web/local_server.py --host 127.0.0.1 --port 8766
+```
+
+然后打开 `http://127.0.0.1:8766/`。这个模式由本机 Python 服务读取必需文件：`data_dir` 只读取 `imu.txt`；VO 的 `log_dir` 只读取 `vo.txt` 和 `calib_raw.yaml`；VLOC 的 `log_dir` 读取 `vloc.txt`、`home_point.txt` 和 `calib_raw.yaml`。
+
 公网部署时，把完整的 `static_web/` 文件夹上传到任意静态网站托管平台即可，例如 Netlify、Vercel、Cloudflare Pages、对象存储静态站点或普通 Nginx 静态目录。`static_web/vendor/` 已包含固定版本的 Plotly、Pyodide、numpy、pandas 及其必要依赖，页面运行时只从同源静态资源加载代码，不再访问第三方 CDN；超大日志仍会受浏览器内存限制。
 
 静态版如果出现 `Failed to fetch`，优先检查三点：

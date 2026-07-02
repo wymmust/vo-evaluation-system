@@ -324,7 +324,6 @@ def test_public_evaluation_formats_match_requirement_doc():
     assert sf_vo.required_files == (
         "data_dir/imu.txt",
         "log_dir/vo.txt",
-        "log_dir/home_point.txt",
         "log_dir/calib_raw.yaml",
     )
 
@@ -519,7 +518,6 @@ def sample_vo_bundle_with_reset_segments() -> SfVoBundle:
     return SfVoBundle(
         nav=nav,
         vo=vo,
-        home_point=home,
         calibration=calibration,
         data_dir=Path("/tmp/data_dir"),
         log_dir=Path("/tmp/log_dir"),
@@ -611,12 +609,16 @@ def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
 
 def test_vo_evaluation_bundle_loads_vo_directory_contract_without_using_vloc(tmp_path):
     data_dir, log_dir = write_sf_dirs(tmp_path)
+    (log_dir / "home_point.txt").unlink()
+
     bundle = load_vo_evaluation_bundle(data_dir, log_dir)
 
     assert bundle.nav.source_format == "sf_imu"
     assert bundle.vo.source_format == "sf_vo"
     assert np.allclose(bundle.vo.positions[0], [21, 22, 23])
     assert bundle.files["estimate"].name == "vo.txt"
+    assert "home_point" not in bundle.files
+    assert not hasattr(bundle, "home_point")
 
 
 def test_bundle_loader_reports_missing_required_file(tmp_path):
@@ -624,6 +626,14 @@ def test_bundle_loader_reports_missing_required_file(tmp_path):
     (log_dir / "vloc.txt").unlink()
 
     with pytest.raises(FileNotFoundError, match="log_dir/vloc.txt"):
+        load_vloc_evaluation_bundle(data_dir, log_dir)
+
+
+def test_vloc_evaluation_bundle_still_requires_home_point(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    (log_dir / "home_point.txt").unlink()
+
+    with pytest.raises(FileNotFoundError, match="log_dir/home_point.txt"):
         load_vloc_evaluation_bundle(data_dir, log_dir)
 
 

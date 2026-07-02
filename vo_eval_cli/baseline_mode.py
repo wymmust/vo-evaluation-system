@@ -172,7 +172,7 @@ def evaluate_baseline_rows(
             scale_delta=rpe_delta,
             rpe_distance_tolerance_ratio=rpe_distance_tolerance_ratio,
         )
-        required = ("imu.txt", "vo.txt", "home_point.txt", "calib_raw.yaml")
+        required = ("imu.txt", "vo.txt", "calib_raw.yaml")
         for data_dir in dataset_dirs:
             log_id = _relative_id(data_root, data_dir)
             missing = [name for name in required if not (data_dir / name).is_file()]

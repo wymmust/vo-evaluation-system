@@ -85,7 +85,7 @@ def main() -> None:
         entry_mode = EVALUATION_ENTRY_OPTIONS[entry_label]
         data_dir = st.text_input("data_dir", placeholder="/path/to/data_dir")
         log_dir = st.text_input("log_dir", placeholder="/path/to/log_dir")
-        st.caption("VLOC 固定读取 data_dir/imu.txt 与 log_dir/vloc.txt；VO 固定读取 data_dir/imu.txt 与 log_dir/vo.txt。")
+        st.caption("VLOC 固定读取 data_dir/imu.txt、log_dir/vloc.txt、home_point.txt、calib_raw.yaml；VO 固定读取 data_dir/imu.txt、log_dir/vo.txt、calib_raw.yaml。")
         if entry_mode == "vloc":
             st.caption("VLOC 固定使用 GT 插值到 VLOC 时间戳，最大 GT 插值间隔 1.0 s；超过 1.0 s 的 VLOC 帧直接丢弃。")
             rpe_delta_value = 1.0
@@ -105,14 +105,14 @@ def main() -> None:
             st.caption("VO 固定使用 GT 插值到 VO 时间戳，最大 GT 插值间隔 1.0 s；按 reset_count 有效连续段分别做 Sim3，不允许外推，时间偏移固定为 0。")
             rpe_value_col, rpe_unit_col = st.columns([2, 1])
             with rpe_value_col:
-                rpe_delta_value = st.number_input("RPE 统计间隔", value=1.0, min_value=0.001, step=1.0)
+                rpe_delta_value = st.number_input("RPE 统计间隔", value=100.0, min_value=0.001, step=1.0)
             with rpe_unit_col:
-                rpe_delta_unit_label = st.selectbox("单位", ["f", "m"], index=0)
+                rpe_delta_unit_label = st.selectbox("单位", ["f", "m"], index=1)
             scale_value_col, scale_unit_col = st.columns([2, 1])
             with scale_value_col:
-                scale_delta_value = st.number_input("尺度图间隔", value=1.0, min_value=0.001, step=1.0)
+                scale_delta_value = st.number_input("尺度图间隔", value=100.0, min_value=0.001, step=1.0)
             with scale_unit_col:
-                scale_delta_unit_label = st.selectbox("单位 ", ["f", "m"], index=0)
+                scale_delta_unit_label = st.selectbox("单位 ", ["f", "m"], index=1)
             segment_text = "50,100,200,500,1000,2000,5000"
             max_segments = 10000
             segment_step = 10

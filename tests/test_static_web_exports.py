@@ -24,6 +24,8 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
     assert 'id="entryMode"' in html
     assert 'id="dataDirFiles"' in html
     assert 'id="logDirFiles"' in html
+    assert 'id="dataDirPath"' in html
+    assert 'id="logDirPath"' in html
     assert 'id="dataDirButton"' in html
     assert 'id="logDirButton"' in html
     assert 'id="dataDirStatus"' in html
@@ -46,9 +48,10 @@ def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_for
     assert 'id="voChartSelectAll"' in html
     assert 'id="voChartClear"' in html
     assert 'id="evaluationParametersSection" data-entry-hide="vloc"' in html
-    assert 'id="rpeDeltaValue"' in html
+    assert 'id="rpeDeltaValue" type="number" value="100"' in html
     assert 'id="rpeDeltaUnit"' in html
-    assert 'id="scaleDeltaValue"' in html
+    assert '<option value="meters" selected>m</option>' in html
+    assert 'id="scaleDeltaValue" type="number" value="100"' in html
     assert 'id="scaleDeltaUnit"' in html
     for removed_id in [
         "maxTimeDiff",
@@ -128,8 +131,10 @@ def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
     source = Path("app.py").read_text()
     assert 'st.radio("评估入口", list(EVALUATION_ENTRY_OPTIONS), index=0)' in source
     assert 'if entry_mode == "vloc":' in source
-    assert "st.number_input(\"RPE 统计间隔\"" in source
-    assert "st.number_input(\"尺度图间隔\"" in source
+    assert 'st.number_input("RPE 统计间隔", value=100.0' in source
+    assert 'st.selectbox("单位", ["f", "m"], index=1)' in source
+    assert 'st.number_input("尺度图间隔", value=100.0' in source
+    assert 'st.selectbox("单位 ", ["f", "m"], index=1)' in source
     for removed_widget_call in [
         'st.text_input("长航程子轨迹长度 m"',
         'st.number_input("每个长度最多抽样段数"',
@@ -488,12 +493,10 @@ cam0:
         module.evaluate_vo_bundle_json(
             imu_text,
             vo_text,
-            home_text,
             calib_text,
             config_json,
             "imu.txt",
             "vo.txt",
-            "home_point.txt",
             "calib_raw.yaml",
         )
     )
@@ -519,12 +522,10 @@ cam0:
         module.evaluate_vo_bundle_json_light(
             imu_text,
             vo_text,
-            home_text,
             calib_text,
             config_json,
             "imu.txt",
             "vo.txt",
-            "home_point.txt",
             "calib_raw.yaml",
         )
     )
@@ -532,6 +533,88 @@ cam0:
     assert "segment_records" not in vo_light_report
     assert "scale_per_frame" in vo_light_report["trajectory_exports"]
     assert vo_light_report["trajectory_exports"]["scale_per_frame"][0]["scale_available"] is True
+
+
+def test_static_required_bundle_files_are_entry_specific_and_filter_to_needed_files():
+    script = textwrap.dedent(
+        r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const makeElement = (value = "") => ({
+          value,
+          files: [],
+          disabled: false,
+          hidden: false,
+          textContent: "",
+          innerHTML: "",
+          style: {},
+          classList: { add() {}, remove() {} },
+          addEventListener() {},
+          click() {},
+        });
+        const elements = {
+          runtimeStatus: makeElement(),
+          message: makeElement(),
+          runButton: makeElement(),
+          entryMode: makeElement("vo"),
+          entryModeHint: makeElement(),
+          dataDirFiles: makeElement(),
+          logDirFiles: makeElement(),
+          dataDirPath: makeElement(),
+          logDirPath: makeElement(),
+          dataDirButton: makeElement(),
+          logDirButton: makeElement(),
+          dataDirStatus: makeElement(),
+          logDirStatus: makeElement(),
+          downloadJson: makeElement(),
+          downloadPoseCsv: makeElement(),
+          downloadSegmentCsv: makeElement(),
+          downloadWorstCsv: makeElement(),
+          downloadConfigJson: makeElement(),
+          downloadTrajectoryExcel: makeElement(),
+          downloadHtml: makeElement(),
+        };
+        const document = {
+          body: { appendChild() {} },
+          getElementById(id) { return elements[id] || makeElement(); },
+          createElement() { return { ...makeElement(), remove() {} }; },
+          querySelectorAll() { return []; },
+        };
+        const context = {
+          console,
+          document,
+          window: { location: { protocol: "http:" } },
+          TextEncoder,
+          Uint8Array,
+          DataView,
+          Blob: function Blob() {},
+          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
+          Plotly: { newPlot() {}, purge() {} },
+        };
+        context.globalThis = context;
+        const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        vm.runInNewContext(code, context);
+        elements.logDirFiles.files = [
+          { name: "vo.txt", webkitRelativePath: "log_dir/vo.txt" },
+          { name: "home_point.txt", webkitRelativePath: "log_dir/home_point.txt" },
+          { name: "calib_raw.yaml", webkitRelativePath: "log_dir/calib_raw.yaml" },
+          { name: "debug.log", webkitRelativePath: "log_dir/debug.log" },
+        ];
+        const voRequired = context.requiredBundleFiles("vo");
+        const vlocRequired = context.requiredBundleFiles("vloc");
+        const filteredLog = context.directoryFileMap(elements.logDirFiles, voRequired.log);
+        process.stdout.write(JSON.stringify({
+          voRequired,
+          vlocRequired,
+          filteredLogKeys: Array.from(filteredLog.keys()).sort(),
+        }));
+        """
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert payload["voRequired"] == {"data": ["imu.txt"], "log": ["vo.txt", "calib_raw.yaml"]}
+    assert payload["vlocRequired"] == {"data": ["imu.txt"], "log": ["vloc.txt", "home_point.txt", "calib_raw.yaml"]}
+    assert payload["filteredLogKeys"] == ["calib_raw.yaml", "vo.txt"]
 
 
 def test_static_python_sources_are_fetched_without_browser_cache():
