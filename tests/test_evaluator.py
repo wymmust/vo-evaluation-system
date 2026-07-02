@@ -712,6 +712,107 @@ def test_cli_requires_explicit_mode_and_directories():
         cli_main([])
 
 
+def test_cli_p_option_previews_temp_html_report(tmp_path, monkeypatch):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    opened_urls: list[str] = []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("vo_eval.__main__.webbrowser.open", lambda url: opened_urls.append(url) or True)
+
+    exit_code = cli_main(
+        [
+            "--mode",
+            "sf_vloc",
+            "--data_dir",
+            str(data_dir),
+            "--log_dir",
+            str(log_dir),
+            "-p",
+        ]
+    )
+
+    assert exit_code == 0
+    assert not (tmp_path / "data_dir__log_dir_vloc_evaluation_report.html").exists()
+    assert len(opened_urls) == 1
+    output_path = Path(opened_urls[0].removeprefix("file://"))
+    assert output_path.exists()
+    assert output_path.parent != tmp_path
+    html = output_path.read_text(encoding="utf-8")
+    assert "VLOC 运行结果" in html
+    assert "图表目录" in html
+    assert "Plotly.newPlot" in html
+
+
+def test_cli_s_option_uses_default_html_filename(tmp_path, monkeypatch):
+    dataset_dir = tmp_path / "513"
+    dataset_dir.mkdir()
+    (dataset_dir / "imu.txt").write_text(sample_imu_text(), encoding="utf-8")
+    (dataset_dir / "vloc.txt").write_text(sample_vloc_text(), encoding="utf-8")
+    (dataset_dir / "home_point.txt").write_text("121.2 31.1 51.0\n", encoding="utf-8")
+    (dataset_dir / "calib_raw.yaml").write_text(sample_calib_text(), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = cli_main(
+        [
+            "--mode",
+            "sf_vloc",
+            "--data_dir",
+            str(dataset_dir),
+            "--log_dir",
+            str(dataset_dir),
+            "-s",
+        ]
+    )
+
+    assert exit_code == 0
+    output_path = tmp_path / "513_vloc_evaluation_report.html"
+    assert output_path.exists()
+    assert "VLOC 运行结果" in output_path.read_text(encoding="utf-8")
+
+
+def test_cli_s_option_writes_custom_html_output(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    output_path = tmp_path / "cli_report.html"
+
+    exit_code = cli_main(
+        [
+            "--mode",
+            "sf_vloc",
+            "--data_dir",
+            str(data_dir),
+            "--log_dir",
+            str(log_dir),
+            "-s",
+            "--html-output",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    html = output_path.read_text(encoding="utf-8")
+    assert "VLOC 运行结果" in html
+    assert "图表目录" in html
+
+
+def test_cli_html_output_requires_save_flag(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+
+    with pytest.raises(SystemExit):
+        cli_main(
+            [
+                "--mode",
+                "sf_vloc",
+                "--data_dir",
+                str(data_dir),
+                "--log_dir",
+                str(log_dir),
+                "-p",
+                "--html-output",
+                str(tmp_path / "report.html"),
+            ]
+        )
+
+
 def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
     bundle = sample_vo_bundle_with_reset_segments()
     report = evaluate_vo_bundle(bundle, EvaluationConfig())

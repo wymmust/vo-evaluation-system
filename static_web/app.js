@@ -2228,8 +2228,8 @@ function layout(title, extra = {}) {
     plot_bgcolor: "#ffffff",
     font: { family: "Inter, system-ui, sans-serif", color: "#334155" },
     colorway: ["#2563eb", "#16a34a", "#f97316", "#9333ea", "#0f766e"],
-    margin: { l: 56, r: 26, t: 52, b: 50 },
-    legend: { orientation: "h", y: 1.1, x: 0, font: { size: 12 } },
+    margin: { l: 56, r: 26, t: 78, b: 50 },
+    legend: { orientation: "h", y: 1.18, x: 0, font: { size: 10 } },
     xaxis: { gridcolor: "#e8eef7", zerolinecolor: "#d9e1ec", title: "" },
     yaxis: { gridcolor: "#e8eef7", zerolinecolor: "#d9e1ec", title: "" },
     ...extra,
@@ -2403,6 +2403,7 @@ function buildHtmlReport(sourceReport = state.report || {}, options = {}) {
   const entryMode = reportEntryMode(report);
   const isVloc = entryMode === "vloc";
   const title = isVloc ? "VLOC 评估结果" : "VO 评估结果";
+  const summaryTitle = isVloc ? "VLOC 运行结果" : "VO 运行结果";
   const kicker = isVloc ? "VLOC Offline Visualization" : "VO Offline Visualization";
   const metrics = exportMetricItems(report);
   const figures = buildVisualizationExportFigureSpecs(report);
@@ -2437,7 +2438,8 @@ ${plotlyScript}
 <style>
 :root{--text:#1f2937;--heading:#0f172a;--muted:#64748b;--line:#d8e2ef;--bg:#f4f7fb;--card:#fff;--blue:#2563eb;--good:#15803d;--warn:#b45309;--bad:#b42318;--shadow:0 16px 38px rgba(15,23,42,.08)}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,Arial,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.5}.topbar{background:#fff;border-bottom:1px solid var(--line);padding:28px 36px}.topbar h1{margin:0;color:var(--heading);font-size:42px;line-height:1.05}.topbar p{margin:10px 0 0;color:var(--muted);font-weight:700}.page{display:grid;grid-template-columns:360px minmax(0,1fr);gap:24px;max-width:1680px;margin:0 auto;padding:24px}.sidebar{display:flex;flex-direction:column;gap:18px}.panel,.chart-card{background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}.panel{padding:18px}.section-title{display:flex;align-items:center;gap:10px;margin:0 0 14px;color:var(--heading);font-size:20px}.section-title:before{content:"";display:block;width:8px;height:28px;border-radius:999px;background:var(--blue)}.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}.metric{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px;position:relative;overflow:hidden}.metric:before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:var(--blue)}.metric.rank-high:before{background:var(--bad)}.metric.rank-warning:before{background:var(--warn)}.metric.rank-good:before{background:var(--good)}.metric-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.metric .label{font-size:12px;color:var(--muted);font-weight:900}.metric-rank{border:1px solid #bfdbfe;background:#eff6ff;color:#2563eb;border-radius:999px;padding:2px 8px;font-size:12px;font-weight:900}.metric .value{margin-top:14px;color:var(--heading);font-size:28px;font-weight:900}.metric-note{margin-top:8px;color:var(--muted);font-size:12px;font-weight:700}.chart-directory-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.chart-directory-item{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff;font-weight:900;font-size:13px}.chart-directory-item input{width:16px;height:16px;accent-color:var(--blue)}.chart-directory-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.chart-directory-actions button,.chart-tools button,.clear-point-selections{border:0;background:var(--blue);color:#fff;border-radius:8px;padding:8px 10px;font-weight:900;cursor:pointer}.point-selection-output{display:flex;flex-direction:column;gap:10px}.point-selection-card{border:1px solid var(--line);border-radius:8px;overflow:hidden}.point-selection-card h3{margin:0;padding:10px 12px;background:#f8fafc;font-size:14px}.point-selection-table{width:100%;border-collapse:collapse;font-size:12px}.point-selection-table th,.point-selection-table td{border-top:1px solid var(--line);padding:7px;text-align:left}.selection-point-token{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;border-radius:999px;color:#fff;font-size:10px;font-weight:900}.chart-card{margin-bottom:22px;padding:16px}.chart-header{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:10px}.chart-header h2{margin:0;color:var(--heading);font-size:22px}.chart-kicker{text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-size:11px;font-weight:900}.chart-tools{display:flex;gap:8px}.chart-card.point-selection-active{outline:2px solid var(--blue);outline-offset:2px}.plotly-graph-div{background:#fff;border:1px solid var(--line);border-radius:8px}.content{min-width:0}.empty{color:var(--muted);font-weight:800}.mode-pill{display:inline-flex;margin-top:10px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:999px;padding:6px 10px;font-weight:900}
-.export-plot{position:relative}.composite-crosshair{position:absolute;top:0;bottom:0;border-left:1px dashed #0f172a;z-index:20;pointer-events:none;display:none}.composite-floating-tooltip{position:absolute;z-index:21;max-width:420px;background:rgba(255,255,255,.95);border:1px solid #94a3b8;border-radius:8px;box-shadow:0 18px 45px rgba(15,23,42,.16);padding:10px 12px;color:#1f2937;font-size:13px;pointer-events:none;display:none}.composite-floating-tooltip strong{display:block;margin-bottom:6px;color:#0f172a}.metric-chip{display:inline-flex;align-items:center;margin:3px 4px 3px 0;border:1px solid #bfdbfe;background:#eff6ff;color:#1e3a8a;border-radius:8px;padding:4px 7px;font-weight:700;white-space:nowrap}
+.export-plot{position:relative}.composite-crosshair{position:absolute;top:0;bottom:0;border-left:1px dashed #0f172a;z-index:20;pointer-events:none;display:none}.composite-floating-tooltip{position:absolute;z-index:21;max-width:520px;background:rgba(255,255,255,.95);border:1px solid #94a3b8;border-radius:8px;box-shadow:0 18px 45px rgba(15,23,42,.16);padding:10px 12px;color:#1f2937;font-size:12px;pointer-events:none;display:none}.composite-floating-tooltip strong{display:block;margin-bottom:6px;color:#0f172a}.metric-chip{display:inline-flex;align-items:center;margin:3px 4px 3px 0;border:1px solid #bfdbfe;background:#eff6ff;color:#1e3a8a;border-radius:8px;padding:4px 7px;font-weight:700;white-space:nowrap}.composite-floating-tooltip .metric-chip{display:grid;grid-template-columns:minmax(130px,1fr) auto;gap:8px;min-width:260px;align-items:baseline}.metric-chip-value{text-align:right;font-variant-numeric:tabular-nums;color:#1e3a8a}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:18px;background:rgba(255,255,255,.88);backdrop-filter:blur(12px);position:sticky;top:0;z-index:10;padding:14px 28px 12px}.topbar h1{font-size:clamp(22px,2vw,28px);font-weight:900}.topbar p{margin-top:4px;font-size:12px;line-height:1.35}.mode-pill{margin-top:0;font-size:11px;padding:4px 8px}.page{grid-template-columns:340px minmax(0,1fr);gap:20px;max-width:1760px;padding:20px 24px 32px}.sidebar{position:sticky;top:82px;align-self:start;max-height:calc(100vh - 100px);overflow:auto}.section-title{font-size:16px;margin-bottom:10px}.section-title:before{width:6px;height:22px}.chart-directory-list{gap:6px}.chart-directory-item{min-height:42px;align-items:center;gap:6px;padding:6px 7px;font-size:11px;line-height:1.25}.chart-directory-item input{width:14px;height:14px;flex:0 0 auto}.chart-directory-actions button{font-size:12px;padding:7px 8px}.summary-panel,.visualization-panel{padding:18px;margin-bottom:20px}.summary-panel .metric-grid{grid-template-columns:repeat(5,minmax(150px,1fr));gap:12px;margin:0}.summary-panel .metric{min-height:116px;padding:14px;background:linear-gradient(180deg,#ffffff 0%,#f9fbfe 100%)}.summary-panel .metric:before{height:3px}.summary-panel .metric .label{font-size:12px;font-weight:820}.summary-panel .metric-rank{font-size:11px;font-weight:850}.summary-panel .metric .value{font-size:clamp(21px,1.8vw,30px);line-height:1.05;font-weight:820}.summary-panel .metric-note{font-size:12px;line-height:1.4}.visualization-panel .chart-card{box-shadow:none;margin:0 0 20px}.visualization-panel .chart-card:last-child{margin-bottom:0}.visualization-panel .empty{margin:0}.panel-heading{margin-bottom:16px}.panel-kicker{text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-size:12px;font-weight:800}.panel-heading h2{margin:2px 0 0;font-size:18px}.chart-card[hidden]{display:none!important}
 @media(max-width:980px){.page{grid-template-columns:1fr}.chart-directory-list{grid-template-columns:repeat(2,minmax(0,1fr))}.topbar h1{font-size:32px}}
 </style>
 </head><body>
@@ -2463,19 +2465,31 @@ ${plotlyScript}
     </section>
   </aside>
   <section class="content">
-    <section class="metric-grid">
-      ${metrics.map((item, index) => `
-        <div class="metric ${metricStatusClass(item.status)}">
-          <div class="metric-top">
-            <div class="label">${escapeHtml(item.label)}</div>
-            <div class="metric-rank">#${String(index + 1).padStart(2, "0")}</div>
+    <section class="panel summary-panel">
+      <div class="panel-heading">
+        <div class="panel-kicker">${escapeHtml(isVloc ? "VLOC Evaluation Summary" : "VO Evaluation Summary")}</div>
+        <h2>${escapeHtml(summaryTitle)}</h2>
+      </div>
+      <div class="metric-grid">
+        ${metrics.map((item, index) => `
+          <div class="metric ${metricStatusClass(item.status)}">
+            <div class="metric-top">
+              <div class="label">${escapeHtml(item.label)}</div>
+              <div class="metric-rank">#${String(index + 1).padStart(2, "0")}</div>
+            </div>
+            <div class="value">${formatValue(item.value, item.unit)}</div>
+            <div class="metric-note">${escapeHtml(item.note || "")}</div>
           </div>
-          <div class="value">${formatValue(item.value, item.unit)}</div>
-          <div class="metric-note">${escapeHtml(item.note || "")}</div>
-        </div>
-      `).join("")}
+        `).join("")}
+      </div>
     </section>
-    ${figureHtml || `<div class="panel empty">当前报告没有可导出的图表数据。</div>`}
+    <section class="panel visualization-panel">
+      <div class="panel-heading">
+        <div class="panel-kicker">${escapeHtml(isVloc ? "Navigation & Estimation" : "Trajectory & Drift")}</div>
+        <h2>${escapeHtml(isVloc ? "VLOC 可视化" : "VO 可视化")}</h2>
+      </div>
+      ${figureHtml || `<div class="panel empty">当前报告没有可导出的图表数据。</div>`}
+    </section>
   </section>
 </main>
 <script>
@@ -2608,7 +2622,7 @@ function exportAllHoverChips(chartId, timestamp) {
     if (!point) {
       continue;
     }
-    chips.push('<span class="metric-chip"><strong>' + escapeHtml(trace.name || "trace") + '</strong>: ' + numberText(point.y) + '</span>');
+    chips.push('<span class="metric-chip"><strong>' + escapeHtml(trace.name || "trace") + '</strong><span class="metric-chip-value">' + numberText(point.y) + '</span></span>');
   }
   return chips.join("") || "没有可用数据";
 }
@@ -2652,7 +2666,7 @@ function hideExportCompositeOverlay(chartId) {
   if (tooltip) tooltip.style.display = "none";
 }
 function setChartVisible(chartId, visible) {
-  const card = document.querySelector("[data-chart-id='" + cssEscape(chartId) + "']");
+  const card = document.querySelector(".chart-card[data-chart-id='" + cssEscape(chartId) + "']");
   if (card) card.hidden = !visible;
 }
 function setAllChartsVisible(visible) {
@@ -2712,7 +2726,7 @@ function addExportSelectionMarkers(selection) {
   Plotly.addTraces(selection.chartId, [exportSelectionHitTargetTrace(selection), exportSelectionMarkerTrace(selection)]);
 }
 function refreshExportPointModeState(chartId) {
-  const card = document.querySelector("[data-chart-id='" + cssEscape(chartId) + "']");
+  const card = document.querySelector(".chart-card[data-chart-id='" + cssEscape(chartId) + "']");
   if (card) {
     card.classList.toggle("point-selection-active", card.dataset.chartId === window.__VO_ACTIVE_CHART__);
   }

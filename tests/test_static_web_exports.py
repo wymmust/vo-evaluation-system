@@ -1020,6 +1020,7 @@ def test_static_html_export_is_visualization_snapshot_with_point_selection():
     html = result.stdout
 
     assert "VLOC 评估结果" in html
+    assert "VLOC 运行结果" in html
     assert "离线可视化快照" in html
     assert "图表目录" in html
     assert "pointSelectionOutput" in html
@@ -1032,12 +1033,26 @@ def test_static_html_export_is_visualization_snapshot_with_point_selection():
     assert "nearestExportTracePoint" in html
     assert "focusExportPointSelectionFromEvent" in html
     assert "deleteFocusedExportPointSelection" in html
+    assert "summary-panel" in html
+    assert "visualization-panel" in html
+    assert ".summary-panel .metric-grid{grid-template-columns:repeat(5,minmax(150px,1fr));gap:12px;margin:0}" in html
+    assert ".summary-panel .metric{min-height:116px;padding:14px;background:linear-gradient(180deg,#ffffff 0%,#f9fbfe 100%)}" in html
+    assert ".summary-panel .metric .value{font-size:clamp(21px,1.8vw,30px)" in html
+    assert ".topbar{display:flex;justify-content:space-between;align-items:center;gap:18px" in html
+    assert ".topbar h1{font-size:clamp(22px,2vw,28px)" in html
+    assert ".chart-directory-item{min-height:42px" in html
+    assert ".metric-chip-value" in html
+    assert ".chart-card[data-chart-id='" in html
+    assert ".chart-card[hidden]" in html
+    assert "document.querySelector(\"[data-chart-id='\"" not in html
     assert "point.pointNumber" in html
     assert "removeExportSelectionMarkerTraces" in html
     assert "refreshExportChartSelectionMarkers" in html
     assert "keydown" in html
     assert "trajectory3d" in html
     assert "positionCompareComposite" in html
+    assert '"margin":{"l":56,"r":26,"t":78,"b":50}' in html
+    assert '"legend":{"orientation":"h","y":1.18,"x":0,"font":{"size":10}}' in html
     assert "调参结论摘要" not in html
     assert "高级详情 / 完整指标" not in html
     assert "原始 JSON 指标" not in html
@@ -1057,6 +1072,8 @@ def test_static_html_export_is_visualization_snapshot_with_point_selection():
           classList: {{ toggle() {{}} }},
           dataset: {{ chartId }},
         }};
+        const directoryItem = {{ hidden: false, dataset: {{ chartId }}, classList: {{ toggle() {{}} }} }};
+        const chartCard = {{ hidden: false, dataset: {{ chartId }}, classList: {{ toggle() {{}} }} }};
         const pointSelectionOutputSection = {{ hidden: true }};
         const pointSelectionOutput = {{ innerHTML: "" }};
         const document = {{
@@ -1066,7 +1083,11 @@ def test_static_html_export_is_visualization_snapshot_with_point_selection():
             if (id === "pointSelectionOutput") return pointSelectionOutput;
             return null;
           }},
-          querySelector() {{ return null; }},
+          querySelector(selector) {{
+            if (selector.startsWith(".chart-card[data-chart-id")) return chartCard;
+            if (selector.startsWith("[data-chart-id")) return directoryItem;
+            return null;
+          }},
           querySelectorAll() {{ return []; }},
         }};
         const Plotly = {{
@@ -1109,18 +1130,35 @@ def test_static_html_export_is_visualization_snapshot_with_point_selection():
         const afterReadd = chart.data.length;
         context.clearChartSelections(chartId);
         const afterClear = chart.data.length;
+        context.setChartVisible(chartId, false);
+        const chartHiddenAfterHide = chartCard.hidden;
+        const directoryHiddenAfterHide = directoryItem.hidden;
+        context.setChartVisible(chartId, true);
+        const chartHiddenAfterShow = chartCard.hidden;
         process.stdout.write(JSON.stringify({{
           afterAdd,
           afterDelete,
           afterReadd,
           afterClear,
           selections: context.window.__VO_EXPORT_SELECTIONS__.length,
+          chartHiddenAfterHide,
+          directoryHiddenAfterHide,
+          chartHiddenAfterShow,
         }}));
         """
     )
     behavior_result = subprocess.run(["node", "-e", behavior_script], check=True, capture_output=True, text=True)
     behavior = json.loads(behavior_result.stdout)
-    assert behavior == {"afterAdd": 3, "afterDelete": 1, "afterReadd": 3, "afterClear": 1, "selections": 0}
+    assert behavior == {
+        "afterAdd": 3,
+        "afterDelete": 1,
+        "afterReadd": 3,
+        "afterClear": 1,
+        "selections": 0,
+        "chartHiddenAfterHide": True,
+        "directoryHiddenAfterHide": False,
+        "chartHiddenAfterShow": False,
+    }
 
 
 def test_static_html_export_uses_vo_chart_set_for_vo_reports():

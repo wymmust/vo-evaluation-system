@@ -3,12 +3,72 @@
 from __future__ import annotations
 
 import argparse
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
+import webbrowser
 from pathlib import Path
 
 from .data_loader import load_vloc_evaluation_bundle, load_vo_evaluation_bundle
 from .processing import EvaluationConfig, evaluate_vloc_bundle, evaluate_vo_bundle
 from .report import report_to_json
+
+
+def _sanitize_filename_part(value: object) -> str:
+    return re.sub(r"_+", "_", re.sub(r'[\\/:*?"<>|\s]+', "_", str(value or "").strip())).strip("_")
+
+
+def _meaningful_directory_name(value: object) -> str:
+    name = _sanitize_filename_part(value)
+    if name.lower() in {"data_dir", "log_dir"}:
+        return ""
+    return name
+
+
+def _default_html_output_path(report: dict, cwd: Path | None = None) -> Path:
+    inputs = report.get("inputs") or {}
+    entry_mode = _sanitize_filename_part(inputs.get("entry_mode") or "vloc") or "vloc"
+    data_name = _meaningful_directory_name(inputs.get("data_dir_name"))
+    log_name = _meaningful_directory_name(inputs.get("log_dir_name"))
+    if data_name and log_name and data_name != log_name:
+        dataset = f"{data_name}__{log_name}"
+    else:
+        dataset = log_name or data_name or ""
+    prefix = f"{dataset}_{entry_mode}" if dataset else entry_mode
+    return (cwd or Path.cwd()) / f"{prefix}_evaluation_report.html"
+
+
+def _write_html_report(report: dict, output_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("生成 HTML 报告需要 Node.js：请先安装 node，或不使用 -p")
+    repo_root = Path(__file__).resolve().parents[1]
+    exporter = repo_root / "static_web" / "export_report_cli.js"
+    if not exporter.exists():
+        raise RuntimeError(f"找不到 HTML 导出器：{exporter}")
+    try:
+        subprocess.run(
+            [node, str(exporter), str(output_path)],
+            input=report_to_json(report),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        raise RuntimeError(f"HTML 报告生成失败：{detail}") from exc
+
+
+def _temporary_html_output_path(report: dict) -> Path:
+    temp_dir = Path(tempfile.mkdtemp(prefix="vo_eval_report_"))
+    return _default_html_output_path(report, cwd=temp_dir)
+
+
+def _preview_html_report(path: Path) -> None:
+    webbrowser.open(path.resolve().as_uri())
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -21,8 +81,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-d", "--delta", type=float, default=100.0, help="RPE delta value (default: 100)")
     parser.add_argument("-u", "--unit", default="m", choices=["m", "f"], help="RPE delta unit: m=meters, f=frames (default: m)")
     parser.add_argument("-o", "--output", type=Path, default=None, help="Output JSON path (optional)")
+    parser.add_argument("-p", action="store_true", help="Preview standalone HTML report in browser")
+    parser.add_argument("-s", "--save-html", action="store_true", help="Save standalone HTML report")
+    parser.add_argument("--html-output", type=Path, default=None, help="HTML report path used with -s/--save-html")
 
     args = parser.parse_args(argv)
+    if args.html_output and not args.save_html:
+        parser.error("--html-output requires -s/--save-html")
 
     unit = "meters" if args.unit == "m" else "frames"
     config = EvaluationConfig(
@@ -72,6 +137,15 @@ def main(argv: list[str] | None = None) -> int:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json_text, encoding="utf-8")
             print(f"[vo_eval] wrote {args.output}", file=sys.stderr)
+
+        if args.save_html or args.p:
+            html_output = args.html_output or (_default_html_output_path(report) if args.save_html else _temporary_html_output_path(report))
+            _write_html_report(report, html_output)
+            if args.save_html:
+                print(f"[vo_eval] wrote {html_output}", file=sys.stderr)
+            if args.p:
+                _preview_html_report(html_output)
+                print(f"[vo_eval] opened {html_output}", file=sys.stderr)
 
         return 0
     except Exception as exc:
