@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import vo_eval
 from vo_eval.data_loader import (
     Calibration,
     HomePoint,
@@ -26,11 +27,12 @@ from vo_eval.data_loader import (
     parse_vo_fixed,
 )
 from vo_eval.processing import EvaluationConfig, evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle
+from vo_eval.__main__ import main as cli_main
 from vo_eval.report import report_to_excel, report_to_json
 from vo_eval.utils import (
-    build_associated_trajectories,
-    compute_alignment,
     euler_yaw_pitch_roll_to_matrix,
+    interpolate_reference_to_estimate,
+    sim3_alignment,
     yaw_from_rot,
 )
 
@@ -378,9 +380,9 @@ def sample_vloc_text() -> str:
 
 
 def sample_vo_text() -> str:
-    return """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count depth_mean depth_min depth_max
-10.0 50 21 22 23 90 2 -1 1 12.5 0 4.1 0.2 8.9
-10.1 51 22 23 24 91 3 -2 0 13.5 1 4.2 0.3 9.0
+    return """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
+10.0 50 21 22 23 90 2 -1 1 12.5 0
+10.1 51 22 23 24 91 3 -2 0 13.5 1
 """
 
 
@@ -582,9 +584,9 @@ def test_fixed_sf_parsers_use_documented_column_order_without_header_adaptation(
     assert home.altitude_msl == 51.0
 
 
-def test_vo_fixed_accepts_legacy_11_column_format():
-    legacy_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
-10.0 50 21 22 23 90 2 -1 1 12.5 0
+def test_vo_fixed_accepts_legacy_14_column_format_without_using_depth_columns():
+    legacy_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count depth_mean depth_min depth_max
+10.0 50 21 22 23 90 2 -1 1 12.5 0 4.1 0.2 8.9
 """
 
     vo = parse_vo_fixed(legacy_text, name="vo.txt")
@@ -592,8 +594,7 @@ def test_vo_fixed_accepts_legacy_11_column_format():
     assert vo.source_format == "sf_vo"
     assert np.allclose(vo.positions[0], [21, 22, 23])
     assert np.allclose(vo.extras["time_cost"], [12.5])
-    assert vo.extras["raw_numeric_table"].shape == (1, 14)
-    assert np.allclose(vo.extras["raw_numeric_table"][0, 11:14], [0, 0, 0])
+    assert vo.extras["raw_numeric_table"].shape == (1, 11)
 
 
 def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
@@ -674,11 +675,14 @@ def test_vloc_excel_export_omits_sim3_sheets_because_vloc_has_metric_scale():
     sheets = report["trajectory_exports"]
     assert "sim3_gt_tum" not in sheets
     assert "sim3_vo_tum" not in sheets
+    assert "scale_frame_delta" not in report
+    assert "scale_per_frame" not in sheets
 
     workbook = report_to_excel(report)
     xlsx = pd.ExcelFile(io.BytesIO(workbook))
     assert "sim3_gt_tum" not in xlsx.sheet_names
     assert "sim3_vo_tum" not in xlsx.sheet_names
+    assert "scale_per_frame" not in xlsx.sheet_names
     assert {
         "input_gt_tum",
         "input_vo_tum",
@@ -687,6 +691,15 @@ def test_vloc_excel_export_omits_sim3_sheets_because_vloc_has_metric_scale():
         "ate_per_frame",
         "rpe_per_frame",
     }.issubset(set(xlsx.sheet_names))
+
+
+def test_package_all_exports_vo_bundle_entrypoint():
+    assert "evaluate_vo_bundle" in vo_eval.__all__
+
+
+def test_cli_requires_explicit_mode_and_directories():
+    with pytest.raises(SystemExit):
+        cli_main([])
 
 
 def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
@@ -743,7 +756,7 @@ def test_sim3_recovers_scale_for_monocular_like_output():
     for t, p in zip(gt.stamps, est_positions):
         lines.append(f"{t:.3f} {p[0]:.6f} {p[1]:.6f} {p[2]:.6f} 0 0 0 1")
     est = load_trajectory_from_text("\n".join(lines), fmt="tum", name="est")
-    alignment = compute_alignment(gt.positions, est.positions, mode="sim3")
+    alignment = sim3_alignment(gt.positions, est.positions)
     assert abs(alignment["scale"] - 2.0) < 1e-9
 
 
@@ -754,12 +767,18 @@ def test_load_trajectory_from_text_rejects_legacy_single_file_formats():
             load_trajectory_from_text(text, fmt=fmt, name=f"legacy_{fmt}")
 
 
-def test_numeric_tum_nanosecond_timestamps_are_normalized():
-    text = """1000000000 0 0 0 0 0 0 1
-1050000000 1 0 0 0 0 0 1
+def test_numeric_tum_timestamps_are_read_as_seconds():
+    text = """1.000 0 0 0 0 0 0 1
+1.050 1 0 0 0 0 0 1
 """
-    traj = load_trajectory_from_text(text, fmt="tum", name="tum_ns")
+    traj = load_trajectory_from_text(text, fmt="tum", name="tum_seconds")
     assert abs(traj.duration_s - 0.05) < 1e-12
+
+
+def test_numeric_tum_requires_exactly_eight_columns():
+    text = "1.000 0 0 0 0 0 0 1 99\n1.050 1 0 0 0 0 0 1 99\n"
+    with pytest.raises(ValueError, match="TUM format expects exactly 8 columns"):
+        load_trajectory_from_text(text, fmt="tum", name="tum_extra_column")
 
 
 def test_gt_is_interpolated_to_vo_timestamps_by_default():
@@ -866,6 +885,7 @@ def test_scale_frame_mode_outputs_local_scale_per_start_timestamp():
         "est",
         stamps,
         np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [10.0, 0.0, 0.0], [15.0, 0.0, 0.0], [20.0, 0.0, 0.0]]),
+        source_format="sf_vo",
     )
 
     report = evaluate_trajectories(
@@ -902,6 +922,7 @@ def test_scale_distance_mode_uses_gt_distance_window_closest_to_target():
         "est",
         stamps,
         np.array([[0.0, 0.0, 0.0], [48.0, 0.0, 0.0], [50.0, 0.0, 0.0], [52.0, 0.0, 0.0], [102.5, 0.0, 0.0]]),
+        source_format="sf_vo",
     )
 
     report = evaluate_trajectories(
@@ -929,10 +950,10 @@ def test_scale_distance_mode_uses_gt_distance_window_closest_to_target():
     assert first["local_sim3_scale"] == 2.0
 
 
-def test_build_associated_trajectories_linearly_interpolates_gt_position():
+def test_interpolate_reference_to_estimate_linearly_interpolates_gt_position():
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
     est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
-    gt_eval, est_eval, assoc = build_associated_trajectories(
+    gt_eval, est_eval, assoc = interpolate_reference_to_estimate(
         gt,
         est,
         max_interpolation_gap_s=20.0,
@@ -948,11 +969,11 @@ def test_build_associated_trajectories_linearly_interpolates_gt_position():
     assert abs(gt_eval.extras["interp_alpha"][0] - 0.5) < 1e-12
 
 
-def test_build_associated_trajectories_slerps_gt_rotation():
+def test_interpolate_reference_to_estimate_slerps_gt_rotation():
     gt_rot = euler_yaw_pitch_roll_to_matrix(np.array([0.0, np.pi / 2]), np.zeros(2), np.zeros(2))
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.zeros((2, 3)), gt_rot)
     est = Trajectory("est", np.array([5.0]), np.zeros((1, 3)))
-    gt_eval, _, assoc = build_associated_trajectories(
+    gt_eval, _, assoc = interpolate_reference_to_estimate(
         gt,
         est,
         max_interpolation_gap_s=20.0,
@@ -973,7 +994,7 @@ def test_interpolate_gt_does_not_extrapolate_by_default():
         np.array([9.0, 15.0, 21.0]),
         np.array([[9.0, 0.0, 0.0], [15.0, 0.0, 0.0], [21.0, 0.0, 0.0]]),
     )
-    gt_eval, est_eval, assoc = build_associated_trajectories(
+    gt_eval, est_eval, assoc = interpolate_reference_to_estimate(
         gt,
         est,
         max_interpolation_gap_s=20.0,
@@ -989,7 +1010,7 @@ def test_interpolate_gt_does_not_extrapolate_by_default():
 def test_interpolate_gt_respects_max_interpolation_gap():
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
     est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
-    gt_eval, est_eval, assoc = build_associated_trajectories(
+    gt_eval, est_eval, assoc = interpolate_reference_to_estimate(
         gt,
         est,
         max_interpolation_gap_s=1.0,
@@ -1000,7 +1021,7 @@ def test_interpolate_gt_respects_max_interpolation_gap():
     assert len(gt_eval.positions) == 0
     assert len(est_eval.positions) == 0
 
-    gt_eval, est_eval, assoc = build_associated_trajectories(
+    gt_eval, est_eval, assoc = interpolate_reference_to_estimate(
         gt,
         est,
         max_interpolation_gap_s=20.0,
@@ -1010,10 +1031,10 @@ def test_interpolate_gt_respects_max_interpolation_gap():
     assert len(gt_eval.positions) == len(est_eval.positions) == 1
 
 
-def test_build_associated_trajectories_no_longer_supports_nearest_mode():
+def test_interpolate_reference_to_estimate_no_longer_supports_nearest_mode():
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
     est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
-    gt_eval, est_eval, assoc = build_associated_trajectories(gt, est, max_interpolation_gap_s=20.0)
+    gt_eval, est_eval, assoc = interpolate_reference_to_estimate(gt, est, max_interpolation_gap_s=20.0)
     assert assoc["mode"] == "interpolate_gt"
     assert assoc["interpolated"] is True
     assert assoc["matches"] == 1
@@ -1037,12 +1058,12 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
     est_positions = np.column_stack([np.arange(6, dtype=float), np.sin(np.arange(6, dtype=float)), np.ones(6, dtype=float)])
     raw_numeric = np.asarray(
         [
-            [0.0, 0.0, 0.000000, 1.0, 9, 0, 0, 0, 0],
-            [0.1, 1.0, 0.841471, 1.0, 9, 0, 0, 0, 0],
-            [0.2, 2.0, 0.909297, 1.0, 9, 1, 0, 0, 0],
-            [0.3, 3.0, 0.141120, 1.0, 9, 1, 0, 0, 0],
-            [0.4, 4.0, -0.756802, 1.0, 9, 2, 0, 0, 0],
-            [0.5, 5.0, -0.958924, 1.0, 9, 2, 0, 0, 0],
+            [0.0, 9, 0.0, 0.000000, 1.0, 0, 0, 10, 1, 0.1, 0],
+            [0.1, 9, 1.0, 0.841471, 1.0, 0, 0, 10, 1, 0.1, 0],
+            [0.2, 9, 2.0, 0.909297, 1.0, 0, 0, 10, 1, 0.1, 1],
+            [0.3, 9, 3.0, 0.141120, 1.0, 0, 0, 10, 1, 0.1, 1],
+            [0.4, 9, 4.0, -0.756802, 1.0, 0, 0, 10, 1, 0.1, 2],
+            [0.5, 9, 5.0, -0.958924, 1.0, 0, 0, 10, 1, 0.1, 2],
         ],
         dtype=float,
     )
@@ -1051,7 +1072,7 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
         est_stamps,
         est_positions,
         rotations=None,
-        extras={"raw_numeric_table": raw_numeric},
+        extras={"raw_numeric_table": raw_numeric, "reset_count": raw_numeric[:, 10]},
         source_format="sf_vo",
     )
     report = evaluate_trajectories(

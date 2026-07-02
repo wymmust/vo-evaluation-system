@@ -6,22 +6,16 @@ import io
 import json
 import math
 import re
-from dataclasses import asdict, is_dataclass
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from .data_loader import (
-    Calibration,
     FIXED_TIME_OFFSET_S,
     Trajectory,
-    VLOC_FIXED_MAX_INTERPOLATION_GAP_S,
-    VO_FIXED_MAX_INTERPOLATION_GAP_S,
 )
 from .utils import (
-    build_associated_trajectories,
-    describe,
     euler_yaw_pitch_roll_from_matrix,
     extra_values_linear,
     extra_values_nearest,
@@ -34,7 +28,8 @@ from .utils import (
 def build_vloc_detail_report(
     nav: Trajectory,
     vloc: Trajectory,
-    cfg: EvaluationConfig,
+    nav_eval: Trajectory,
+    vloc_eval: Trajectory,
     visual_segment_ids: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """构造 VLOC 页面专用明细。
@@ -45,11 +40,6 @@ def build_vloc_detail_report(
     - vloc_status: 与有效 VLOC 样本对应的 vloc_mode、num_inliers、reset_count；
     - summary: VLOC 轨迹长度、水平/垂直平均和最大误差。
     """
-    nav_eval, vloc_eval, _assoc = build_associated_trajectories(
-        nav,
-        vloc,
-        max_interpolation_gap_s=VLOC_FIXED_MAX_INTERPOLATION_GAP_S,
-    )
     timestamps = vloc_eval.stamps
     target_stamps = np.asarray(vloc_eval.extras.get("target_stamp", timestamps + FIXED_TIME_OFFSET_S), dtype=float)
     if len(timestamps) == 0:
@@ -87,8 +77,9 @@ def build_vloc_detail_report(
 def build_vo_detail_report(
     nav: Trajectory,
     vo: Trajectory,
-    cfg: EvaluationConfig,
     report: dict[str, Any],
+    nav_eval: Trajectory,
+    vo_eval: Trajectory,
     visual_segment_ids: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """构造 VO 页面专用明细。
@@ -96,11 +87,6 @@ def build_vo_detail_report(
     comparison 使用通用 evaluator 已经算好的 Sim3 后 per_pose 数据：
     这样页面看到的 VO 轨迹、ATE/RPE 和导出结果使用同一套对齐结果。
     """
-    nav_eval, vo_eval, _assoc = build_associated_trajectories(
-        nav,
-        vo,
-        max_interpolation_gap_s=VO_FIXED_MAX_INTERPOLATION_GAP_S,
-    )
     timestamps = vo_eval.stamps
     target_stamps = np.asarray(vo_eval.extras.get("target_stamp", timestamps + FIXED_TIME_OFFSET_S), dtype=float)
     if len(timestamps) == 0:
@@ -277,30 +263,6 @@ def vloc_comparison_frame(
         frame["attitude_error_euler_norm_deg"] = np.linalg.norm(err_ypr, axis=1)
     return frame
 
-def alignment_export_columns(alignment: dict[str, Any], count: int, prefix: str) -> dict[str, Any]:
-    """把 Sim3/SE3 对齐参数展开成可写入 Excel sheet 的列。
-
-    Sim3 不是只有尺度，还包含完整变换：
-    p_gt = scale * R * p_vo + t。
-    因此导出中间轨迹时同时保留：
-    - scale: 尺度因子；
-    - rotation_r00...r22: 3x3 旋转矩阵；
-    - translation_x/y/z: 平移向量。
-    """
-    rot = np.asarray(alignment["rotation"], dtype=float)
-    trans = np.asarray(alignment["translation"], dtype=float)
-    out: dict[str, Any] = {
-        f"{prefix}_mode": np.asarray([alignment.get("mode", prefix)] * count, dtype=object),
-        f"{prefix}_scale": np.full(count, float(alignment["scale"]), dtype=float),
-        f"{prefix}_translation_x": np.full(count, float(trans[0]), dtype=float),
-        f"{prefix}_translation_y": np.full(count, float(trans[1]), dtype=float),
-        f"{prefix}_translation_z": np.full(count, float(trans[2]), dtype=float),
-    }
-    for row in range(3):
-        for col in range(3):
-            out[f"{prefix}_rotation_r{row}{col}"] = np.full(count, float(rot[row, col]), dtype=float)
-    return out
-
 def tum_dataframe_from_arrays(
     stamps: np.ndarray,
     positions: np.ndarray,
@@ -360,33 +322,21 @@ def trajectory_to_tum_dataframe(traj: Trajectory, extra: dict[str, Any] | None =
     return tum_dataframe_from_arrays(traj.stamps, traj.positions, traj.rotations, extra=extra)
 
 
-def raw_numeric_table(traj: Trajectory) -> np.ndarray | None:
-    """取解析阶段保留的原始数字表，用于导出时复查原始 estimate 列。"""
-    table = traj.extras.get("raw_numeric_table")
-    if table is None:
-        return None
-    arr = np.asarray(table, dtype=float)
-    if arr.ndim != 2 or len(arr) != len(traj.positions):
-        return None
-    return arr
-
-
 def jump_export_columns_from_source(
     source: Trajectory,
     source_indices: np.ndarray | None,
     prefix: str,
 ) -> dict[str, Any]:
-    """根据原始 estimate 倒数第四列的 +1 变化生成导出分段列。
+    """根据固定格式 reset_count 的 +1 变化生成导出分段列。
 
-    历史需求：如果 estimate 输出文件倒数第四列出现 0->1、1->2 这类 +1 跳变，
+    历史需求：如果 estimate 输出文件 reset_count 出现 0->1、1->2 这类 +1 跳变，
     就把跳变后的数据视为新的 TUM 文件，例如 vo_tum_01、vo_tum_02。
-    当前固定 sf_vo 中倒数第四列正好是 reset_count；sf_vloc 也会保留该诊断列，
-    但主评估的 VLOC/VO 分段逻辑仍以各自固定流程为准，不依赖这里额外切 sheet。
+    当前 sf_vo/sf_vloc 解析阶段都会把 reset_count 放入 extras，导出不再依赖“倒数第四列”。
 
     Excel 当前是 9 个固定 sheet，因此这里不额外创建无限多个 sheet，而是在相关 sheet 中写入：
     - tum_file: 逻辑文件名，如 vo_tum_01；这里的 vo_tum 是历史命名，实际代表 estimate_tum。
     - jump_segment_id: 从 0 开始的分段编号。
-    - jump_source_value: 原始倒数第四列的值，方便复查跳变点。
+    - jump_source_value: reset_count 的值，方便复查跳变点。
     """
     n = len(source.positions)
     if source_indices is None:
@@ -394,13 +344,11 @@ def jump_export_columns_from_source(
     else:
         indices = np.asarray(source_indices, dtype=int)
 
-    table = raw_numeric_table(source)
     all_segment_ids = np.zeros(n, dtype=int)
     all_values = np.full(n, math.nan, dtype=float)
-    source_column_index = -4
-    if table is not None and table.shape[1] >= 4:
-        source_column_index = int(table.shape[1] - 4)
-        all_values = table[:, source_column_index]
+    reset_count = source.extras.get("reset_count")
+    if reset_count is not None and len(reset_count) == n:
+        all_values = np.asarray(reset_count, dtype=float)
         diffs = np.diff(all_values)
         jumps = np.isfinite(diffs) & np.isclose(diffs, 1.0, rtol=0.0, atol=1e-9)
         all_segment_ids = np.concatenate([[0], np.cumsum(jumps)]).astype(int)
@@ -411,8 +359,7 @@ def jump_export_columns_from_source(
     return {
         "source_index": indices,
         "jump_segment_id": segment_ids,
-        "jump_source_column_from_end": np.full(len(indices), -4, dtype=int),
-        "jump_source_column_index": np.full(len(indices), source_column_index, dtype=int),
+        "jump_source_field": np.asarray(["reset_count"] * len(indices), dtype=object),
         "jump_source_value": values,
         "tum_file": np.asarray([f"{prefix}_{seg_id + 1:02d}" for seg_id in segment_ids], dtype=object),
     }
@@ -488,7 +435,7 @@ def build_trajectory_export_sheets(
 
     Sheet 设计：
     1. input_gt_tum: 原始 GT 转 TUM。
-    2. input_vo_tum: 原始 estimate 转 TUM，并按倒数第四列 +1 跳变标记 vo_tum_XX。
+    2. input_vo_tum: 原始 estimate 转 TUM，并按 reset_count 跳变标记 vo_tum_XX。
        这里保留 vo_tum 作为历史 sheet 名称；在 VLOC 模式下它代表 vloc estimate。
     3. filtered_vo_tum: 时间同步后保留下来的 estimate。
     4. interpolated_gt_tum: 插值到 estimate 时间戳后的 GT。
@@ -508,7 +455,7 @@ def build_trajectory_export_sheets(
     filtered_vo_extra = jump_export_columns_from_source(original_est, est_source_index, "vo_tum")
     filtered_vo_extra["matched_index"] = np.arange(len(est_eval.positions), dtype=int)
 
-    return {
+    sheets = {
         "input_gt_tum": trajectory_to_tum_dataframe(original_gt, raw_gt_extra),
         "input_vo_tum": trajectory_to_tum_dataframe(original_est, raw_vo_extra),
         "filtered_vo_tum": trajectory_to_tum_dataframe(est_eval, filtered_vo_extra),
@@ -517,8 +464,10 @@ def build_trajectory_export_sheets(
         "sim3_vo_tum": sim3_vo_tum,
         "ate_per_frame": ate_per_frame,
         "rpe_per_frame": rpe_per_frame,
-        "scale_per_frame": scale_per_frame,
     }
+    if isinstance(scale_per_frame, pd.DataFrame) and not scale_per_frame.empty:
+        sheets["scale_per_frame"] = scale_per_frame
+    return sheets
 
 
 def report_to_excel(report: dict[str, Any]) -> bytes:
@@ -554,7 +503,7 @@ def _jsonable_value(value: Any) -> Any:
     - NaN/Infinity -> None，浏览器 JSON.parse 会把它读成 null。
 
     指标对应：
-    - 所有 report 字段最终都经过这里，确保 ATE/RPE/segment/runtime 等结果可以稳定导出。
+    - 所有 report 字段最终都经过这里，确保 ATE/RPE/alignment/export 等结果可以稳定导出。
     """
     if isinstance(value, pd.DataFrame):
         return [_jsonable_value(row) for row in value.to_dict(orient="records")]

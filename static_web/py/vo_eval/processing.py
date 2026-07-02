@@ -16,14 +16,10 @@ from .data_loader import (
     SfVlocBundle,
     SfVoBundle,
     Trajectory,
-    VLOC_ALIGNMENT_MODE,
     VLOC_FIXED_MAX_INTERPOLATION_GAP_S,
-    VLOC_SEGMENT_POLICY,
-    VO_ALIGNMENT_MODE,
     VO_FIXED_MAX_INTERPOLATION_GAP_S,
     VO_MIN_VALID_SEGMENT_DURATION_S,
     VO_MIN_VALID_SEGMENT_FRAMES,
-    VO_SEGMENT_POLICY,
 )
 from .report import (
     _dataclass_to_jsonable,
@@ -38,12 +34,10 @@ from .utils import (
     alignment_export_columns,
     apply_alignment,
     apply_rotation_alignment,
-    build_associated_trajectories,
-    compute_alignment,
     describe,
     detect_associated_discontinuities,
     euler_yaw_pitch_roll_from_matrix,
-    interpolate_gt_to_est_timestamps,
+    identity_alignment,
     normalize_rpe_delta_config,
     normalize_scale_delta_config,
     path_distance,
@@ -51,14 +45,13 @@ from .utils import (
     rpe_frame_dataframe,
     rotation_errors,
     scale_frame_dataframe,
-    select_evaluation_segments,
+    sim3_alignment,
     sf_nav_to_body_ned_trajectory,
     sf_nav_to_camera_trajectory,
     sf_vloc_to_body_ned_trajectory,
     subset_trajectory,
     vo_valid_segment_indices,
     wrap_pi,
-    yaw_from_rot,
     _gt_coverage_ratio,
 )
 
@@ -106,13 +99,19 @@ def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None =
 
     valid_indices = np.flatnonzero(valid_mode)
     vloc_valid = subset_trajectory(vloc_ned_body, valid_indices)
-    report = evaluate_trajectories(nav_ned_body, vloc_valid, cfg)
+    report, nav_eval, vloc_eval = _evaluate_trajectories_core(nav_ned_body, vloc_valid, cfg)
     visual_segment_ids = (
         report["per_pose"]["visual_segment_id"].to_numpy(dtype=int)
         if "visual_segment_id" in report["per_pose"]
         else None
     )
-    report["vloc_details"] = build_vloc_detail_report(nav_ned_body, vloc_valid, cfg, visual_segment_ids=visual_segment_ids)
+    report["vloc_details"] = build_vloc_detail_report(
+        nav_ned_body,
+        vloc_valid,
+        visual_segment_ids=visual_segment_ids,
+        nav_eval=nav_eval,
+        vloc_eval=vloc_eval,
+    )
     report["inputs"]["entry_mode"] = "vloc"
     report["inputs"]["workflow"] = "sf_vloc"
     report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
@@ -144,8 +143,6 @@ def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = Non
     """
 
     cfg = normalized_vo_evaluation_config(config)
-    # nav_body = sf_nav_to_body_trajectory(bundle.nav)
-    # vo_body = sf_vo_to_body_trajectory(bundle.vo, bundle.calibration)
     nav_cam = sf_nav_to_camera_trajectory(bundle.nav, bundle.calibration)
     vo_cam = bundle.vo
 
@@ -155,7 +152,7 @@ def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = Non
 
     vo_valid = subset_trajectory(vo_cam, valid_indices)
     vo_valid.extras["evaluation_segment_id"] = np.asarray(valid_segment_ids, dtype=int)
-    report = evaluate_trajectories(nav_cam, vo_valid, cfg)
+    report, nav_eval, vo_eval = _evaluate_trajectories_core(nav_cam, vo_valid, cfg)
     report["association"]["dropped_est_invalid_segment"] = int(segment_filter["dropped_pose_count"])
     report["association"]["valid_est_after_segment_filter"] = int(len(vo_valid.positions))
     report["association"]["vo_reset_segment_filter"] = segment_filter
@@ -164,7 +161,14 @@ def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = Non
         if "visual_segment_id" in report["per_pose"]
         else None
     )
-    report["vo_details"] = build_vo_detail_report(nav_cam, vo_valid, cfg, report, visual_segment_ids=visual_segment_ids)
+    report["vo_details"] = build_vo_detail_report(
+        nav_cam,
+        vo_valid,
+        report,
+        visual_segment_ids=visual_segment_ids,
+        nav_eval=nav_eval,
+        vo_eval=vo_eval,
+    )
     report["inputs"]["entry_mode"] = "vo"
     report["inputs"]["workflow"] = "sf_vo"
     report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
@@ -214,29 +218,37 @@ def evaluate_trajectories(
     est: Trajectory,
     config: EvaluationConfig | None = None,
 ) -> dict[str, Any]:
+    report, _gt_eval, _est_eval = _evaluate_trajectories_core(gt, est, config)
+    return report
+
+
+def _evaluate_trajectories_core(
+    gt: Trajectory,
+    est: Trajectory,
+    config: EvaluationConfig | None = None,
+) -> tuple[dict[str, Any], Trajectory, Trajectory]:
     """通用轨迹评估入口：输入 GT/reference 和 estimate，输出完整 report。
 
     这里是 VLOC 和 VO 都会复用的核心计算层：
     - VLOC 入口会先把 nav/vloc 都转成 body/NED，再固定不对齐地调用这里。
-    - VO 入口会先把 camera pose 转成 body pose、按 reset_count 筛掉短段，再用分段 Sim3 调用这里。
+    - VO 入口会先把 nav/GT 转成 camera pose、按 reset_count 筛掉短段，再用分段 Sim3 调用这里。
     - TUM/测试入口也可以直接传两条 Trajectory 进来。
 
     流程对应页面上的“运行结果、可视化、明细与导出”：
     1. 时间同步 -> association / coverage。
     2. 大跳变诊断 -> discontinuities。
     3. 对每个选中连续段做对齐和误差计算。
-    4. 汇总 ATE/RPE/局部尺度/runtime 等指标。
+    4. 汇总 ATE/RPE/局部尺度等指标。
     5. 返回 report dict，app.py 只负责展示这个 report。
 
     来源对应：
     - ATE/RPE 主干来自 Sturm12 和 Zhang18。
     - 长序列覆盖率和断点是 Schubert18/Delmerico18 场景下的工程扩展。
-    - runtime 统计来自 Delmerico18 对飞行机器人实时性的关注。
     """
     cfg = config or EvaluationConfig()
-    is_vo_workflow = "evaluation_segment_id" in est.extras
-    alignment_mode = VO_ALIGNMENT_MODE if is_vo_workflow else VLOC_ALIGNMENT_MODE
-    segment_policy = VO_SEGMENT_POLICY if is_vo_workflow else VLOC_SEGMENT_POLICY
+    is_vo_workflow = est.source_format == "sf_vo" or "evaluation_segment_id" in est.extras
+    alignment_mode = "sim3" if is_vo_workflow else "none"
+    segment_policy = "segments" if is_vo_workflow else "vo_timestamps"
     max_interpolation_gap_s = VO_FIXED_MAX_INTERPOLATION_GAP_S if is_vo_workflow else VLOC_FIXED_MAX_INTERPOLATION_GAP_S
 
     # 1. 时间同步：默认以 estimate 时间戳为评估基准，把 GT/reference 插值到 estimate 时刻。
@@ -271,7 +283,12 @@ def evaluate_trajectories(
         time_gap_threshold_s=FIXED_DISCONTINUITY_TIME_GAP_S,
         forced_segment_ids=forced_segment_ids,
     )
-    eval_ranges = select_evaluation_segments(discontinuities_all["segments"], segment_policy, original_match_count)
+    valid_segments = [seg for seg in discontinuities_all["segments"] if int(seg.get("count", 0)) >= 2]
+    eval_ranges = (
+        valid_segments
+        if is_vo_workflow
+        else ([{"start": 0, "end": original_match_count, "count": original_match_count}] if original_match_count >= 2 else [])
+    )
     if not eval_ranges:
         raise ValueError("No continuous segment contains at least two matched poses")
     # 这些列表会收集每个连续段的结果，最后统一 concat/describe。
@@ -319,7 +336,7 @@ def evaluate_trajectories(
         # 5. 对齐 estimate 到 GT 坐标系。
         #    sf_vloc 固定 alignment=none，位置误差就是 nav-vloc 原始坐标差；
         #    sf_vo 固定 alignment=sim3，位置误差基于每段 Sim3 后的 aligned VO。
-        alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode=alignment_mode)
+        alignment = sim3_alignment(gt_pos, est_pos) if is_vo_workflow else identity_alignment()
         alignment["segment_id"] = int(seg_id)
         alignment["start_match_index"] = start
         alignment["end_match_index"] = end
@@ -328,19 +345,15 @@ def evaluate_trajectories(
         est_pos_aligned = apply_alignment(est_pos, alignment)
         est_rot_aligned = apply_rotation_alignment(est_rot, alignment) if est_rot is not None else None
 
-        # Excel 导出固定保留一份 Sim3 中间轨迹。
-        # 对 VO，这就是需求文档中的分段 Sim3 输出；对 VLOC，虽然主评估不使用 Sim3，
-        # 这个 sheet 仍可作为诊断中间结果，且不会影响 VLOC 页面指标。
-        sim3_alignment = compute_alignment(gt_pos, est_pos, gt_rot, est_rot, mode="sim3")
-        sim3_est_pos = apply_alignment(est_pos, sim3_alignment)
-        sim3_est_rot = apply_rotation_alignment(est_rot, sim3_alignment) if est_rot is not None else None
-        sim3_extra = {
-            "segment_id": np.full(len(stamps), int(seg_id), dtype=int),
-            "match_index": np.arange(start, end, dtype=int),
-        }
-        sim3_extra.update(alignment_export_columns(sim3_alignment, len(stamps), "sim3"))
-        sim3_gt_export_frames.append(tum_dataframe_from_arrays(stamps, gt_pos, gt_rot, extra=sim3_extra))
-        sim3_vo_export_frames.append(tum_dataframe_from_arrays(stamps, sim3_est_pos, sim3_est_rot, extra=sim3_extra))
+        if is_vo_workflow:
+            # VO 导出固定保留一份 Sim3 中间轨迹；VLOC 有真实尺度，不生成 Sim3 sheet。
+            sim3_extra = {
+                "segment_id": np.full(len(stamps), int(seg_id), dtype=int),
+                "match_index": np.arange(start, end, dtype=int),
+            }
+            sim3_extra.update(alignment_export_columns(alignment, len(stamps), "sim3"))
+            sim3_gt_export_frames.append(tum_dataframe_from_arrays(stamps, gt_pos, gt_rot, extra=sim3_extra))
+            sim3_vo_export_frames.append(tum_dataframe_from_arrays(stamps, est_pos_aligned, est_rot_aligned, extra=sim3_extra))
 
         # 6. ATE 逐帧误差：
         #    error_m -> ate_position_m，horizontal_error_m -> ate_horizontal_m，
@@ -407,18 +420,19 @@ def evaluate_trajectories(
         rpe_trans_parts.append(rpe_trans)
         if len(rpe_rot_deg):
             rpe_rot_parts.append(rpe_rot_deg)
-        scale_frame = scale_frame_dataframe(
-            gt_pos,
-            est_pos,
-            stamps,
-            segment_id=int(seg_id),
-            match_indices=np.arange(start, end, dtype=int),
-            delta=max(1, int(cfg.rpe_delta_frames)),
-            delta_value=cfg.scale_delta_value,
-            delta_unit=cfg.scale_delta_unit,
-            distance_tolerance_ratio=cfg.scale_distance_tolerance_ratio,
-        )
-        scale_frame_export_frames.append(scale_frame)
+        if is_vo_workflow:
+            scale_frame = scale_frame_dataframe(
+                gt_pos,
+                est_pos,
+                stamps,
+                segment_id=int(seg_id),
+                match_indices=np.arange(start, end, dtype=int),
+                delta=max(1, int(cfg.rpe_delta_frames)),
+                delta_value=cfg.scale_delta_value,
+                delta_unit=cfg.scale_delta_unit,
+                distance_tolerance_ratio=cfg.scale_distance_tolerance_ratio,
+            )
+            scale_frame_export_frames.append(scale_frame)
 
         # 10. per_pose 是每帧明细表，既用于误差曲线，也可导出 CSV。
         frame = pd.DataFrame(
@@ -469,7 +483,7 @@ def evaluate_trajectories(
         used_match_indices.append(np.arange(start, end, dtype=int))
 
         # 11. summary 所需的总路程、raw estimate 路程、对齐后 estimate 路程、耗时等。
-        #     来源：路程/速度支撑 Geiger12 风格统计；duration/runtime 支撑 Delmerico18 实时性分析；
+        #     来源：路程支撑长航程可用性统计；
         #     raw_path_scale_ratio 支撑 Zhang18 的尺度可观性判断。
         seg_gt_path = float(local_distance_m[-1])
         total_gt_path_m += seg_gt_path
@@ -514,18 +528,20 @@ def evaluate_trajectories(
         "translation_m": describe(rpe_trans),
         "rotation_deg": describe(rpe_rot_deg) if len(rpe_rot_deg) else None,
     }
-    scale_valid = scale_per_frame["scale_available"].to_numpy(dtype=bool) if "scale_available" in scale_per_frame else np.asarray([], dtype=bool)
-    local_sim3_scale = scale_per_frame.loc[scale_valid, "local_sim3_scale"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
-    local_scale_ratio = scale_per_frame.loc[scale_valid, "local_scale_ratio_est_over_gt"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
-    local_scale_drift = scale_per_frame.loc[scale_valid, "local_scale_drift_percent"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
-    scale_delta_info = normalize_scale_delta_config(cfg)
-    scale_frame_delta = {
-        **scale_delta_info,
-        "count": int(len(local_sim3_scale)),
-        "local_sim3_scale": describe(local_sim3_scale),
-        "local_scale_ratio_est_over_gt": describe(local_scale_ratio),
-        "local_scale_drift_percent": describe(local_scale_drift),
-    }
+    scale_frame_delta = None
+    if is_vo_workflow:
+        scale_valid = scale_per_frame["scale_available"].to_numpy(dtype=bool) if "scale_available" in scale_per_frame else np.asarray([], dtype=bool)
+        local_sim3_scale = scale_per_frame.loc[scale_valid, "local_sim3_scale"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
+        local_scale_ratio = scale_per_frame.loc[scale_valid, "local_scale_ratio_est_over_gt"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
+        local_scale_drift = scale_per_frame.loc[scale_valid, "local_scale_drift_percent"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
+        scale_delta_info = normalize_scale_delta_config(cfg)
+        scale_frame_delta = {
+            **scale_delta_info,
+            "count": int(len(local_sim3_scale)),
+            "local_sim3_scale": describe(local_sim3_scale),
+            "local_scale_ratio_est_over_gt": describe(local_scale_ratio),
+            "local_scale_drift_percent": describe(local_scale_drift),
+        }
     selected_segment = {
         "policy": segment_policy,
         "segments": [{"start_index": int(seg["start"]), "end_index": int(seg["end"]), "count": int(seg["count"])} for seg in eval_ranges],
@@ -534,7 +550,7 @@ def evaluate_trajectories(
     }
 
     # 14. summary 是页面第一屏指标卡的主要来源。
-    #     coverage/path/runtime 是物流无人机长航程可用性扩展；
+    #     coverage/path 是物流无人机长航程可用性扩展；
     #     这些扩展的动机来自 Schubert18 长序列 VIO 和 Delmerico18 飞行机器人 benchmark。
     summary = {
         "gt_path_length_m": float(total_gt_path_m),
@@ -589,8 +605,9 @@ def evaluate_trajectories(
         "yaw_error_signed_deg": describe(yaw_error_signed_deg) if yaw_error_signed_deg is not None else None,
         "yaw_error_abs_deg": describe(yaw_error_abs_deg) if yaw_error_abs_deg is not None else None,
         "rpe_frame_delta": rpe,
-        "scale_frame_delta": scale_frame_delta,
         "per_pose": per_pose,
         "trajectory_exports": trajectory_exports,
     }
-    return report
+    if scale_frame_delta is not None:
+        report["scale_frame_delta"] = scale_frame_delta
+    return report, gt, est

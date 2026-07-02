@@ -33,6 +33,7 @@ __all__ = [
     "Trajectory",
     "evaluate_trajectories",
     "evaluate_vloc_bundle",
+    "evaluate_vo_bundle",
     "get_evaluation_format_spec",
     "load_vloc_evaluation_bundle",
     "load_vo_evaluation_bundle",

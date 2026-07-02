@@ -15,13 +15,12 @@ def main(argv: list[str] | None = None) -> int:
         prog="python -m vo_eval",
         description="Trajectory VO/VLOC evaluation CLI.",
     )
-    parser.add_argument("--mode", choices=["sf_vo", "sf_vloc"], help="Evaluation workflow")
-    parser.add_argument("--data_dir", type=Path, help="Directory containing imu.txt")
-    parser.add_argument("--log_dir", type=Path, help="Directory containing vo.txt/vloc.txt + home_point.txt + calib_raw.yaml")
+    parser.add_argument("--mode", choices=["sf_vo", "sf_vloc"], required=True, help="Evaluation workflow")
+    parser.add_argument("--data_dir", type=Path, required=True, help="Directory containing imu.txt")
+    parser.add_argument("--log_dir", type=Path, required=True, help="Directory containing vo.txt/vloc.txt + home_point.txt + calib_raw.yaml")
     parser.add_argument("-d", "--delta", type=float, default=100.0, help="RPE delta value (default: 100)")
     parser.add_argument("-u", "--unit", default="m", choices=["m", "f"], help="RPE delta unit: m=meters, f=frames (default: m)")
     parser.add_argument("-o", "--output", type=Path, default=None, help="Output JSON path (optional)")
-    parser.add_argument("-p", "--plot", action="store_true", help="Open interactive HTML report in browser")
 
     args = parser.parse_args(argv)
 

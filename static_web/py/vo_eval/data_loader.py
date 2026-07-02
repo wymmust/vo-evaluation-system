@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import io
-import json
-import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import numpy as np
-import pandas as pd
 
 @dataclass(frozen=True)
 class EvaluationFormatSpec:
@@ -88,12 +84,12 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
     {
         "metric": "时间同步 / GT 插值到 estimate",
         "report_field": 'report["association"]',
-        "code": "prepare_evaluation_trajectories(); build_associated_trajectories(); interpolate_reference_to_estimate()",
+        "code": "prepare_evaluation_trajectories(); interpolate_reference_to_estimate()",
     },
     {
         "metric": "轨迹对齐 / 对齐尺度",
         "report_field": 'report["alignment"]',
-        "code": "compute_alignment(); umeyama_alignment(); aggregate_alignment(); apply_alignment()",
+        "code": "identity_alignment(); sim3_alignment(); umeyama_alignment(); aggregate_alignment(); apply_alignment()",
     },
     {
         "metric": "ATE 三维位置误差",
@@ -131,11 +127,6 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
         "code": "evaluate_trajectories(): summary dict; path_distance(); _gt_coverage_ratio()",
     },
     {
-        "metric": "runtime / CPU / 内存 / FPS",
-        "report_field": 'report["runtime"]',
-        "code": "summarize_runtime(); describe()",
-    },
-    {
         "metric": "逐帧误差和轨迹可视化数据",
         "report_field": 'report["per_pose"]',
         "code": "evaluate_trajectories(): per_pose DataFrame",
@@ -152,10 +143,10 @@ METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
 class Trajectory:
     """统一后的轨迹数据结构。
 
-    stamps: 秒级时间戳。所有 ns/us/ms 输入都会先归一化到秒。
+    stamps: 秒级时间戳。当前固定输入格式都按秒读取。
     positions: N x 3 的位置，单位默认按输入理解为米。
     rotations: 可选 N x 3 x 3 旋转矩阵；没有姿态时仍可计算位置类指标。
-    extras: 与轨迹等长的附加字段，例如状态位、速度、reset_count、经纬高、runtime 或 source_index。
+    extras: 与轨迹等长的附加字段，例如状态位、速度、reset_count、经纬高或 source_index。
     """
 
     name: str
@@ -171,7 +162,7 @@ class Trajectory:
         代码意义：
         - 所有输入格式最终都会走到 Trajectory，因此这里统一做 shape 校验、类型转换和时间排序。
         - 时间排序很重要：后续 path_distance()、插值、RPE 和断点检测都默认轨迹按时间递增。
-        - extras 会跟随相同排序同步重排，确保状态、reset_count、runtime 等字段仍然和位姿一一对应。
+        - extras 会跟随相同排序同步重排，确保状态、reset_count 等字段仍然和位姿一一对应。
 
         指标影响：
         - 如果这里不排序，summary.duration_s、RPE、尺度窗口和断点检测都会被乱序时间污染。
@@ -198,20 +189,10 @@ class Trajectory:
                 self.extras[key] = arr[order]
 
     @property
-    def has_rotation(self) -> bool:
-        return self.rotations is not None
-
-    @property
     def duration_s(self) -> float:
         if len(self.stamps) < 2:
             return 0.0
         return float(self.stamps[-1] - self.stamps[0])
-
-    @property
-    def path_length_m(self) -> float:
-        if len(self.positions) < 2:
-            return 0.0
-        return float(np.sum(np.linalg.norm(np.diff(self.positions, axis=0), axis=1)))
 
 
 @dataclass(frozen=True)
@@ -274,10 +255,6 @@ class SfVoBundle:
 
 VLOC_FIXED_MAX_INTERPOLATION_GAP_S = 1.0
 VO_FIXED_MAX_INTERPOLATION_GAP_S = 1.0
-VLOC_ALIGNMENT_MODE = "none"
-VO_ALIGNMENT_MODE = "sim3"
-VLOC_SEGMENT_POLICY = "vo_timestamps"
-VO_SEGMENT_POLICY = "segments"
 FIXED_TIME_OFFSET_S = 0.0
 FIXED_DISCONTINUITY_STEP_M = 100.0
 FIXED_DISCONTINUITY_TIME_GAP_S = 5.0
@@ -340,9 +317,6 @@ VO_FIXED_COLUMNS = (
     "is_keyframe",
     "time_cost",
     "reset_count",
-    "depth_mean",
-    "depth_min",
-    "depth_max",
 )
 
 def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVlocBundle:
@@ -449,7 +423,7 @@ def parse_imu_fixed(text: str, name: str = "imu.txt") -> Trajectory:
     rotations = euler_yaw_pitch_roll_to_matrix(data[:, 7], data[:, 8], data[:, 9])
     return Trajectory(
         name,
-        _normalize_timestamps(data[:, 0], "s"),
+        _normalize_timestamps(data[:, 0]),
         data[:, 4:7],
         rotations,
         extras=extras,
@@ -483,7 +457,7 @@ def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
     rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
     return Trajectory(
         name,
-        _normalize_timestamps(data[:, 0], "s"),
+        _normalize_timestamps(data[:, 0]),
         data[:, 4:7],
         rotations,
         extras=extras,
@@ -492,11 +466,10 @@ def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
 
 
 def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
-    """按需求文档固定 14 列解析 VO 输出。
+    """按需求文档固定 11 列解析 VO 输出。
 
     不根据表头猜列名；yaw/pitch/roll 固定为角度。
-    最后三列 depth_mean/depth_min/depth_max 只用于固定格式校验，不参与评估指标。
-    兼容旧版 11 列 VO：缺失的 depth 三列会补 0。
+    新版主线为 11 列；旧版 14 列会读取前 11 列，最后三列 depth 不参与评估。
     """
 
     from .utils import euler_yaw_pitch_roll_to_matrix
@@ -514,7 +487,7 @@ def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
     rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
     return Trajectory(
         name,
-        _normalize_timestamps(data[:, 0], "s"),
+        _normalize_timestamps(data[:, 0]),
         data[:, 2:5],
         rotations,
         extras=extras,
@@ -523,17 +496,36 @@ def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
 
 
 def _read_vo_fixed_numeric_table(text: str, name: str) -> np.ndarray:
-    """读取 VO 固定数字表，兼容旧版 11 列输出。"""
+    """读取 VO 固定数字表。
 
-    data = _read_fixed_numeric_table_variants(
-        text,
-        expected_cols=len(VO_FIXED_COLUMNS),
-        legacy_cols=11,
-        legacy_padding=(0.0, 0.0, 0.0),
-        name=name,
-        fmt_name="VO",
-    )
-    return data
+    新版主线为 11 列；旧版 14 列只取前 11 列，最后三列 depth_* 不进入 raw_numeric_table。
+    """
+
+    expected_cols = len(VO_FIXED_COLUMNS)
+    legacy_cols = expected_cols + 3
+    rows: list[list[float]] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = [token for token in re.split(r"[\s,;]+", line) if token]
+        try:
+            values = [float(token) for token in tokens]
+        except ValueError:
+            if not rows:
+                continue
+            raise ValueError(f"{name}: VO line {line_no} contains non-numeric values after data started")
+        if len(values) == legacy_cols:
+            values = values[:expected_cols]
+        elif len(values) != expected_cols:
+            raise ValueError(
+                f"{name}: VO format expects {expected_cols} columns "
+                f"(or legacy {legacy_cols}), got {len(values)} on line {line_no}"
+            )
+        rows.append(values)
+    if not rows:
+        raise ValueError(f"{name}: VO file contains no numeric data rows")
+    return np.asarray(rows, dtype=float)
 
 
 def parse_home_point_fixed(text: str, name: str = "home_point.txt") -> HomePoint:
@@ -590,42 +582,6 @@ def _read_fixed_numeric_table(text: str, expected_cols: int, name: str, fmt_name
             raise ValueError(f"{name}: {fmt_name} line {line_no} contains non-numeric values after data started")
         if len(values) != expected_cols:
             raise ValueError(f"{name}: {fmt_name} format expects {expected_cols} columns, got {len(values)} on line {line_no}")
-        rows.append(values)
-    if not rows:
-        raise ValueError(f"{name}: {fmt_name} file contains no numeric data rows")
-    return np.asarray(rows, dtype=float)
-
-
-def _read_fixed_numeric_table_variants(
-    text: str,
-    *,
-    expected_cols: int,
-    legacy_cols: int,
-    legacy_padding: tuple[float, ...],
-    name: str,
-    fmt_name: str,
-) -> np.ndarray:
-    """读取固定列数字表，同时兼容一种旧列数。"""
-
-    rows: list[list[float]] = []
-    for line_no, raw_line in enumerate(text.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        tokens = [token for token in re.split(r"[\s,;]+", line) if token]
-        try:
-            values = [float(token) for token in tokens]
-        except ValueError:
-            if not rows:
-                continue
-            raise ValueError(f"{name}: {fmt_name} line {line_no} contains non-numeric values after data started")
-        if len(values) == legacy_cols:
-            values = values + list(legacy_padding)
-        elif len(values) != expected_cols:
-            raise ValueError(
-                f"{name}: {fmt_name} format expects {expected_cols} columns "
-                f"(or legacy {legacy_cols}), got {len(values)} on line {line_no}"
-            )
         rows.append(values)
     if not rows:
         raise ValueError(f"{name}: {fmt_name} file contains no numeric data rows")
@@ -705,14 +661,8 @@ def _meaningful_lines(text: str) -> list[str]:
 
 
 def _parse_float_line(line: str) -> list[float]:
-    """解析一行纯数字，支持空格、逗号和分号分隔。"""
-    tokens = re.split(r"[\s,;]+", line.strip())
-    values = []
-    for token in tokens:
-        if not token:
-            continue
-        values.append(float(token))
-    return values
+    """解析一行空格分隔的纯数字。"""
+    return [float(token) for token in line.split()]
 
 
 def _parse_tum_numeric_table(lines: list[str], name: str) -> Trajectory:
@@ -724,50 +674,18 @@ def _parse_tum_numeric_table(lines: list[str], name: str) -> Trajectory:
     if any(len(row) != width for row in rows):
         raise ValueError(f"{name}: inconsistent number of columns")
     data = np.asarray(rows, dtype=float)
-    if data.shape[1] < 8:
-        raise ValueError(f"{name}: TUM format needs at least 8 columns")
+    if data.shape[1] != 8:
+        raise ValueError(f"{name}: TUM format expects exactly 8 columns, got {data.shape[1]}")
     stamps = _normalize_timestamps(data[:, 0])
     positions = data[:, 1:4]
     rotations = quaternion_to_matrix(data[:, 4], data[:, 5], data[:, 6], data[:, 7])
     return Trajectory(name, stamps, positions, rotations, extras={"raw_numeric_table": data}, source_format="tum")
 
-def _normalize_timestamps(stamps: np.ndarray, unit_hint: str | None = None) -> np.ndarray:
-    """时间戳统一换算到秒。
+def _normalize_timestamps(stamps: np.ndarray) -> np.ndarray:
+    """固定把输入时间戳作为秒读取。
 
-    这直接影响 duration_s、速度分箱、时间间隔断点和 TUM 时间关联阈值。
+    这直接影响 duration_s、RPE、局部尺度窗口、时间间隔断点和 TUM 时间关联阈值。
 
-    注意：
-    - 所有内部时间统一为秒。
-    - 如果输入是 EuRoC ns 时间戳，这里会乘 1e-9，避免报告耗时爆成 1e12 秒。
+    当前支持的 sf_vo、sf_vloc 和 TUM 输入都已固定为秒，不再按数量级推断或换算 ns/us/ms。
     """
-    arr = np.asarray(stamps, dtype=float)
-    unit = unit_hint or _infer_timestamp_unit(arr)
-    factors = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0}
-    return arr * factors.get(unit or "s", 1.0)
-
-
-def _infer_timestamp_unit(stamps: np.ndarray) -> str:
-    """无表头时按时间戳数量级和相邻步长推断单位。
-
-    推断依据：
-    - 绝对值很大通常说明是 Unix ns/us/ms 时间戳。
-    - 相邻步长很大也能提示单位，例如 50,000,000 通常是 0.05 秒的 ns。
-    """
-    finite = np.asarray(stamps, dtype=float)
-    finite = finite[np.isfinite(finite)]
-    if len(finite) == 0:
-        return "s"
-
-    median_abs = float(np.nanmedian(np.abs(finite)))
-    sorted_values = np.sort(finite)
-    diffs = np.diff(sorted_values)
-    diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
-    median_step = float(np.nanmedian(diffs)) if len(diffs) else 0.0
-
-    if median_abs >= 1e17 or median_step >= 1e7:
-        return "ns"
-    if median_abs >= 1e14 or median_step >= 1e4:
-        return "us"
-    if median_abs >= 1e11:
-        return "ms"
-    return "s"
+    return np.asarray(stamps, dtype=float)
