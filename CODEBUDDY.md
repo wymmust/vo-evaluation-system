@@ -2,12 +2,6 @@
 
 ## Commands
 
-### Run the Streamlit app
-```bash
-streamlit run app.py
-```
-Opens on http://localhost:8501 by default.
-
 ### Run static web version locally
 ```bash
 cd static_web && python3 -m http.server 8765
@@ -32,7 +26,7 @@ Copies the split `vo_eval` Python modules into `static_web/py/vo_eval/` for Pyod
 
 ## Architecture
 
-This is a VO (Visual Odometry) trajectory evaluation tool with two deployment modes: a Streamlit Python server (`app.py`) and a static web version (`static_web/`) that runs evaluation entirely in the browser via Pyodide.
+This is a VO (Visual Odometry) trajectory evaluation tool with a static web version (`static_web/`) that runs evaluation entirely in the browser via Pyodide.
 
 ### Layer separation
 
@@ -43,8 +37,6 @@ This is a VO (Visual Odometry) trajectory evaluation tool with two deployment mo
 **Utility layer** (`vo_eval/utils.py`): Contains reusable numerical logic: NED/geodetic conversion, interpolation, quaternion/euler/rotation helpers, Sim3/Umeyama alignment, RPE pair selection, local scale estimation, discontinuity detection, and descriptive statistics.
 
 **Report layer** (`vo_eval/report.py`): Builds VLOC/VO detail tables and export artifacts, including JSON and Excel output.
-
-**UI layer** (`app.py`): Streamlit sidebar collects config, calls `load_*_evaluation_bundle()` and `evaluate_*_bundle()`, then renders metric cards, Plotly charts, and downloads. It does not compute metrics directly.
 
 **Static web layer** (`static_web/`): Pure client-side alternative. `app.js` builds UI and calls `static_web/py/browser_runner.py`, which imports the split `vo_eval` modules inside Pyodide and returns report JSON. The browser copies live under `static_web/py/vo_eval/`.
 
@@ -70,7 +62,3 @@ This is a VO (Visual Odometry) trajectory evaluation tool with two deployment mo
 ### Static deployment copy
 
 Pyodide fetches Python files over HTTP and writes them into a virtual filesystem. After modifying `vo_eval/data_loader.py`, `vo_eval/utils.py`, `vo_eval/report.py`, or `vo_eval/processing.py`, run `python scripts/sync_static_web.py` to update `static_web/py/vo_eval/`. `static_web/py/browser_runner.py` is the thin Pyodide adapter.
-
-### Streamlit config
-
-`.streamlit/config.toml`: upload size limit 200MB (`maxUploadSize = 200`), headless mode, port 8501.

@@ -239,7 +239,7 @@ def _evaluate_trajectories_core(
     2. 大跳变诊断 -> discontinuities。
     3. 对每个选中连续段做对齐和误差计算。
     4. 汇总 ATE/RPE/局部尺度等指标。
-    5. 返回 report dict，app.py 只负责展示这个 report。
+    5. 返回 report dict，前端只负责展示这个 report。
 
     来源对应：
     - ATE/RPE 主干来自 Sturm12 和 Zhang18。
@@ -568,7 +568,7 @@ def _evaluate_trajectories_core(
         "raw_path_scale_ratio_est_over_gt": float(total_raw_est_path_m / total_gt_path_m) if total_gt_path_m > 0 else math.nan,
     }
 
-    # 15. report 是唯一对外返回值。app.py 的所有图表/表格/下载都从这里取数据。
+    # 15. report 是唯一对外返回值。前端的所有图表/表格/下载都从这里取数据。
     #     新增 report 指标时，同步更新 METRIC_CODE_MAP 和 README 的指标-代码总表。
     trajectory_exports = build_trajectory_export_sheets(
         original_gt,

@@ -179,37 +179,6 @@ def test_static_dead_report_and_time_series_helpers_are_removed():
         assert f"function {name}" not in source
 
 
-def test_streamlit_frontend_defaults_align_with_static_web_directory_flow():
-    source = Path("app.py").read_text()
-    assert 'st.radio("评估入口", list(EVALUATION_ENTRY_OPTIONS), index=0)' in source
-    assert 'if entry_mode == "vloc":' in source
-    assert 'st.number_input("RPE 统计间隔", value=100.0' in source
-    assert 'st.selectbox("单位", ["f", "m"], index=1)' in source
-    assert 'st.number_input("尺度图间隔", value=100.0' in source
-    assert 'st.selectbox("单位 ", ["f", "m"], index=1)' in source
-    for removed_widget_call in [
-        'st.text_input("长航程子轨迹长度 m"',
-        'st.number_input("每个长度最多抽样段数"',
-        'st.number_input("子轨迹起点步长',
-        'st.number_input("子轨迹长度容差比例"',
-        'st.number_input("断点步长阈值 m"',
-        'st.number_input("断点时间间隔阈值 s"',
-        'st.number_input("发散绝对阈值 m"',
-        'st.number_input("发散相对阈值 % 路程"',
-    ]:
-        assert removed_widget_call not in source
-    assert 'if entry_mode == "vo":' in source
-    assert 'report = evaluate_vo_bundle(bundle, cfg)' in source
-    assert 'segment_policy_label = "按VO连续段逐段评估"' in source
-    assert 'entry_mode == "vo" and st.selectbox("轨迹对齐"' not in source
-    assert "VO_CHART_OPTIONS" in source
-    assert "show_chart_directory(\"vo\", VO_CHART_OPTIONS)" in source
-    assert "selected_vo_chart_ids" in source
-    assert "show_visuals(report, entry_mode, selected_vloc_chart_ids, selected_vo_chart_ids)" in source
-    assert 'segment_policy_label = "按VO时间戳统一评估（推荐）"' in source
-    assert "视觉布局与 static_web 保持同一套信息组织" not in source
-
-
 def test_static_directory_picker_shows_selected_directory_name_in_custom_status():
     script = textwrap.dedent(
         r"""

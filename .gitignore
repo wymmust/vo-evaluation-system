@@ -35,3 +35,8 @@ vo.txt
 *_GT.txt
 *Trajectory*.txt
 KITTI_*.txt
+
+.claude
+.specify
+specs/
+*.code-workspace
