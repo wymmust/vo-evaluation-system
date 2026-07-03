@@ -163,9 +163,6 @@
           </div>
           <div class="downloads">
             <button id="downloadJson" disabled>下载 JSON 指标</button>
-            <button id="downloadPoseCsv" disabled>下载每帧误差 CSV</button>
-            <button id="downloadSegmentCsv" disabled>下载子轨迹误差 CSV</button>
-            <button id="downloadWorstCsv" disabled>下载最差片段 CSV</button>
             <button id="downloadConfigJson" disabled>下载配置 JSON</button>
             <button id="downloadTrajectoryExcel" disabled>下载轨迹 Excel</button>
             <button id="downloadHtml" disabled>下载 HTML 报告</button>
@@ -175,6 +172,8 @@
       </section>
     </main>
 
+    <script src="./visualization/report_templates.js"></script>
+    <script src="./visualization/figure_specs.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

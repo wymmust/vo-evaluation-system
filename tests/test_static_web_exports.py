@@ -19,6 +19,32 @@ def test_static_browser_evaluator_exports_new_vloc_summary_metrics():
     assert "max_error_euler" in source
 
 
+def test_static_visualization_templates_are_shared_by_page_and_html_export():
+    html = Path("static_web/index.html").read_text()
+    app_js = Path("static_web/app.js").read_text()
+    cli_js = Path("static_web/export_report_cli.js").read_text()
+    template_path = Path("static_web/visualization/report_templates.js")
+    figure_path = Path("static_web/visualization/figure_specs.js")
+    figure_js = figure_path.read_text()
+
+    assert template_path.exists()
+    assert figure_path.exists()
+    assert html.index("./visualization/report_templates.js") < html.index("./app.js")
+    assert html.index("./visualization/report_templates.js") < html.index("./visualization/figure_specs.js")
+    assert html.index("./visualization/figure_specs.js") < html.index("./app.js")
+    assert '"visualization", "report_templates.js"' in cli_js
+    assert '"visualization", "figure_specs.js"' in cli_js
+    assert "VoVisualizationTemplates" in app_js
+    assert "VoVisualizationFigures" in figure_js
+    assert "function metricItems(report)" in app_js
+    assert "function buildVisualizationFigureSpecs(report, options = {})" not in app_js
+    assert "function buildVisualizationFigureSpecs(report, options = {})" in figure_js
+    assert 'visualizationFigures().buildVisualizationFigureSpecs(report, { variant: "live" })' in app_js
+    assert 'visualizationFigures().buildVisualizationFigureSpecs(report, { variant: "export" })' in app_js
+    assert "function exportMetricItems(report)" not in app_js
+    assert ".metric ${metricStatusClass(item.status)}" not in app_js
+
+
 def test_static_directory_entry_ui_uses_vloc_vo_modes_instead_of_legacy_file_formats():
     html = Path("static_web/index.html").read_text()
     assert 'id="entryMode"' in html
@@ -122,6 +148,32 @@ def test_static_dead_report_and_time_series_helpers_are_removed():
         "buildReportFindings",
         "reportFindingHtml",
         "buildSegmentSummaryRows",
+        "buildTuningConclusionRows",
+        "buildHealthDashboardCards",
+        "buildAssociationDiagnosticRows",
+        "buildLongRangeDiagnosticRows",
+        "buildWorstSegmentRows",
+        "buildConditionDiagnosticRows",
+        "buildAuxiliaryMetricCards",
+        "buildReportPlotSpecs",
+        "flattenReportMetrics",
+        "metricIssue",
+        "buildConfigRows",
+        "addExportSelectionMarkers",
+        "renderVlocCharts",
+        "renderPairCompositeChart",
+        "renderSingleCompositeChart",
+        "renderMultiFieldTimeChart",
+        "renderRpeTimeChart",
+        "renderScaleTimeChart",
+        "buildVisualizationExportFigureSpecs",
+        "buildVlocVisualizationExportFigureSpecs",
+        "buildVoVisualizationExportFigureSpecs",
+        "exportMultiFieldTimeFigure",
+        "exportPairCompositeFigure",
+        "exportSingleCompositeFigure",
+        "exportRpeTimeFigure",
+        "exportScaleTimeFigure",
     ]
     for name in removed_names:
         assert f"function {name}" not in source
@@ -188,9 +240,6 @@ def test_static_directory_picker_shows_selected_directory_name_in_custom_status(
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           downloadJson: makeElement(),
-          downloadPoseCsv: makeElement(),
-          downloadSegmentCsv: makeElement(),
-          downloadWorstCsv: makeElement(),
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
@@ -213,6 +262,10 @@ def test_static_directory_picker_shows_selected_directory_name_in_custom_status(
           Plotly: { newPlot() {}, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
@@ -275,9 +328,6 @@ def test_static_vloc_mode_hides_transform_controls_and_uses_fixed_sync_defaults(
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           downloadJson: makeElement(),
-          downloadPoseCsv: makeElement(),
-          downloadSegmentCsv: makeElement(),
-          downloadWorstCsv: makeElement(),
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
@@ -311,6 +361,10 @@ def test_static_vloc_mode_hides_transform_controls_and_uses_fixed_sync_defaults(
           Plotly: { newPlot() {}, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         context.updateEntryModeUi();
@@ -362,9 +416,6 @@ def test_static_vo_mode_hides_fixed_workflow_controls_and_uses_fixed_defaults():
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           downloadJson: makeElement(),
-          downloadPoseCsv: makeElement(),
-          downloadSegmentCsv: makeElement(),
-          downloadWorstCsv: makeElement(),
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
@@ -403,6 +454,10 @@ def test_static_vo_mode_hides_fixed_workflow_controls_and_uses_fixed_defaults():
           Plotly: { newPlot() {}, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         context.updateEntryModeUi();
@@ -567,9 +622,6 @@ def test_static_required_bundle_files_are_entry_specific_and_filter_to_needed_fi
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           downloadJson: makeElement(),
-          downloadPoseCsv: makeElement(),
-          downloadSegmentCsv: makeElement(),
-          downloadWorstCsv: makeElement(),
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
@@ -592,6 +644,10 @@ def test_static_required_bundle_files_are_entry_specific_and_filter_to_needed_fi
           Plotly: { newPlot() {}, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         elements.logDirFiles.files = [
@@ -721,6 +777,10 @@ def test_static_scale_interval_controls_are_wired_into_config():
           Plotly: { newPlot() {}, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         process.stdout.write(JSON.stringify(context.buildConfig()));
@@ -764,6 +824,10 @@ def test_static_html_export_keeps_light_chart_exports_and_xlsx_has_sheets():
           URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
@@ -865,6 +929,10 @@ def test_static_trajectory_workbook_omits_missing_vloc_sim3_sheets():
           URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
@@ -922,6 +990,10 @@ def test_static_export_filenames_include_directory_name_and_entry_mode():
           URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
@@ -994,6 +1066,10 @@ def test_static_html_export_is_visualization_snapshot_with_point_selection():
           URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
@@ -1013,7 +1089,9 @@ def test_static_html_export_is_visualization_snapshot_with_point_selection():
             vloc_status: [{ timestamp: 1, vloc_mode: 2, num_inliers: 40, reset_count: 0 }],
           },
         };
-        process.stdout.write(context.buildHtmlReport(report));
+        const cssSource = fs.readFileSync("static_web/style.css", "utf8");
+        const reportCssSource = fs.readFileSync("static_web/visualization/report_export.css", "utf8");
+        process.stdout.write(context.buildHtmlReport(report, { cssSource, reportCssSource }));
         """
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
@@ -1033,14 +1111,12 @@ def test_static_html_export_is_visualization_snapshot_with_point_selection():
     assert "nearestExportTracePoint" in html
     assert "focusExportPointSelectionFromEvent" in html
     assert "deleteFocusedExportPointSelection" in html
-    assert "summary-panel" in html
-    assert "visualization-panel" in html
-    assert ".summary-panel .metric-grid{grid-template-columns:repeat(5,minmax(150px,1fr));gap:12px;margin:0}" in html
-    assert ".summary-panel .metric{min-height:116px;padding:14px;background:linear-gradient(180deg,#ffffff 0%,#f9fbfe 100%)}" in html
-    assert ".summary-panel .metric .value{font-size:clamp(21px,1.8vw,30px)" in html
-    assert ".topbar{display:flex;justify-content:space-between;align-items:center;gap:18px" in html
-    assert ".topbar h1{font-size:clamp(22px,2vw,28px)" in html
-    assert ".chart-directory-item{min-height:42px" in html
+    assert 'class="layout"' in html
+    assert 'class="controls"' in html
+    assert 'class="chart-grid"' in html
+    assert ".metric-grid {" in html
+    assert ".chart-card {" in html
+    assert ".chart-directory-item {" in html
     assert ".metric-chip-value" in html
     assert ".chart-card[data-chart-id='" in html
     assert ".chart-card[hidden]" in html
@@ -1194,6 +1270,10 @@ def test_static_html_export_uses_vo_chart_set_for_vo_reports():
           URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
@@ -1286,6 +1366,10 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
           Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); }, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         const perPose = [0, 1, 2].map((index) => ({
@@ -1421,9 +1505,13 @@ def test_static_composite_angle_time_series_unwraps_180_degree_boundary():
           Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); }, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
-        context.renderPairCompositeChart("attitudeCompareComposite", [
+        const figure = context.pairCompositeFigure("attitudeCompareComposite", "Roll", [
           { timestamp: 0, segment_id: 0, gt_roll_deg: 0, est_roll_aligned_deg: 179 },
           { timestamp: 1, segment_id: 0, gt_roll_deg: 1, est_roll_aligned_deg: -179 },
           { timestamp: 2, segment_id: 0, gt_roll_deg: 2, est_roll_aligned_deg: 178 },
@@ -1433,7 +1521,7 @@ def test_static_composite_angle_time_series_unwraps_180_degree_boundary():
           rightName: "VO aligned",
           rows: [{ label: "Roll", left: "gt_roll_deg", right: "est_roll_aligned_deg", unit: "deg", unwrap: true }],
         });
-        process.stdout.write(JSON.stringify(plots[0].data[1].y));
+        process.stdout.write(JSON.stringify(figure.data[1].y));
         """
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
@@ -1473,9 +1561,13 @@ def test_static_composite_angle_error_time_series_unwraps_180_degree_boundary():
           Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); }, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
-        context.renderSingleCompositeChart("attitudeErrorComposite", [
+        const figure = context.singleCompositeFigure("attitudeErrorComposite", "Roll error", [
           { timestamp: 0, segment_id: 0, roll_error_signed_deg: 179 },
           { timestamp: 1, segment_id: 0, roll_error_signed_deg: -179 },
           { timestamp: 2, segment_id: 0, roll_error_signed_deg: 178 },
@@ -1483,7 +1575,7 @@ def test_static_composite_angle_error_time_series_unwraps_180_degree_boundary():
           title: "Roll error",
           rows: [{ label: "Roll error", field: "roll_error_signed_deg", unit: "deg", unwrap: true }],
         });
-        process.stdout.write(JSON.stringify(plots[0].data[0].y));
+        process.stdout.write(JSON.stringify(figure.data[0].y));
         """
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
@@ -1524,9 +1616,13 @@ def test_static_composite_charts_disable_native_spikes_for_custom_overlay():
           Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); return Promise.resolve(); }, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
-        context.renderPairCompositeChart("positionCompareComposite", [
+        const plot = context.pairCompositeFigure("positionCompareComposite", "NED", [
           { timestamp: 1, nav_n_m: 10, vloc_n_m: 9, nav_e_m: 20, vloc_e_m: 19 },
           { timestamp: 2, nav_n_m: 11, vloc_n_m: 10, nav_e_m: 21, vloc_e_m: 20 },
         ], {
@@ -1538,7 +1634,6 @@ def test_static_composite_charts_disable_native_spikes_for_custom_overlay():
             { label: "E", left: "nav_e_m", right: "vloc_e_m", unit: "m" },
           ],
         });
-        const plot = plots[0];
         process.stdout.write(JSON.stringify({
           hovermode: plot.layout.hovermode,
           hoversubplots: plot.layout.hoversubplots,
@@ -1595,6 +1690,10 @@ def test_static_composite_payload_helpers_compute_hover_and_range_payloads():
           Plotly: { newPlot() { return Promise.resolve(); }, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         const rows = [
@@ -1696,9 +1795,13 @@ def test_static_composite_hover_overlay_spans_chart_and_follows_cursor():
           Plotly: { newPlot() { return Promise.resolve(); }, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
-        context.renderPairCompositeChart("positionCompareComposite", [
+        const figure = context.pairCompositeFigure("positionCompareComposite", "NED", [
           { timestamp: 10, nav_n_m: 1, vloc_n_m: 2, nav_e_m: 3, vloc_e_m: 4, nav_d_m: -5, vloc_d_m: -6 },
           { timestamp: 20, nav_n_m: 11, vloc_n_m: 12, nav_e_m: 13, vloc_e_m: 14, nav_d_m: -15, vloc_d_m: -16 },
         ], {
@@ -1710,7 +1813,8 @@ def test_static_composite_hover_overlay_spans_chart_and_follows_cursor():
             { label: "E", left: "nav_e_m", right: "vloc_e_m", unit: "m" },
             { label: "D", left: "nav_d_m", right: "vloc_d_m", unit: "m" },
           ],
-        });
+        }, { variant: "live" });
+        context.renderLiveFigure(figure);
         plot.onHandlers.plotly_hover({
           points: [{ x: 19, xaxis: { _offset: 80, l2p(x) { return x * 2; } } }],
           event: { clientX: 240, clientY: 280 },
@@ -1777,9 +1881,6 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           downloadJson: makeElement(),
-          downloadPoseCsv: makeElement(),
-          downloadSegmentCsv: makeElement(),
-          downloadWorstCsv: makeElement(),
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
@@ -1813,6 +1914,10 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
           Plotly: { newPlot() {}, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
@@ -1893,9 +1998,6 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
           vlocChartSelectAll: makeElement(),
           vlocChartClear: makeElement(),
           downloadJson: makeElement(),
-          downloadPoseCsv: makeElement(),
-          downloadSegmentCsv: makeElement(),
-          downloadWorstCsv: makeElement(),
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
@@ -1931,6 +2033,10 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
           Plotly: { newPlot() {}, purge(id) { purged.push(id); } },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
@@ -2042,9 +2148,6 @@ def test_static_vloc_point_selection_excludes_3d_and_records_points():
           pointSelectionOutput: makeElement(),
           clearAllPointSelections: makeElement(),
           downloadJson: makeElement(),
-          downloadPoseCsv: makeElement(),
-          downloadSegmentCsv: makeElement(),
-          downloadWorstCsv: makeElement(),
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
@@ -2088,6 +2191,10 @@ def test_static_vloc_point_selection_excludes_3d_and_records_points():
           process,
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(`${code}
           state.report = { inputs: { entry_mode: "vloc" } };
@@ -2295,9 +2402,6 @@ def test_static_vo_point_selection_excludes_3d_and_records_points():
           pointSelectionOutput: makeElement(),
           clearAllPointSelections: makeElement(),
           downloadJson: makeElement(),
-          downloadPoseCsv: makeElement(),
-          downloadSegmentCsv: makeElement(),
-          downloadWorstCsv: makeElement(),
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
@@ -2339,6 +2443,10 @@ def test_static_vo_point_selection_excludes_3d_and_records_points():
           process,
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(`${code}
           state.report = { inputs: { entry_mode: "vo" } };
@@ -2421,9 +2529,6 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           downloadJson: makeElement(),
-          downloadPoseCsv: makeElement(),
-          downloadSegmentCsv: makeElement(),
-          downloadWorstCsv: makeElement(),
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
@@ -2454,6 +2559,10 @@ def test_static_vloc_visuals_use_vloc_detail_tables_and_show_status_charts():
           Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); }, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
@@ -2560,9 +2669,6 @@ def test_static_vloc_metrics_hide_vo_specific_summary_cards():
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           downloadJson: makeElement(),
-          downloadPoseCsv: makeElement(),
-          downloadSegmentCsv: makeElement(),
-          downloadWorstCsv: makeElement(),
           downloadConfigJson: makeElement(),
           downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
@@ -2586,6 +2692,10 @@ def test_static_vloc_metrics_hide_vo_specific_summary_cards():
           Plotly: { newPlot() {}, purge() {} },
         };
         context.globalThis = context;
+        const templateCode = fs.readFileSync("static_web/visualization/report_templates.js", "utf8");
+        vm.runInNewContext(templateCode, context);
+        const figureCode = fs.readFileSync("static_web/visualization/figure_specs.js", "utf8");
+        vm.runInNewContext(figureCode, context);
         const code = fs.readFileSync("static_web/app.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         context.renderMetrics({

@@ -808,14 +808,13 @@ def show_vloc_visuals(report: dict[str, Any], selected_chart_ids: set[str] | Non
 def show_tables_and_downloads(report: dict[str, Any]) -> None:
     """明细表和导出。
 
-    JSON 导出完整 report；per_pose CSV 导出逐帧误差；
-    segment_records CSV 导出每个固定距离子轨迹的原始误差记录。
+    JSON 导出完整 report；Excel 导出当前评估的轨迹中间结果。
     """
     st.subheader("明细与导出")
     summary_rows = flatten_report_summary(report)
     st.dataframe(summary_rows, use_container_width=True, hide_index=True)
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2 = st.columns(2)
     col1.download_button(
         "下载 JSON 指标",
         report_to_json(report),
@@ -823,21 +822,6 @@ def show_tables_and_downloads(report: dict[str, Any]) -> None:
         mime="application/json",
     )
     col2.download_button(
-        "下载每帧误差 CSV",
-        report["per_pose"].to_csv(index=False),
-        file_name="vo_per_pose_errors.csv",
-        mime="text/csv",
-    )
-    segment_records = report.get("segment_records")
-    segment_csv = segment_records.to_csv(index=False) if isinstance(segment_records, pd.DataFrame) and not segment_records.empty else ""
-    col3.download_button(
-        "下载子轨迹误差 CSV",
-        segment_csv,
-        file_name="vo_segment_errors.csv",
-        mime="text/csv",
-        disabled=not bool(segment_csv),
-    )
-    col4.download_button(
         "下载轨迹 Excel",
         report_to_excel(report),
         file_name=evaluation_export_filename(report, "trajectory_exports", "xlsx"),
