@@ -41,10 +41,10 @@ async function initPyodideWorker(pyodideIndexUrl) {
   await pyodide.loadPackage(["numpy", "pandas"]);
 
   const [dataLoaderCode, utilsCode, reportCode, processingCode, runnerCode] = await Promise.all([
-    fetchText("./py/vo_eval/data_loader.py"),
-    fetchText("./py/vo_eval/utils.py"),
-    fetchText("./py/vo_eval/report.py"),
-    fetchText("./py/vo_eval/processing.py"),
+    fetchText("../vo_eval/data_loader.py"),
+    fetchText("../vo_eval/utils.py"),
+    fetchText("../vo_eval/report.py"),
+    fetchText("../vo_eval/processing.py"),
     fetchText("./py/browser_runner.py"),
   ]);
 

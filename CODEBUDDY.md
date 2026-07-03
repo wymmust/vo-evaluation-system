@@ -4,9 +4,9 @@
 
 ### Run static web version locally
 ```bash
-cd static_web && python3 -m http.server 8765
+python3 -m http.server 8765
 ```
-Open http://localhost:8765 — must use HTTP, not file://.
+Open http://localhost:8765/static_web/ — must use HTTP, not file://. Must run from repo root (not `static_web/`) so that `vo_eval/` is accessible as a sibling directory.
 
 ### Run all tests
 ```bash
@@ -17,12 +17,6 @@ pytest
 ```bash
 pytest tests/test_evaluator.py -k "test_sim3_recovers_scale"
 ```
-
-### Sync static_web Python modules (automatic via git hook)
-```bash
-python scripts/sync_static_web.py   # manual sync if needed
-```
-Copies the split `vo_eval` Python modules into `static_web/py/vo_eval/` for Pyodide browser deployment. A git pre-commit hook (`scripts/pre-commit-sync.sh`) runs this automatically when the core modules are changed, so the browser copy stays in sync.
 
 ## Architecture
 
@@ -38,7 +32,7 @@ This is a VO (Visual Odometry) trajectory evaluation tool with a static web vers
 
 **Report layer** (`vo_eval/report.py`): Builds VLOC/VO detail tables and export artifacts, including JSON and Excel output.
 
-**Static web layer** (`static_web/`): Pure client-side alternative. `app.js` builds UI and calls `static_web/py/browser_runner.py`, which imports the split `vo_eval` modules inside Pyodide and returns report JSON. The browser copies live under `static_web/py/vo_eval/`.
+**Static web layer** (`static_web/`): Pure client-side alternative. `app.js` builds UI and delegates to `static_web/worker.js`, which loads `vo_eval` modules from `../vo_eval/` via HTTP and writes them into Pyodide's virtual filesystem. `static_web/py/browser_runner.py` is the thin Pyodide adapter.
 
 ### Key data structures
 
@@ -58,7 +52,3 @@ This is a VO (Visual Odometry) trajectory evaluation tool with a static web vers
 ### Metric-code synchronization
 
 `METRIC_CODE_MAP` in `vo_eval/data_loader.py` is the authoritative index linking each metric to its report field and function names. When adding or renaming a metric, update `METRIC_CODE_MAP` and the README "指标与代码总表" table simultaneously to prevent documentation/code divergence.
-
-### Static deployment copy
-
-Pyodide fetches Python files over HTTP and writes them into a virtual filesystem. After modifying `vo_eval/data_loader.py`, `vo_eval/utils.py`, `vo_eval/report.py`, or `vo_eval/processing.py`, run `python scripts/sync_static_web.py` to update `static_web/py/vo_eval/`. `static_web/py/browser_runner.py` is the thin Pyodide adapter.

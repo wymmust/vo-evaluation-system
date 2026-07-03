@@ -10,16 +10,15 @@
 
 ### 纯静态网页版本
 
-本项目提供纯静态网页版本，使用 Pyodide 在浏览器里运行 Python 评估代码，不需要后端服务器。可以直接部署 `static_web/` 文件夹。
+本项目提供纯静态网页版本，使用 Pyodide 在浏览器里运行 Python 评估代码，不需要后端服务器。
 
 本地预览：
 
 ```bash
-cd static_web
 python3 -m http.server 8765
 ```
 
-然后打开 `http://localhost:8765/`。不要直接双击 `index.html`，因为浏览器通常会限制本地文件读取，导致 Pyodide 或评估代码无法加载。
+然后在浏览器中打开 `http://localhost:8765/static_web/`。不要直接双击 `index.html`，因为浏览器通常会限制本地文件读取，导致 Pyodide 或评估代码无法加载。注意必须在仓库根目录启动 HTTP 服务（而非 `static_web/` 目录），因为页面需要加载同级 `vo_eval/` 目录下的 Python 模块。
 
 如果要在网页左侧直接输入 `data_dir` / `log_dir` 本地路径运行评估，请使用带本地读取接口的启动方式：
 
@@ -29,13 +28,13 @@ python3 static_web/local_server.py --host 127.0.0.1 --port 8766
 
 然后打开 `http://127.0.0.1:8766/`。这个模式由本机 Python 服务读取必需文件：`data_dir` 只读取 `imu.txt`；VO 的 `log_dir` 只读取 `vo.txt` 和 `calib_raw.yaml`；VLOC 的 `log_dir` 读取 `vloc.txt`、`home_point.txt` 和 `calib_raw.yaml`。
 
-公网部署时，把完整的 `static_web/` 文件夹上传到任意静态网站托管平台即可，例如 Netlify、Vercel、Cloudflare Pages、对象存储静态站点或普通 Nginx 静态目录。`static_web/vendor/` 已包含固定版本的 Plotly、Pyodide、numpy、pandas 及其必要依赖，页面运行时只从同源静态资源加载代码，不再访问第三方 CDN；超大日志仍会受浏览器内存限制。
+公网部署时，把 `vo_eval/` 和 `static_web/` 两个目录一起上传到任意静态网站托管平台（例如 Netlify、Vercel、Cloudflare Pages、对象存储静态站点或普通 Nginx 静态目录）。`static_web/vendor/` 已包含固定版本的 Plotly、Pyodide、numpy、pandas 及其必要依赖，页面运行时只从同源静态资源加载代码，不再访问第三方 CDN；超大日志仍会受浏览器内存限制。
 
 静态版如果出现 `Failed to fetch`，优先检查三点：
 
 - 当前地址必须是 `http://...` 或 `https://...`，不能是 `file://.../index.html`。
-- 本地预览时 `python3 -m http.server 8765` 必须保持运行。
-- 公网部署时必须把 `static_web/py/`、`static_web/vendor/` 和 `index.html` 一起上传；如果漏传 `vendor/`，页面会在加载 Python 运行环境时失败。
+- 本地预览时 `python3 -m http.server 8765` 必须在仓库根目录运行，且保持运行。
+- 公网部署时必须把 `vo_eval/`、`static_web/py/`、`static_web/vendor/` 和 `static_web/index.html` 一起上传；如果漏传 `vendor/` 或 `vo_eval/`，页面会在加载 Python 运行环境时失败。
 
 部署注意事项：
 
