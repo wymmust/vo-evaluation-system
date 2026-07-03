@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import argparse
 import re
-import shutil
-import subprocess
 import sys
 import tempfile
 import webbrowser
 from pathlib import Path
 
 from .data_loader import load_vloc_evaluation_bundle, load_vo_evaluation_bundle
+from .html_report import report_to_interactive_html
 from .processing import EvaluationConfig, evaluate_vloc_bundle, evaluate_vo_bundle
 from .report import report_to_json
 
@@ -41,24 +40,10 @@ def _default_html_output_path(report: dict, cwd: Path | None = None) -> Path:
 
 
 def _write_html_report(report: dict, output_path: Path) -> None:
-    node = shutil.which("node")
-    if not node:
-        raise RuntimeError("生成 HTML 报告需要 Node.js：请先安装 node，或不使用 -p")
-    repo_root = Path(__file__).resolve().parents[1]
-    exporter = repo_root / "static_web" / "export_report_cli.js"
-    if not exporter.exists():
-        raise RuntimeError(f"找不到 HTML 导出器：{exporter}")
-    try:
-        subprocess.run(
-            [node, str(exporter), str(output_path)],
-            input=report_to_json(report),
-            text=True,
-            check=True,
-            capture_output=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or "").strip()
-        raise RuntimeError(f"HTML 报告生成失败：{detail}") from exc
+    entry_mode = (report.get("inputs") or {}).get("entry_mode", "vloc")
+    html = report_to_interactive_html(report, entry_mode)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(html, encoding="utf-8")
 
 
 def _temporary_html_output_path(report: dict) -> Path:
