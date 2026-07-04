@@ -7,7 +7,7 @@ self.onmessage = async (event) => {
   const { id, type, payload = {} } = event.data || {};
   try {
     if (type === "init") {
-      await initPyodideWorker(payload.pyodideIndexUrl);
+      await initPyodideWorker(payload.pyodideIndexUrl, payload.baseUrl);
       postResult(id, true);
       return;
     }
@@ -29,7 +29,7 @@ self.onmessage = async (event) => {
   }
 };
 
-async function initPyodideWorker(pyodideIndexUrl) {
+async function initPyodideWorker(pyodideIndexUrl, baseUrl) {
   if (pyodide) {
     return;
   }
@@ -41,11 +41,11 @@ async function initPyodideWorker(pyodideIndexUrl) {
   await pyodide.loadPackage(["numpy", "pandas"]);
 
   const [dataLoaderCode, utilsCode, reportCode, processingCode, runnerCode] = await Promise.all([
-    fetchText("../vo_eval/data_loader.py"),
-    fetchText("../vo_eval/utils.py"),
-    fetchText("../vo_eval/report.py"),
-    fetchText("../vo_eval/processing.py"),
-    fetchText("./py/browser_runner.py"),
+    fetchText(`${baseUrl}py/vo_eval/data_loader.py`),
+    fetchText(`${baseUrl}py/vo_eval/utils.py`),
+    fetchText(`${baseUrl}py/vo_eval/report.py`),
+    fetchText(`${baseUrl}py/vo_eval/processing.py`),
+    fetchText(`${baseUrl}py/browser_runner.py`),
   ]);
 
   pyodide.FS.mkdirTree("/vo_eval");

@@ -1,5 +1,9 @@
-(function attachVisualizationFigures(root) {
-function compositePairColors(index) {
+// figure_specs.js — 图表规格定义（ES module export）
+// FR-004: 从 globalThis 挥手协议改为 ES module export
+
+import { reportEntryMode } from "../js/entry-mode.js";
+
+export function compositePairColors(index) {
   const palette = [
     ["#2563eb", "#16a34a"],
     ["#7c3aed", "#f97316"],
@@ -72,7 +76,7 @@ function endpointTrace3d(rows, columns, name, color, symbol, labelPrefix, textPo
   };
 }
 
-function segmentedValues(rows, columns, segmentField = null) {
+export function segmentedValues(rows, columns, segmentField = null) {
   if (!rows.length) {
     return columns.map(() => []);
   }
@@ -92,7 +96,7 @@ function segmentedValues(rows, columns, segmentField = null) {
   return outputs;
 }
 
-function unwrapDegrees(values) {
+export function unwrapDegrees(values) {
   const out = [];
   let previousRaw = null;
   let offset = 0;
@@ -134,7 +138,7 @@ function layout(title, extra = {}) {
   };
 }
 
-function buildVisualizationFigureSpecs(report, options = {}) {
+export function buildVisualizationFigureSpecs(report, options = {}) {
   return reportEntryMode(report) === "vloc"
     ? buildVlocVisualizationFigureSpecs(report, options)
     : buildVoVisualizationFigureSpecs(report, options);
@@ -542,18 +546,3 @@ function singleCompositeFigure(id, label, rows, spec, options = {}) {
 }
 
 
-  root.VoVisualizationFigures = {
-    buildVisualizationFigureSpecs,
-    buildVlocVisualizationFigureSpecs,
-    buildVoVisualizationFigureSpecs,
-    layout,
-    pairCompositeFigure,
-    singleCompositeFigure,
-    multiFieldTimeFigure,
-    rpeTimeFigure,
-    scaleTimeFigure,
-    segmentedValues,
-    unwrapDegrees,
-  };
-  Object.assign(root, root.VoVisualizationFigures);
-})(typeof globalThis !== "undefined" ? globalThis : window);

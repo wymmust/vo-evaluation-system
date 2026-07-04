@@ -36,6 +36,7 @@ vo.txt
 *Trajectory*.txt
 KITTI_*.txt
 
+.codebuddy
 .claude
 .specify
 specs/

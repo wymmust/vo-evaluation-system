@@ -32,7 +32,7 @@ This is a VO (Visual Odometry) trajectory evaluation tool with a static web vers
 
 **Report layer** (`vo_eval/report.py`): Builds VLOC/VO detail tables and export artifacts, including JSON and Excel output.
 
-**Static web layer** (`static_web/`): Pure client-side alternative. `app.js` builds UI and delegates to `static_web/worker.js`, which loads `vo_eval` modules from `../vo_eval/` via HTTP and writes them into Pyodide's virtual filesystem. `static_web/py/browser_runner.py` is the thin Pyodide adapter.
+**Static web layer** (`static_web/`): Pure client-side alternative organized by role into subdirectories. `js/main.js` is the ES module entry point that wires all UI modules; `js/state.js`, `js/constants.js`, `js/dom-refs.js`, `js/utils.js`, `js/labels.js` are foundational modules with no cross-dependencies. `worker/worker.js` loads `vo_eval` modules from `./py/vo_eval/` via HTTP (symlink to `../../vo_eval/`) and writes them into Pyodide's virtual filesystem. `py/browser_runner.py` is the thin Pyodide adapter. `visualization/figure_specs.js` and `visualization/report_templates.js` use ES module `export` (no globalThis handshake). `cli/export_report_cli.js` is the Node.js CLI for offline HTML report generation, using dynamic `import()` with globalThis browser mocks. `css/style.css` provides base styles and CSS variables; `css/report-export.css` extends them for offline HTML reports.
 
 ### Key data structures
 

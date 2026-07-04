@@ -1,3 +1,7 @@
+/* Dependency: this stylesheet relies on CSS custom properties (variables) defined in
+   ../style.css (e.g. --line, --muted). It is designed to be bundled alongside style.css
+   in the offline HTML report export and will not render correctly standalone. */
+
 .offline-mode-pill {
   width: auto;
   min-width: 0;
