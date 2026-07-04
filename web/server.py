@@ -1,8 +1,8 @@
-"""Local static-web server with direct data_dir/log_dir path evaluation.
+"""Local web server with direct data_dir/log_dir path evaluation.
 
 Run from the repository root:
 
-    python static_web/local_server.py --host 127.0.0.1 --port 8766
+    python web/server.py --host 127.0.0.1 --port 8766
 
 The plain static page cannot read absolute local paths because browsers block
 that access. This server keeps the same browser UI, but reads the fixed input
@@ -14,13 +14,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import webbrowser
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-STATIC_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[1]
+STATIC_ROOT = Path(__file__).resolve().parents[0]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -148,7 +149,7 @@ def _light_report(report: dict) -> dict:
 
 
 class LocalEvaluationHandler(SimpleHTTPRequestHandler):
-    """Serve static_web and local path evaluation APIs."""
+    """Serve web UI and local path evaluation APIs."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_ROOT), **kwargs)
@@ -202,13 +203,17 @@ class LocalEvaluationHandler(SimpleHTTPRequestHandler):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Serve static_web with local data_dir/log_dir path evaluation.")
+    parser = argparse.ArgumentParser(description="Serve web UI with local data_dir/log_dir path evaluation.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--no-open", action="store_true", help="Do not auto-open browser on start")
     args = parser.parse_args(argv)
     server = ThreadingHTTPServer((args.host, args.port), LocalEvaluationHandler)
-    print(f"Serving VO evaluation static web on http://{args.host}:{args.port}/")
+    url = f"http://{args.host}:{args.port}/"
+    print(f"Serving VO evaluation web UI on {url}")
     print("Local path evaluation API is enabled for this machine.")
+    if not args.no_open:
+        webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

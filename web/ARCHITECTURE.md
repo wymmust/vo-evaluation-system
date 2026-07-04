@@ -1,4 +1,4 @@
-# static_web 模块架构文档
+# web 模块架构文档
 
 ## 模块职责总表
 
@@ -31,11 +31,11 @@
 | `figure_specs.js` | buildVisualizationFigureSpecs, segmentedValues, unwrapDegrees, compositePairColors | 图表规格定义（VLOC/VO 图表数据构建） |
 | `report_templates.js` | chartDirectoryHtml, metricGridHtml, metricStatusClass | 报告模板（指标卡 HTML + 图表目录 HTML） |
 
-### Python 模块（`py/`）
+### Python 模块
 
 | 文件 | 职责 |
 |------|------|
-| `local_server.py` | 本地 HTTP 服务器，提供静态文件 + `/api/evaluate-paths` + `/api/evaluate-bundle` + `/api/report-slice` + `/api/health` 接口 |
+| `server.py` | 本地 HTTP 服务器，提供静态文件 + `/api/evaluate-paths` + `/api/evaluate-bundle` + `/api/report-slice` + `/api/health` 接口 |
 
 ### CSS 模块（`css/`）
 
@@ -53,7 +53,7 @@
 ```mermaid
 flowchart TD
     A[用户填写本地路径] --> B[evaluation.js: POST /api/evaluate-paths]
-    B --> C[local_server.py: 调用 vo_eval.evaluate_trajectories]
+    B --> C[server.py: 调用 vo_eval.evaluate_trajectories]
     C --> D[返回 JSON 报告]
     D --> E[report-render.js: 渲染指标卡+消息]
     D --> F[chart-render.js: 渲染图表]
@@ -65,7 +65,7 @@ flowchart TD
 flowchart TD
     A[用户选择文件] --> B[file-bundle.js: 打包文件内容]
     B --> C[evaluation.js: POST /api/evaluate-bundle]
-    C --> D[local_server.py: 调用 load_*_from_text → vo_eval.evaluate_trajectories]
+    C --> D[server.py: 调用 load_*_from_text → vo_eval.evaluate_trajectories]
     D --> E[返回 JSON 报告]
     E --> F[report-render.js: 渲染指标卡+消息]
     E --> G[chart-render.js: 渲染图表]
@@ -76,7 +76,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[用户点击下载 JSON/Excel] --> B[download-utils.js: fetch /api/report-slice]
-    B --> C[local_server.py: 返回缓存 report 切片]
+    B --> C[server.py: 返回缓存 report 切片]
     C --> D[downloadText/downloadBytes: 下载文件]
 ```
 

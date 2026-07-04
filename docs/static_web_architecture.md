@@ -35,7 +35,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                     HTTP 服务器 / 文件系统                        │
 │                                                                  │
-│   vo_eval/                    static_web/                        │
+│   vo_eval/                    web/                        │
 │   ├ data_loader.py            ├ index.html                       │
 │   ├ utils.py                  ├ app.js                           │
 │   ├ report.py                 ├ worker.js                        │
@@ -190,6 +190,6 @@ Python 评估在 Web Worker 中运行，不阻塞主线程 UI。通过 `postMess
 
 | 方式 | 命令 | 适用场景 |
 |------|------|---------|
-| 静态预览 | `cd 项目根目录 && python3 -m http.server 8765` → 打开 `localhost:8765/static_web/` | 本地预览，仅文件上传 |
-| 本地路径 | `python3 static_web/local_server.py --port 8766` → 打开 `127.0.0.1:8766` | 支持本地路径输入 |
-| 公网部署 | 上传 `vo_eval/` + `static_web/` 到静态托管 | 远程访问 |
+| 静态预览 | `cd 项目根目录 && python3 -m http.server 8765` → 打开 `localhost:8765/web/` | 本地预览，仅文件上传 |
+| 本地路径 | `python3 web/server.py --port 8766` → 打开 `127.0.0.1:8766` | 支持本地路径输入 |
+| 公网部署 | 上传 `vo_eval/` + `web/` 到静态托管 | 远程访问 |

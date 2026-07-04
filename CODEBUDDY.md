@@ -4,7 +4,7 @@
 
 ### Run local server (required for evaluation)
 ```bash
-python static_web/py/local_server.py --host 127.0.0.1 --port 8765
+python web/server.py --host 127.0.0.1 --port 8766
 ```
 Open http://127.0.0.1:8765/ — the server provides both static files and evaluation API endpoints. Must run from repo root so that `vo_eval/` is importable.
 
@@ -20,7 +20,7 @@ pytest tests/test_evaluator.py -k "test_sim3_recovers_scale"
 
 ## Architecture
 
-This is a VO (Visual Odometry) trajectory evaluation tool with a local-server-based web UI (`static_web/`). All evaluation runs in Python on the server side via HTTP API.
+This is a VO (Visual Odometry) trajectory evaluation tool with a local-server-based web UI (`web/`). All evaluation runs in Python on the server side via HTTP API.
 
 ### Layer separation
 
@@ -32,7 +32,7 @@ This is a VO (Visual Odometry) trajectory evaluation tool with a local-server-ba
 
 **Report layer** (`vo_eval/report.py`): Builds VLOC/VO detail tables and export artifacts, including JSON and Excel output.
 
-**Static web layer** (`static_web/`): Local-server + browser UI. `js/main.js` is the ES module entry point that wires all UI modules; `js/state.js`, `js/constants.js`, `js/dom-refs.js`, `js/utils.js`, `js/labels.js` are foundational modules with no cross-dependencies. `py/local_server.py` is the HTTP server providing `/api/evaluate-paths`, `/api/evaluate-bundle`, `/api/report-slice`, and `/api/health` endpoints. `visualization/figure_specs.js` and `visualization/report_templates.js` use ES module `export` (no globalThis handshake). `cli/export_report_cli.js` is the Node.js CLI for offline HTML report generation. `css/style.css` provides base styles and CSS variables; `css/report-export.css` extends them for offline HTML reports.
+**Web UI layer** (`web/`): Local-server + browser UI. `js/main.js` is the ES module entry point that wires all UI modules; `js/state.js`, `js/constants.js`, `js/dom-refs.js`, `js/utils.js`, `js/labels.js` are foundational modules with no cross-dependencies. `server.py` is the HTTP server providing `/api/evaluate-paths`, `/api/evaluate-bundle`, `/api/report-slice`, and `/api/health` endpoints. `visualization/figure_specs.js` and `visualization/report_templates.js` use ES module `export` (no globalThis handshake). `cli/export_report_cli.js` is the Node.js CLI for offline HTML report generation. `css/style.css` provides base styles and CSS variables; `css/report-export.css` extends them for offline HTML reports.
 
 ### Key data structures
 

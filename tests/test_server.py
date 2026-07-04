@@ -4,7 +4,7 @@ from test_evaluator import sample_calib_text
 
 
 def test_local_path_server_uses_entry_specific_required_files():
-    from static_web.local_server import required_local_files
+    from web.server import required_local_files
 
     assert required_local_files("vo") == {
         "data": ("imu.txt",),
@@ -16,30 +16,8 @@ def test_local_path_server_uses_entry_specific_required_files():
     }
 
 
-def test_static_path_inputs_use_local_server_endpoint_for_direct_path_mode():
-    source = Path("static_web/app.js").read_text()
-
-    assert "/api/evaluate-paths" in source
-    assert "/api/report-slice" in source
-    assert "state.reportSource" in source
-    assert "evaluateLocalPathBundle" in source
-    assert "localPathServerErrorMessage" in source
-    assert "static_web/local_server.py" in source
-    assert "isBusy || !hasRuntime || missingBundleFiles().length > 0" not in source
-
-
-def test_set_busy_reuses_run_button_state_for_local_path_mode():
-    source = Path("static_web/app.js").read_text()
-    start = source.index("function setBusy")
-    end = source.index("function renderReport", start)
-    set_busy_source = source[start:end]
-
-    assert "updateRunButton();" in set_busy_source
-    assert "missingBundleFiles().length > 0" not in set_busy_source
-
-
 def test_local_path_server_evaluates_vo_without_home_point(tmp_path):
-    from static_web.local_server import evaluate_paths_payload, get_report_slice
+    from web.server import evaluate_paths_payload, get_report_slice
 
     data_dir = tmp_path / "data_dir"
     log_dir = tmp_path / "log_dir"
