@@ -1,7 +1,6 @@
 // constants.js — 图表ID、图表选项、颜色常量、URL配置
 // 所有图表配置和静态常量的单一来源
 
-export const PYODIDE_VENDOR_PATH = "./vendor/pyodide/v0.26.4/full/";
 export const PLOTLY_SCRIPT_URL = "./vendor/plotly/plotly-2.35.2.min.js";
 export const APP_ASSET_VERSION = "20260704-dir-restructure";
 

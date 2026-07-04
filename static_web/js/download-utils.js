@@ -2,7 +2,6 @@
 // downloadText、downloadBytes、downloadReportJson
 
 import { state } from "./state.js";
-import { workerRequest } from "./worker-client.js";
 import { sanitizeFilenamePart } from "./utils.js";
 import { reportEntryMode } from "./entry-mode.js";
 import { showMessage } from "./report-render.js";
@@ -70,21 +69,12 @@ function meaningfulDirectoryName(value) {
 }
 
 async function fetchReportSlice(sliceName) {
-  if (state.reportSource === "local_paths") {
-    const response = await fetch(`/api/report-slice?slice=${encodeURIComponent(sliceName)}`, { cache: "no-store" });
-    const payload = await response.json();
-    if (!response.ok || payload?.ok === false) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
-    return payload.data;
+  const response = await fetch(`/api/report-slice?slice=${encodeURIComponent(sliceName)}`, { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(payload?.error || `HTTP ${response.status}`);
   }
-  if (!state.workerReady) {
-    if (sliceName === "full_report") return state.report || {};
-    if (sliceName === "trajectory_exports") return state.report?.trajectory_exports || {};
-    return state.report?.[sliceName] || (sliceName === "config" ? {} : []);
-  }
-  const text = await workerRequest("slice", { sliceName });
-  return JSON.parse(String(text));
+  return payload.data;
 }
 
 export { evaluationExportFilename, fetchReportSlice };

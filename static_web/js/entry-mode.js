@@ -259,7 +259,7 @@ import { missingBundleFiles } from "./file-bundle.js";
 import { hasLocalPathInputs } from "./file-bundle.js";
 
 function updateRunButton() {
-  const hasRuntime = Boolean(state.workerReady);
+  const hasRuntime = Boolean(state.serverReady);
   const missing = missingBundleFiles();
   const hasLocalPaths = hasLocalPathInputs();
   els.runButton.disabled = !((hasRuntime && missing.length === 0) || hasLocalPaths);

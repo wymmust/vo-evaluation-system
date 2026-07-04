@@ -2,7 +2,6 @@
 // runEvaluation、buildConfig、本地路径评估、文件 bundle 评估
 
 import { state } from "./state.js";
-import { workerRequest, fetchLocalText } from "./worker-client.js";
 import { els } from "./dom-refs.js";
 import { valueOf } from "./utils.js";
 import { buildBundlePayload, hasLocalPathInputs, missingBundleFiles } from "./file-bundle.js";
@@ -74,21 +73,35 @@ export function buildConfig() {
 
 async function evaluateSelectedFileBundle(entryMode, config) {
   const payload = await buildBundlePayload(entryMode);
-  state.reportSource = "worker";
-  return workerRequest("evaluate", {
-    entryMode,
-    imuText: payload.imuText,
-    estimateText: payload.estimateText,
-    homePointText: payload.homePointText,
-    calibRawText: payload.calibRawText,
-    configJson: JSON.stringify(config),
-    imuName: payload.imuName,
-    estimateName: payload.estimateName,
-    homePointName: payload.homePointName,
-    calibRawName: payload.calibRawName,
-    dataDirName: payload.dataDirName,
-    logDirName: payload.logDirName,
+  const response = await fetch("/api/evaluate-bundle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      entryMode,
+      imuText: payload.imuText,
+      estimateText: payload.estimateText,
+      homePointText: payload.homePointText,
+      calibRawText: payload.calibRawText,
+      configJson: JSON.stringify(config),
+      imuName: payload.imuName,
+      estimateName: payload.estimateName,
+      homePointName: payload.homePointName,
+      calibRawName: payload.calibRawName,
+      dataDirName: payload.dataDirName,
+      logDirName: payload.logDirName,
+    }),
   });
+  let result = null;
+  try {
+    result = await response.json();
+  } catch {
+    result = null;
+  }
+  if (!response.ok || result?.ok === false) {
+    throw new Error(result?.error || `HTTP ${response.status}`);
+  }
+  state.reportSource = "local_server";
+  return JSON.stringify(result.report || result);
 }
 
 async function evaluateLocalPathBundle(entryMode, config) {
@@ -124,21 +137,12 @@ function localPathServerErrorMessage(response, payload) {
 }
 
 async function fetchReportSlice(sliceName) {
-  if (state.reportSource === "local_paths") {
-    const response = await fetch(`/api/report-slice?slice=${encodeURIComponent(sliceName)}`, { cache: "no-store" });
-    const payload = await response.json();
-    if (!response.ok || payload?.ok === false) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
-    return payload.data;
+  const response = await fetch(`/api/report-slice?slice=${encodeURIComponent(sliceName)}`, { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(payload?.error || `HTTP ${response.status}`);
   }
-  if (!state.workerReady) {
-    if (sliceName === "full_report") return state.report || {};
-    if (sliceName === "trajectory_exports") return state.report?.trajectory_exports || {};
-    return state.report?.[sliceName] || (sliceName === "config" ? {} : []);
-  }
-  const text = await workerRequest("slice", { sliceName });
-  return JSON.parse(String(text));
+  return payload.data;
 }
 
 export { fetchReportSlice, evaluateSelectedFileBundle, evaluateLocalPathBundle };

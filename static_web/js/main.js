@@ -3,7 +3,6 @@
 
 import { state } from "./state.js";
 import { els } from "./dom-refs.js";
-import { initPyodide, describeRuntimeError } from "./worker-client.js";
 import { runEvaluation, buildConfig, evaluateLocalPathBundle, evaluateSelectedFileBundle, fetchReportSlice } from "./evaluation.js";
 import { updateRunButton, handleEntryModeChange, updateEntryModeUi, resetRenderedReport, renderVlocChartDirectory, renderVoChartDirectory, handleVlocChartDirectoryChange, handleVoChartDirectoryChange, selectAllVlocChartDirectory, clearVlocChartDirectory, selectAllVoChartDirectory, clearVoChartDirectory, reportEntryMode } from "./entry-mode.js";
 import { updateDirectoryStatus } from "./file-bundle.js";
@@ -13,6 +12,7 @@ import { downloadTrajectoryExcel } from "./excel-export.js";
 import { downloadHtmlReport } from "./html-export.js";
 import { showMessage } from "./report-render.js";
 import { valueOf } from "./utils.js";
+import { LABELS } from "./labels.js";
 import { VLOC_VISIBLE_CHART_IDS, VO_VISIBLE_CHART_IDS } from "./constants.js";
 
 // Initialize default selected chart sets
@@ -24,14 +24,22 @@ init();
 async function init() {
   wireEvents();
   try {
-    await initPyodide();
-    els.status.textContent = "运行环境已就绪";
-    els.status.classList.add("ready");
-    updateRunButton();
+    await checkServerHealth();
   } catch (error) {
-    showMessage(`运行环境加载失败：${describeRuntimeError(error)}`, "error");
-    els.status.textContent = "加载失败";
+    els.status.textContent = LABELS.server_disconnected;
+    showMessage(LABELS.server_disconnected, "error");
   }
+}
+
+async function checkServerHealth() {
+  const response = await fetch("/api/health");
+  if (!response.ok) {
+    throw new Error(`Server health check failed: ${response.status}`);
+  }
+  state.serverReady = true;
+  els.status.textContent = LABELS.server_connected;
+  els.status.classList.add("ready");
+  updateRunButton();
 }
 
 function wireEvents() {

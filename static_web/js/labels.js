@@ -4,9 +4,9 @@
 export const LABELS = {
   // 评估状态
   runtime_ready: "运行环境已就绪",
-  runtime_loading_worker: "加载后台运行环境...",
-  runtime_loading_packages: "后台加载 Pyodide/numpy/pandas...",
-  runtime_failed: "加载失败",
+  server_connected: "服务器已连接",
+  server_disconnected: "未连接到评估服务器，请先启动 local_server.py",
+  server_checking: "检测服务器连接...",
 
   // 评估按钮
   button_run: "运行评估",
@@ -17,8 +17,7 @@ export const LABELS = {
   error_local_file_protocol: "当前页面是直接打开的本地 index.html。请进入 static_web 目录后运行 python3 -m http.server 8765，再访问 http://localhost:8765/；公网部署时也必须通过 http/https URL 访问。",
   error_local_fetch_failed: "无法读取静态资源",
   error_local_fetch_status: "无法读取静态资源",
-  error_fetch_packages: "无法读取本地 Pyodide/numpy/pandas 运行包。请确认 static_web/vendor/pyodide 已经和页面一起部署。",
-  error_fetch_generic: "浏览器无法获取运行资源。请确认页面是通过 http/https 打开的、静态服务器没有停止，并且 static_web/vendor 目录已经一起部署。",
+  error_fetch_generic: "浏览器无法获取运行资源。请确认页面是通过 http/https 打开的、静态服务器没有停止。",
   error_no_local_paths: "静态网页不能直接读取本地路径，请用选择按钮导入必需文件",
   error_missing_files_prefix: "缺少必需文件：",
   error_missing_files_in_static_prefix: "静态网页不能直接读取本地路径，请用选择按钮导入必需文件：",

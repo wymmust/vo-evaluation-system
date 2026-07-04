@@ -4,7 +4,6 @@
 
 import { state } from "./state.js";
 import { PLOTLY_SCRIPT_URL, VLOC_CHART_OPTIONS, VO_CHART_OPTIONS, POINT_SELECTION_COLORS } from "./constants.js";
-import { fetchLocalText } from "./worker-client.js";
 import { reportEntryMode } from "./entry-mode.js";
 import { metricItems } from "./metrics.js";
 import { orientationCorrectionLabel } from "./metrics.js";
@@ -307,9 +306,9 @@ export { reportForHtmlExport };
 export async function downloadHtmlReport() {
   try {
     const [plotlySource, cssSource, reportCssSource] = await Promise.all([
-      fetchLocalText(PLOTLY_SCRIPT_URL),
-      fetchLocalText("./css/style.css"),
-      fetchLocalText("./css/report-export.css"),
+      fetch(PLOTLY_SCRIPT_URL).then((r) => r.text()),
+      fetch("./css/style.css").then((r) => r.text()),
+      fetch("./css/report-export.css").then((r) => r.text()),
     ]);
     downloadText(evaluationExportFilename("evaluation_report", "html"), buildHtmlReport(state.report || {}, { plotlySource, cssSource, reportCssSource }), "text/html");
   } catch (error) {

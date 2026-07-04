@@ -24,11 +24,11 @@ STATIC_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from vo_eval.data_loader import load_vloc_evaluation_bundle, load_vo_evaluation_bundle  # noqa: E402
+from vo_eval.data_loader import load_vloc_evaluation_bundle, load_vloc_evaluation_bundle_from_text, load_vo_evaluation_bundle, load_vo_evaluation_bundle_from_text  # noqa: E402
 from vo_eval.processing import EvaluationConfig, evaluate_vloc_bundle, evaluate_vo_bundle  # noqa: E402
-from vo_eval.report import report_to_json  # noqa: E402
+from vo_eval.report import report_to_json, _jsonable_report  # noqa: E402
 
-LAST_REPORT: dict | None = None
+LAST_REPORT: dict | None = None  # stored as _jsonable_report dict (JSON-safe)
 
 
 def required_local_files(entry_mode: str) -> dict[str, tuple[str, ...]]:
@@ -64,7 +64,44 @@ def evaluate_paths_payload(payload: dict) -> dict:
     else:
         bundle = load_vloc_evaluation_bundle(data_dir, log_dir)
         report = evaluate_vloc_bundle(bundle, config)
-    LAST_REPORT = report
+    LAST_REPORT = _jsonable_report(report)
+    return _light_report(report)
+
+
+def evaluate_bundle_payload(payload: dict) -> dict:
+    """Evaluate file-content upload request and return the light report."""
+
+    global LAST_REPORT
+    entry_mode = str(payload.get("entryMode") or payload.get("entry_mode") or "").strip()
+    if not entry_mode:
+        raise ValueError("entryMode is required")
+
+    config_data = json.loads(payload.get("configJson") or "{}") if isinstance(payload.get("configJson"), str) else (payload.get("config") or payload.get("configJson") or {})
+    config = EvaluationConfig(**{key: value for key, value in config_data.items() if key in EvaluationConfig.__dataclass_fields__})
+
+    if entry_mode == "vo":
+        bundle = load_vo_evaluation_bundle_from_text(
+            imu_text=payload.get("imuText") or "",
+            vo_text=payload.get("estimateText") or "",
+            calib_raw_text=payload.get("calibRawText") or "",
+            imu_name=payload.get("imuName") or "imu.txt",
+            vo_name=payload.get("estimateName") or "vo.txt",
+            calib_raw_name=payload.get("calibRawName") or "calib_raw.yaml",
+        )
+        report = evaluate_vo_bundle(bundle, config)
+    else:
+        bundle = load_vloc_evaluation_bundle_from_text(
+            imu_text=payload.get("imuText") or "",
+            vloc_text=payload.get("estimateText") or "",
+            home_point_text=payload.get("homePointText") or "",
+            calib_raw_text=payload.get("calibRawText") or "",
+            imu_name=payload.get("imuName") or "imu.txt",
+            vloc_name=payload.get("estimateName") or "vloc.txt",
+            home_point_name=payload.get("homePointName") or "home_point.txt",
+            calib_raw_name=payload.get("calibRawName") or "calib_raw.yaml",
+        )
+        report = evaluate_vloc_bundle(bundle, config)
+    LAST_REPORT = _jsonable_report(report)
     return _light_report(report)
 
 
@@ -117,19 +154,35 @@ class LocalEvaluationHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(STATIC_ROOT), **kwargs)
 
     def do_POST(self) -> None:  # noqa: N802
-        if urlparse(self.path).path != "/api/evaluate-paths":
+        parsed = urlparse(self.path).path
+        if parsed == "/api/evaluate-paths":
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                report = evaluate_paths_payload(payload)
+                self._send_json({"ok": True, "report": report})
+            except Exception as exc:  # pragma: no cover - exercised through browser/manual server use
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        elif parsed == "/api/evaluate-bundle":
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                report = evaluate_bundle_payload(payload)
+                self._send_json({"ok": True, "report": report})
+            except Exception as exc:  # pragma: no cover - exercised through browser/manual server use
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        else:
             self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        try:
-            length = int(self.headers.get("Content-Length") or "0")
-            payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            report = evaluate_paths_payload(payload)
-            self._send_json({"ok": True, "report": report})
-        except Exception as exc:  # pragma: no cover - exercised through browser/manual server use
-            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/favicon.ico":
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.end_headers()
+            return
+        if parsed.path == "/api/health":
+            self._send_json({"ok": True})
+            return
         if parsed.path == "/api/report-slice":
             try:
                 slice_name = (parse_qs(parsed.query).get("slice") or ["full_report"])[0]

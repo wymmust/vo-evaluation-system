@@ -2,11 +2,11 @@
 
 ## Commands
 
-### Run static web version locally
+### Run local server (required for evaluation)
 ```bash
-python3 -m http.server 8765
+python static_web/py/local_server.py --host 127.0.0.1 --port 8765
 ```
-Open http://localhost:8765/static_web/ — must use HTTP, not file://. Must run from repo root (not `static_web/`) so that `vo_eval/` is accessible as a sibling directory.
+Open http://127.0.0.1:8765/ — the server provides both static files and evaluation API endpoints. Must run from repo root so that `vo_eval/` is importable.
 
 ### Run all tests
 ```bash
@@ -20,11 +20,11 @@ pytest tests/test_evaluator.py -k "test_sim3_recovers_scale"
 
 ## Architecture
 
-This is a VO (Visual Odometry) trajectory evaluation tool with a static web version (`static_web/`) that runs evaluation entirely in the browser via Pyodide.
+This is a VO (Visual Odometry) trajectory evaluation tool with a local-server-based web UI (`static_web/`). All evaluation runs in Python on the server side via HTTP API.
 
 ### Layer separation
 
-**Data loading layer** (`vo_eval/data_loader.py`): Defines `Trajectory`, `EvaluationFormatSpec`, `HomePoint`, `Calibration`, `SfVlocBundle`, `SfVoBundle`, fixed SF/VO/VLOC columns, parsers, directory loaders, TUM readers, and input normalization.
+**Data loading layer** (`vo_eval/data_loader.py`): Defines `Trajectory`, `EvaluationFormatSpec`, `HomePoint`, `Calibration`, `SfVlocBundle`, `SfVoBundle`, fixed SF/VO/VLOC columns, parsers, directory loaders, TUM readers, and input normalization. Also provides `load_vo_evaluation_bundle_from_text()` and `load_vloc_evaluation_bundle_from_text()` for file-upload API evaluation.
 
 **Processing layer** (`vo_eval/processing.py`): Owns `EvaluationConfig`, `evaluate_vloc_bundle()`, `evaluate_vo_bundle()`, and `evaluate_trajectories()`. It controls the evaluation flow and assembles the report, but delegates low-level math to `utils.py` and export tables to `report.py`.
 
@@ -32,7 +32,7 @@ This is a VO (Visual Odometry) trajectory evaluation tool with a static web vers
 
 **Report layer** (`vo_eval/report.py`): Builds VLOC/VO detail tables and export artifacts, including JSON and Excel output.
 
-**Static web layer** (`static_web/`): Pure client-side alternative organized by role into subdirectories. `js/main.js` is the ES module entry point that wires all UI modules; `js/state.js`, `js/constants.js`, `js/dom-refs.js`, `js/utils.js`, `js/labels.js` are foundational modules with no cross-dependencies. `worker/worker.js` loads `vo_eval` modules from `./py/vo_eval/` via HTTP (symlink to `../../vo_eval/`) and writes them into Pyodide's virtual filesystem. `py/browser_runner.py` is the thin Pyodide adapter. `visualization/figure_specs.js` and `visualization/report_templates.js` use ES module `export` (no globalThis handshake). `cli/export_report_cli.js` is the Node.js CLI for offline HTML report generation, using dynamic `import()` with globalThis browser mocks. `css/style.css` provides base styles and CSS variables; `css/report-export.css` extends them for offline HTML reports.
+**Static web layer** (`static_web/`): Local-server + browser UI. `js/main.js` is the ES module entry point that wires all UI modules; `js/state.js`, `js/constants.js`, `js/dom-refs.js`, `js/utils.js`, `js/labels.js` are foundational modules with no cross-dependencies. `py/local_server.py` is the HTTP server providing `/api/evaluate-paths`, `/api/evaluate-bundle`, `/api/report-slice`, and `/api/health` endpoints. `visualization/figure_specs.js` and `visualization/report_templates.js` use ES module `export` (no globalThis handshake). `cli/export_report_cli.js` is the Node.js CLI for offline HTML report generation. `css/style.css` provides base styles and CSS variables; `css/report-export.css` extends them for offline HTML reports.
 
 ### Key data structures
 

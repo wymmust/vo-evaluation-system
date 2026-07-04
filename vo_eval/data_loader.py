@@ -352,6 +352,56 @@ def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> Sf
     )
 
 
+def load_vloc_evaluation_bundle_from_text(
+    imu_text: str,
+    vloc_text: str,
+    home_point_text: str,
+    calib_raw_text: str,
+    imu_name: str = "imu.txt",
+    vloc_name: str = "vloc.txt",
+    home_point_name: str = "home_point.txt",
+    calib_raw_name: str = "calib_raw.yaml",
+) -> SfVlocBundle:
+    """从文本内容解析 VLOC 评估 bundle（无需本地目录）。
+
+    供 `/api/evaluate-bundle` 端点调用，浏览器上传文件内容后直接解析。
+    内部调用相同的 parse_*_fixed() 函数，保证与目录加载结果数值一致。
+
+    Parameters
+    ----------
+    imu_text : str
+        imu.txt 文件内容
+    vloc_text : str
+        vloc.txt 文件内容
+    home_point_text : str
+        home_point.txt 文件内容
+    calib_raw_text : str
+        calib_raw.yaml 文件内容
+    imu_name, vloc_name, home_point_name, calib_raw_name : str
+        原始文件名（用于日志和 report inputs 可追溯）
+
+    Returns
+    -------
+    SfVlocBundle
+        与 load_vloc_evaluation_bundle() 返回值结构一致
+    """
+
+    return SfVlocBundle(
+        nav=parse_imu_fixed(imu_text, name=imu_name),
+        vloc=parse_vloc_fixed(vloc_text, name=vloc_name),
+        home_point=parse_home_point_fixed(home_point_text, name=home_point_name),
+        calibration=parse_calib_raw_fixed(calib_raw_text, name=calib_raw_name),
+        data_dir=Path("."),
+        log_dir=Path("."),
+        files={
+            "nav": Path(imu_name),
+            "estimate": Path(vloc_name),
+            "home_point": Path(home_point_name),
+            "calib_raw": Path(calib_raw_name),
+        },
+    )
+
+
 def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVoBundle:
     """读取 VO 评估目录。
 
@@ -379,6 +429,50 @@ def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVo
             "nav": imu_path,
             "estimate": vo_path,
             "calib_raw": calib_path,
+        },
+    )
+
+
+def load_vo_evaluation_bundle_from_text(
+    imu_text: str,
+    vo_text: str,
+    calib_raw_text: str,
+    imu_name: str = "imu.txt",
+    vo_name: str = "vo.txt",
+    calib_raw_name: str = "calib_raw.yaml",
+) -> SfVoBundle:
+    """从文本内容解析 VO 评估 bundle（无需本地目录）。
+
+    供 `/api/evaluate-bundle` 端点调用，浏览器上传文件内容后直接解析。
+    内部调用相同的 parse_*_fixed() 函数，保证与目录加载结果数值一致。
+
+    Parameters
+    ----------
+    imu_text : str
+        imu.txt 文件内容
+    vo_text : str
+        vo.txt 文件内容
+    calib_raw_text : str
+        calib_raw.yaml 文件内容
+    imu_name, vo_name, calib_raw_name : str
+        原始文件名（用于日志和 report inputs 可追溯）
+
+    Returns
+    -------
+    SfVoBundle
+        与 load_vo_evaluation_bundle() 返回值结构一致
+    """
+
+    return SfVoBundle(
+        nav=parse_imu_fixed(imu_text, name=imu_name),
+        vo=parse_vo_fixed(vo_text, name=vo_name),
+        calibration=parse_calib_raw_fixed(calib_raw_text, name=calib_raw_name),
+        data_dir=Path("."),
+        log_dir=Path("."),
+        files={
+            "nav": Path(imu_name),
+            "estimate": Path(vo_name),
+            "calib_raw": Path(calib_raw_name),
         },
     )
 
