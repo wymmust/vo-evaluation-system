@@ -474,14 +474,28 @@ def report_to_excel(report: dict[str, Any]) -> bytes:
     """把 report 中的轨迹和逐帧误差导出 sheet 写成一个 xlsx 工作簿。"""
     sheets = report.get("trajectory_exports") or {}
     output = io.BytesIO()
+    used_names: set[str] = set()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for name, frame in sheets.items():
-            safe_name = re.sub(r"[\[\]:*?/\\]", "_", str(name))[:31] or "sheet"
+            safe_name = _unique_excel_sheet_name(str(name), used_names)
             if isinstance(frame, pd.DataFrame):
                 frame.to_excel(writer, sheet_name=safe_name, index=False)
             else:
                 pd.DataFrame(frame).to_excel(writer, sheet_name=safe_name, index=False)
     return output.getvalue()
+
+
+def _unique_excel_sheet_name(name: str, used_names: set[str]) -> str:
+    base = re.sub(r"[\[\]:*?/\\]", "_", name).strip() or "sheet"
+    base = base[:31]
+    candidate = base
+    suffix = 1
+    while candidate in used_names:
+        marker = f"_{suffix}"
+        candidate = f"{base[: 31 - len(marker)]}{marker}"
+        suffix += 1
+    used_names.add(candidate)
+    return candidate
 
 
 def report_to_json(report: dict[str, Any]) -> str:
@@ -520,7 +534,7 @@ def _jsonable_value(value: Any) -> Any:
     return value
 
 
-def _dataclass_to_jsonable(cfg: EvaluationConfig) -> dict[str, Any]:
+def evaluation_config_to_jsonable(cfg: EvaluationConfig) -> dict[str, Any]:
     """把 EvaluationConfig 展开成普通 dict，写入 report["config"]。
 
     代码意义：

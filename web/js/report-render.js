@@ -30,18 +30,8 @@ export function renderMetrics(report) {
 }
 
 export function renderMessages(report) {
-  const entryMode = reportEntryMode(report);
   const messages = [];
   const summary = report.summary || {};
-  const orientationInfo = report.orientation_correction || {};
-  if (entryMode === "vo" && orientationInfo.auto && orientationInfo.selected) {
-    messages.push(`${LABELS.orientation_auto_selected_prefix}${orientationInfo.selected}，score=${formatNumber(orientationInfo.best_score)}。${LABELS.orientation_auto_suffix}`);
-  }
-  const rawRatio = summary.raw_path_scale_ratio_est_over_gt;
-  const alignMode = report.alignment?.base_mode || report.alignment?.mode;
-  if (entryMode === "vo" && Number.isFinite(rawRatio) && alignMode === "se3" && (rawRatio < 0.8 || rawRatio > 1.25)) {
-    messages.push(`${LABELS.se3_scale_warning_prefix} ${rawRatio.toFixed(3)}${LABELS.se3_scale_warning_suffix}`);
-  }
   const allDisc = report.discontinuities?.all_matches || {};
   const selected = report.discontinuities?.selected_segment || {};
   if ((allDisc.break_count || 0) > 0) {
@@ -58,26 +48,12 @@ export function renderMessages(report) {
     const maxGap = report.association.max_interpolation_gap_s;
     messages.push(`${LABELS.interpolation_dropped_prefix}，${LABELS.interpolation_max_gap_suffix} ${formatNumber(maxGap)} s。`);
   }
-  if (report.divergence?.diverged) {
-    messages.push(`${LABELS.divergence_prefix}distance=${formatNumber(report.divergence.first_divergence_distance_m)} m, error=${formatNumber(report.divergence.first_divergence_error_m)} m。`);
-  }
   if (messages.length) {
     showMessage(messages.join(" "), "warning");
   } else {
     clearMessage();
   }
 }
-
-function orientationCorrectionLabel(info) {
-  const selected = info.selected || "none";
-  const requested = info.requested || selected;
-  if (info.auto && requested !== selected) {
-    return `auto -> ${selected}`;
-  }
-  return selected;
-}
-
-export { orientationCorrectionLabel };
 
 export function showMessage(text, type = "") {
   els.message.hidden = false;

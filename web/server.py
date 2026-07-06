@@ -115,7 +115,7 @@ def get_report_slice(slice_name: str) -> object:
         return LAST_REPORT
     if slice_name == "trajectory_exports":
         return LAST_REPORT.get("trajectory_exports") or {}
-    if slice_name in {"per_pose", "segment_records", "worst_segments", "config"}:
+    if slice_name in {"per_pose", "config"}:
         return LAST_REPORT.get(slice_name, [] if slice_name != "config" else {})
     raise ValueError(f"Unknown report slice: {slice_name}")
 
@@ -123,7 +123,7 @@ def get_report_slice(slice_name: str) -> object:
 def _light_report(report: dict) -> dict:
     """Match the Pyodide worker's initial light payload."""
 
-    skip_keys = {"per_pose", "segment_records", "trajectory_exports"}
+    skip_keys = {"per_pose", "trajectory_exports"}
     light = {key: value for key, value in report.items() if key not in skip_keys}
     entry_mode = (report.get("inputs") or {}).get("entry_mode")
     trajectory_exports = report.get("trajectory_exports") or {}
@@ -139,8 +139,6 @@ def _light_report(report: dict) -> dict:
         "download_slices_available": [
             "full_report",
             "per_pose",
-            "segment_records",
-            "worst_segments",
             "config",
             "trajectory_exports",
         ],

@@ -14,17 +14,18 @@ vo-evaluation-system/                  # git 仓库根目录
 │   ├── cli.py                         # eval 子命令实现
 │   ├── serve.py                       # serve 子命令实现
 │   │
-│   ├── core/                          # ── 评估核心库 ──
+│   ├── engine/                        # 评估引擎实现层
 │   │   ├── __init__.py
-│   │   ├── input/                     # 数据输入层
+│   │
+│   │   ├── io/                        # 数据输入层
 │   │   │   ├── __init__.py
-│   │   │   ├── formats.py             # EvaluationFormatSpec, METRIC_CODE_MAP, 列定义
+│   │   │   ├── formats.py             # EvaluationFormatSpec, 列定义
 │   │   │   ├── trajectory.py          # Trajectory + 解析
 │   │   │   ├── bundle.py              # SfVoBundle/SfVlocBundle + 目录加载
 │   │   │   ├── calibration.py         # Calibration 解析
 │   │   │   ├── parsers.py             # parse_imu/vloc/vo_fixed 等
-│   │   │
-│   │   ├── evaluation/                # 指标评估层
+│   │
+│   │   ├── core/                      # 评估计算核心
 │   │   │   ├── __init__.py
 │   │   │   ├── pipeline.py            # evaluate_trajectories / evaluate_vo/vloc_bundle
 │   │   │   ├── config.py              # EvaluationConfig
@@ -34,8 +35,8 @@ vo-evaluation-system/                  # git 仓库根目录
 │   │   │   ├── geometry.py            # NED/旋转/四元数/欧拉角
 │   │   │   ├── statistics.py          # describe + RPE/scale dataframe
 │   │   │   ├── segments.py            # 断点检测 + 连续段分割
-│   │   │
-│   │   ├── report/                    # 报告可视化与下载层
+│   │
+│   │   ├── reports/                   # 报告可视化与下载层
 │   │   │   ├── __init__.py
 │   │   │   ├── summary.py             # 指标文本格式化
 │   │   │   ├── detail.py              # VLOC/VO detail report 构造
@@ -45,24 +46,24 @@ vo-evaluation-system/                  # git 仓库根目录
 │   │   │   ├── preview.py             # Node.js HTML 导出 + 浏览器预览
 │   │   │   ├── html.py                # 纯 Python HTML 报告（备用）
 │   │   │   ├── charts.py              # Plotly Python 图表定义（备用）
-│   │   │
-│   ├── visualization/                 # ── 共享可视化资源 ──（无 __init__.py）
-│       ├── index.html
-│       ├── js/                        # JS 模块
-│       │   ├── main.js                # 浏览器入口
-│       │   ├── html-export.js         # HTML 报告组装（CLI 和浏览器共用）
-│       │   ├── evaluation.js, state.js, constants.js, ...
-│       ├── visualization/             # 图表规格和模板
-│       │   ├── figure_specs.js
-│       │   ├── report_templates.js
-│       ├── css/
-│       │   ├── style.css
-│       │   ├── report-export.css
-│       ├── cli/
-│       │   ├── export_report_cli.js   # Node.js 离线导出
-│       ├── vendor/
-│       │   ├── plotly/
-│       ├── package.json
+│   │
+│   │   ├── visualization/             # 共享可视化资源（无 __init__.py）
+│   │   │   ├── index.html
+│   │   │   ├── js/                    # JS 模块
+│   │   │   │   ├── main.js            # 浏览器入口
+│   │   │   │   ├── html-export.js     # HTML 报告组装（CLI 和浏览器共用）
+│   │   │   │   ├── evaluation.js, state.js, constants.js, ...
+│   │   │   ├── visualization/         # 图表规格和模板
+│   │   │   │   ├── figure_specs.js
+│   │   │   │   ├── report_templates.js
+│   │   │   ├── css/
+│   │   │   │   ├── style.css
+│   │   │   │   ├── report-export.css
+│   │   │   ├── cli/
+│   │   │   │   ├── export_report_cli.js # Node.js 离线导出
+│   │   │   ├── vendor/
+│   │   │   │   ├── plotly/
+│   │   │   ├── package.json
 │
 ├── tests/
 ├── docs/
@@ -87,13 +88,13 @@ python -m voeval serve --port 8766                                  # Web 服务
 ### 阶段一：创建 voeval 包骨架 + 透传重导出
 
 - 创建 `voeval/` 目录，含 `__init__.py`、`__main__.py`（暂空壳）
-- 创建 `voeval/core/` 及三个子包 `input/`、`evaluation/`、`report/` 的 `__init__.py`
+- 创建 `voeval/engine/`，以及 `voeval/engine/io/`、`voeval/engine/core/`、`voeval/engine/reports/` 三个子包及各自的 `__init__.py`
 - 所有 `__init__.py` 暂时从原 `vo_eval/` 文件透传重导出，零功能变更
 - 验证：`pytest` 全绿，现有 `from vo_eval.xxx import` 仍可用
 
 ---
 
-### 阶段二：拆分 utils.py + processing.py → core/evaluation/ ⚠️高风险
+### 阶段二：拆分 utils.py + processing.py → engine/core/ ⚠️高风险
 
 - `utils.py`(61KB, 46函数) 拆为 7 个主题子模块：
   - `alignment.py`：Sim3/Umeyama 对齐系列函数
@@ -103,30 +104,30 @@ python -m voeval serve --port 8766                                  # Web 服务
   - `statistics.py`：describe + RPE/scale dataframe
   - `segments.py`：断点检测 + 连续段分割
   - `config.py`：EvaluationConfig + normalized 函数
-- `processing.py` 核心编排迁入 `pipeline.py`
-- `evaluation/__init__.py` 从各子模块重导出
+- `processing.py` 核心编排迁入 `engine/core/pipeline.py`
+- `engine/core/__init__.py` 从各子模块重导出
 - 更新所有 import 引用（data_loader/report/server 等）
 - 删除原 `utils.py` 和 `processing.py`
 - 验证：`pytest` 全绿
 
 ---
 
-### 阶段三：拆分 data_loader.py → core/input/
+### 阶段三：拆分 data_loader.py → engine/io/
 
 - 拆为 5 个子模块：`formats.py`/`trajectory.py`/`bundle.py`/`calibration.py`/`parsers.py`
-- `input/__init__.py` 重导出
+- `engine/io/__init__.py` 重导出
 - 更新所有 import 引用
 - 删除原 `data_loader.py`
 - 验证：`pytest` 全绿
 
 ---
 
-### 阶段四：拆分 report.py + 迁入 html_report/chart_specs + 提取 __main__ 辅助函数 → core/report/
+### 阶段四：拆分 report.py + 迁入 html_report/chart_specs + 提取 __main__ 辅助函数 → engine/reports/
 
 - `report.py`(25KB) 拆为：`detail.py`/`comparison.py`/`export.py`
-- `html_report.py` → `report/html.py`，`chart_specs.py` → `report/charts.py`
+- `html_report.py` → `engine/reports/html.py`，`chart_specs.py` → `engine/reports/charts.py`
 - 从 `__main__.py` 提取：`paths.py`（文件名+路径工具）+ `preview.py`（Node.js导出+浏览器预览）+ `summary.py`（指标文本格式化）
-- `report/__init__.py` 重导出
+- `engine/reports/__init__.py` 重导出
 - 更新所有 import 引用
 - 删除原 `report.py`、`html_report.py`、`chart_specs.py`
 - 验证：`pytest` 全绿
@@ -136,7 +137,7 @@ python -m voeval serve --port 8766                                  # Web 服务
 ### 阶段五：瘦身 CLI + 创建统一入口
 
 - `voeval/__main__.py`：子命令分发器（eval/serve）
-- `voeval/cli.py`：eval 子命令实现（参数解析 → 调用 core/input 加载 → 调用 core/evaluation 计算 → 调用 core/report 输出）
+- `voeval/cli.py`：eval 子命令实现（参数解析 → 调用 engine/io 加载 → 调用 engine/core 计算 → 调用 engine/reports 输出）
 - 删除原 `vo_eval/__main__.py`
 - 验证：`python -m voeval eval --mode sf_vo ... -p` 正常工作
 
@@ -144,11 +145,11 @@ python -m voeval serve --port 8766                                  # Web 服务
 
 ### 阶段六：迁移可视化资源 + 创建 serve.py ⚠️中风险
 
-- `web/` 下的可视化资源（js/css/vendor/cli/visualization/index.html/package.json）→ `voeval/visualization/`
+- `web/` 下的可视化资源（js/css/vendor/cli/visualization/index.html/package.json）→ `voeval/engine/visualization/`
 - `web/server.py` 业务逻辑迁入 `voeval/serve.py`
 - 更新路径引用：
-  - `serve.py`：`STATIC_ROOT` 指向 `voeval/visualization/`
-  - `report/preview.py`：`export_report_cli.js` 路径指向 `voeval/visualization/cli/`
+  - `serve.py`：`STATIC_ROOT` 指向 `voeval/engine/visualization/`
+  - `engine/reports/preview.py`：`export_report_cli.js` 路径指向 `voeval/engine/visualization/cli/`
   - `export_report_cli.js`：`staticWebDir` 计算 + JS 模块 import 路径
   - `index.html`：`<script>` 引用路径
 - 删除 `web/` 目录
@@ -159,11 +160,11 @@ python -m voeval serve --port 8766                                  # Web 服务
 ### 阶段七：包名替换 + 收尾
 
 - 全局替换 `vo_eval` → `voeval`（import 语句、文档、测试）
-- 更新 `voeval/__init__.py` 公开 API 导出（从 core 子模块重导出）
+- 更新 `voeval/__init__.py` 公开 API 导出（从 engine/io、engine/core、engine/reports 子模块重导出）
 - 更新 `tests/` 所有 import 路径
 - 更新 `CODEBUDDY.md`：架构描述、命令示例
 - 更新 `README.md`：指标与代码总表
 - 更新 `docs/` 所有文档路径引用
-- `grep -r "vo_eval" + "static_web" + "web/"` 确保零残留
+- `grep -r "vo_eval" + "web/"` 确保零残留
 - 删除 `vo_eval/` 目录
 - 验证：`pytest` 全绿 + `python -m voeval eval/serve` 完整回归测试

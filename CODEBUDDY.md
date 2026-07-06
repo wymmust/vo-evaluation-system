@@ -6,7 +6,7 @@
 ```bash
 python web/server.py --host 127.0.0.1 --port 8766
 ```
-Open http://127.0.0.1:8765/ — the server provides both static files and evaluation API endpoints. Must run from repo root so that `vo_eval/` is importable.
+Open http://127.0.0.1:8766/ — the server provides both static files and evaluation API endpoints. Must run from repo root so that `vo_eval/` is importable.
 
 ### Run all tests
 ```bash
@@ -38,7 +38,7 @@ This is a VO (Visual Odometry) trajectory evaluation tool with a local-server-ba
 
 - `Trajectory` dataclass: `stamps` (1D), `positions` (N×3), `rotations` (N×3×3 optional), `extras` dict for runtime fields
 - `EvaluationConfig` dataclass: Supported evaluation parameters for the current VO/VLOC workflows, mainly RPE and local-scale interval settings plus fixed synchronization defaults.
-- Report dict: The output of `evaluate_trajectories()` with keys: `summary`, `ate_position_m`, `ate_vertical_m`, `rpe_frame_delta`, `segment_errors`, `segment_records`, `per_pose` (DataFrame), `divergence`, `discontinuities`, `association`, `alignment`, `orientation_correction`, `speed_bins`, `runtime`, `trajectory_exports`, `inputs`, `config`
+- Report dict: The output of `evaluate_trajectories()` with keys such as `summary`, `ate_position_m`, `ate_horizontal_m`, `ate_vertical_m`, `ate_orientation_deg`, `ate_yaw_deg`, `rpe_frame_delta`, `per_pose` (DataFrame), `discontinuities`, `association`, `alignment`, `trajectory_exports`, `inputs`, and `config`. VO reports can additionally include `scale_frame_delta` / `scale_per_frame`; VLOC and VO wrappers add their own `vloc_details` / `vo_details`.
 
 ### Evaluation pipeline order
 
@@ -51,4 +51,4 @@ This is a VO (Visual Odometry) trajectory evaluation tool with a local-server-ba
 
 ### Metric-code synchronization
 
-`METRIC_CODE_MAP` in `vo_eval/data_loader.py` is the authoritative index linking each metric to its report field and function names. When adding or renaming a metric, update `METRIC_CODE_MAP` and the README "指标与代码总表" table simultaneously to prevent documentation/code divergence.
+There is no generated metric registry in code. Keep `README.md` and the concrete report fields in `vo_eval/processing.py` / `vo_eval/report.py` aligned when adding or renaming metrics.

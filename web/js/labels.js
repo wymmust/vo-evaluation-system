@@ -66,17 +66,12 @@ export const LABELS = {
   point_selection_clear_all: "清除所有点",
 
   // 消息
-  orientation_auto_selected_prefix: "自动姿态修正选择：",
-  orientation_auto_suffix: "，该选择只用于评估坐标系/外参修正，不会改变原始数据。",
-  se3_scale_warning_prefix: "当前使用 SE3 刚体对齐，但 VO/GT 原始路程比例为",
-  se3_scale_warning_suffix: "，尺度明显不一致。若 VO 是单目或尺度未知，请改用 Sim3。",
   discontinuity_detected_prefix: "检测到",
   discontinuity_detected_break_suffix: "个大跳变/时间间隔",
   discontinuity_vo_timestamps_suffix: "；当前仍按全部 VO 时间戳统一评估，不会因此丢弃匹配点。",
   discontinuity_policy_suffix: "；当前策略",
   interpolation_dropped_prefix: "当前将 GT 插值到 VO 时间戳；因超出 GT 时间范围或插值间隔过大丢弃了部分 VO 点",
   interpolation_max_gap_suffix: "最大 GT 插值间隔",
-  divergence_prefix: "首次发散：",
 
   // HTML 导出报告
   html_report_title_vloc: "VLOC 评估结果",

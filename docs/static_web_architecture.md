@@ -170,7 +170,7 @@ Python 评估在 Web Worker 中运行，不阻塞主线程 UI。通过 `postMess
 
 ### 2. Light/Full 分层载荷
 
-首次评估返回 **light report**（排除 `per_pose`、`segment_records`、`trajectory_exports` 等大数据），
+首次评估返回 **light report**（排除 `per_pose`、`trajectory_exports` 等大数据），
 用于渲染可见图表。导出时按需请求 **full report slices**，避免首次渲染时传输大量数据。
 
 ### 3. 两种输入模式

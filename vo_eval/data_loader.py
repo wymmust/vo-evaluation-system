@@ -79,65 +79,6 @@ def get_evaluation_format_spec(fmt: str) -> EvaluationFormatSpec:
 
     return EVALUATION_FORMAT_SPECS[normalize_evaluation_format(fmt)]
 
-METRIC_CODE_MAP: tuple[dict[str, str], ...] = (
-    {
-        "metric": "时间同步 / GT 插值到 estimate",
-        "report_field": 'report["association"]',
-        "code": "prepare_evaluation_trajectories(); interpolate_reference_to_estimate()",
-    },
-    {
-        "metric": "轨迹对齐 / 对齐尺度",
-        "report_field": 'report["alignment"]',
-        "code": "identity_alignment(); sim3_alignment(); umeyama_alignment(); aggregate_alignment(); apply_alignment()",
-    },
-    {
-        "metric": "ATE 三维位置误差",
-        "report_field": 'report["ate_position_m"]; report["ate"]["primary_position_m"]',
-        "code": "evaluate_trajectories(): errors/pos_error_m; describe()",
-    },
-    {
-        "metric": "ATE 水平误差",
-        "report_field": 'report["ate_horizontal_m"]',
-        "code": "evaluate_trajectories(): horizontal_error_m = norm(errors[:, :2]); describe()",
-    },
-    {
-        "metric": "ATE 垂直 / 高度误差",
-        "report_field": 'report["ate_vertical_m"]; report["vertical_error_signed_m"]; report["vertical_error_abs_m"]',
-        "code": "evaluate_trajectories(): vertical_error_signed_m/errors[:, 2]; describe()",
-    },
-    {
-        "metric": "ATE 姿态误差",
-        "report_field": 'report["ate_orientation_deg"]',
-        "code": "rotation_errors(); apply_rotation_alignment(); describe()",
-    },
-    {
-        "metric": "ATE yaw 航向误差",
-        "report_field": 'report["ate_yaw_deg"]; report["yaw_error_signed_deg"]; report["yaw_error_abs_deg"]',
-        "code": "yaw_from_rot(); wrap_pi(); describe()",
-    },
-    {
-        "metric": "RPE 帧数/距离间隔误差",
-        "report_field": 'report["rpe_frame_delta"]',
-        "code": "rpe_frame_dataframe(); normalize_rpe_delta_config(); relative_error(); describe()",
-    },
-    {
-        "metric": "航程 / 耗时 / 匹配数量 / 覆盖率 / 原始尺度比",
-        "report_field": 'report["summary"]',
-        "code": "evaluate_trajectories(): summary dict; path_distance(); _gt_coverage_ratio()",
-    },
-    {
-        "metric": "逐帧误差和轨迹可视化数据",
-        "report_field": 'report["per_pose"]',
-        "code": "evaluate_trajectories(): per_pose DataFrame",
-    },
-    {
-        "metric": "统计口径 count/rmse/mean/median/std/min/max/p95/p99",
-        "report_field": "all describe(...) metric summaries",
-        "code": "describe(); describe_clean()",
-    },
-)
-
-
 @dataclass
 class Trajectory:
     """统一后的轨迹数据结构。
@@ -184,8 +125,12 @@ class Trajectory:
             self.rotations = self.rotations[order]
         for key, value in list(self.extras.items()):
             arr = np.asarray(value)
-            if len(arr) == len(order):
+            if arr.ndim == 0:
+                self.extras[key] = arr
+            elif len(arr) == len(order):
                 self.extras[key] = arr[order]
+            else:
+                raise ValueError(f"extras['{key}'] length must match trajectory length or be scalar")
 
     @property
     def duration_s(self) -> float:
@@ -300,7 +245,7 @@ VLOC_FIXED_COLUMNS = (
     "roll",
     "latitude",
     "longitude",
-    "height",
+    "altitude",
 )
 
 VO_FIXED_COLUMNS = (
@@ -486,19 +431,21 @@ def parse_imu_fixed(text: str, name: str = "imu.txt") -> Trajectory:
     from .utils import euler_yaw_pitch_roll_to_matrix
 
     data = _read_fixed_numeric_table(text, len(IMU_FIXED_COLUMNS), name, "IMU")
-    _require_finite_numeric_table(data, name)
-    status = data[:, 2].astype(np.int64)
+    status = _require_integer_column(data[:, 2], name, "status")
+    flight_mode = _require_integer_column(data[:, 3], name, "flight_mode")
+    position_reset_count = _require_integer_column(data[:, 13], name, "position_reset_count")
+    altitude_reset_count = _require_integer_column(data[:, 14], name, "altitude_reset_count")
+    heading_reset_count = _require_integer_column(data[:, 15], name, "heading_reset_count")
     extras = {
-        "raw_numeric_table": data,
         "ts_fcc": data[:, 1],
-        "status": data[:, 2],
-        "flight_mode": data[:, 3],
+        "status": status,
+        "flight_mode": flight_mode,
         "vx": data[:, 10],
         "vy": data[:, 11],
         "vz": data[:, 12],
-        "position_reset_count": data[:, 13],
-        "altitude_reset_count": data[:, 14],
-        "heading_reset_count": data[:, 15],
+        "position_reset_count": position_reset_count,
+        "altitude_reset_count": altitude_reset_count,
+        "heading_reset_count": heading_reset_count,
         "latitude": data[:, 16],
         "longitude": data[:, 17],
         "altitude": data[:, 18],
@@ -528,16 +475,16 @@ def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
     from .utils import euler_yaw_pitch_roll_to_matrix
 
     data = _read_fixed_numeric_table(text, len(VLOC_FIXED_COLUMNS), name, "VLOC")
-    _require_finite_numeric_table(data, name)
-    status = data[:, 1].astype(np.int64)
+    status = _require_integer_column(data[:, 1], name, "status")
+    reset_count = _require_integer_column(data[:, 3], name, "reset_count")
     extras = {
-        "raw_numeric_table": data,
-        "status": data[:, 1],
+        "status": status,
         "num_inliers": data[:, 2],
-        "reset_count": data[:, 3],
+        "reset_count": reset_count,
         "latitude": data[:, 10],
         "longitude": data[:, 11],
-        "altitude_msl": data[:, 6],
+        "altitude": data[:, 12],
+        "altitude_msl": data[:, 12],
         "height": data[:, 12],
         "vloc_mode": (status & 0x0F).astype(float),
     }
@@ -562,14 +509,14 @@ def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
 
     from .utils import euler_yaw_pitch_roll_to_matrix
 
-    data = _read_vo_fixed_numeric_table(text, name)
-    _require_finite_numeric_table(data, name)
+    data = _read_fixed_numeric_table(text, len(VO_FIXED_COLUMNS), name, "VO", legacy_column_counts={14: 11})
+    is_keyframe = _require_integer_column(data[:, 8], name, "is_keyframe")
+    reset_count = _require_integer_column(data[:, 10], name, "reset_count")
     extras = {
-        "raw_numeric_table": data,
         "num_inliers": data[:, 1],
-        "is_keyframe": data[:, 8],
+        "is_keyframe": is_keyframe,
         "time_cost": data[:, 9],
-        "reset_count": data[:, 10],
+        "reset_count": reset_count,
     }
     angles = np.deg2rad(data[:, 5:8])
     rotations = euler_yaw_pitch_roll_to_matrix(angles[:, 0], angles[:, 1], angles[:, 2])
@@ -583,44 +530,10 @@ def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
     )
 
 
-def _read_vo_fixed_numeric_table(text: str, name: str) -> np.ndarray:
-    """读取 VO 固定数字表。
-
-    新版主线为 11 列；旧版 14 列只取前 11 列，最后三列 depth_* 不进入 raw_numeric_table。
-    """
-
-    expected_cols = len(VO_FIXED_COLUMNS)
-    legacy_cols = expected_cols + 3
-    rows: list[list[float]] = []
-    for line_no, raw_line in enumerate(text.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        tokens = [token for token in re.split(r"[\s,;]+", line) if token]
-        try:
-            values = [float(token) for token in tokens]
-        except ValueError:
-            if not rows:
-                continue
-            raise ValueError(f"{name}: VO line {line_no} contains non-numeric values after data started")
-        if len(values) == legacy_cols:
-            values = values[:expected_cols]
-        elif len(values) != expected_cols:
-            raise ValueError(
-                f"{name}: VO format expects {expected_cols} columns "
-                f"(or legacy {legacy_cols}), got {len(values)} on line {line_no}"
-            )
-        rows.append(values)
-    if not rows:
-        raise ValueError(f"{name}: VO file contains no numeric data rows")
-    return np.asarray(rows, dtype=float)
-
-
 def parse_home_point_fixed(text: str, name: str = "home_point.txt") -> HomePoint:
     """按固定三列解析 home_point.txt：longitude latitude altitude_msl。"""
 
     data = _read_fixed_numeric_table(text, 3, name, "home_point")
-    _require_finite_numeric_table(data, name)
     if len(data) != 1:
         raise ValueError(f"{name}: home_point format expects exactly one numeric row")
     return HomePoint(longitude=float(data[0, 0]), latitude=float(data[0, 1]), altitude_msl=float(data[0, 2]))
@@ -649,7 +562,14 @@ def _required_bundle_file(base_dir: Path, filename: str, requirement_label: str)
     return path
 
 
-def _read_fixed_numeric_table(text: str, expected_cols: int, name: str, fmt_name: str) -> np.ndarray:
+def _read_fixed_numeric_table(
+    text: str,
+    expected_cols: int,
+    name: str,
+    fmt_name: str,
+    *,
+    legacy_column_counts: dict[int, int] | None = None,
+) -> np.ndarray:
     """读取固定列数字表。
 
     为了兼容文件首行写死的表头，非数字说明行只允许出现在第一条数据之前。
@@ -668,12 +588,19 @@ def _read_fixed_numeric_table(text: str, expected_cols: int, name: str, fmt_name
             if not rows:
                 continue
             raise ValueError(f"{name}: {fmt_name} line {line_no} contains non-numeric values after data started")
+        if legacy_column_counts and len(values) in legacy_column_counts:
+            values = values[: legacy_column_counts[len(values)]]
         if len(values) != expected_cols:
-            raise ValueError(f"{name}: {fmt_name} format expects {expected_cols} columns, got {len(values)} on line {line_no}")
+            legacy_note = ""
+            if legacy_column_counts:
+                legacy_note = " (or legacy " + ", ".join(str(item) for item in sorted(legacy_column_counts)) + ")"
+            raise ValueError(f"{name}: {fmt_name} format expects {expected_cols} columns{legacy_note}, got {len(values)} on line {line_no}")
         rows.append(values)
     if not rows:
         raise ValueError(f"{name}: {fmt_name} file contains no numeric data rows")
-    return np.asarray(rows, dtype=float)
+    data = np.asarray(rows, dtype=float)
+    _require_finite_numeric_table(data, name)
+    return data
 
 
 def _require_finite_numeric_table(data: np.ndarray, name: str) -> None:
@@ -681,13 +608,31 @@ def _require_finite_numeric_table(data: np.ndarray, name: str) -> None:
         raise ValueError(f"{name}: fixed-format input contains NaN or infinite values")
 
 
+def _require_integer_column(values: np.ndarray, name: str, column_name: str) -> np.ndarray:
+    """固定格式中的状态位/reset_count 必须是真整数。"""
+    arr = np.asarray(values, dtype=float)
+    if not np.isfinite(arr).all() or not np.allclose(arr, np.round(arr), rtol=0.0, atol=1e-9):
+        raise ValueError(f"{name}: column {column_name} must contain integer values")
+    return np.round(arr).astype(np.int64)
+
+
 def _extract_fixed_yaml_matrix(text: str, key: str, name: str, required: bool) -> np.ndarray | None:
     match = re.search(rf"{re.escape(key)}\s*:\s*\[([^\]]+)\]", text, flags=re.DOTALL)
-    if not match:
+    block = ""
+    if match:
+        block = match.group(1)
+    else:
+        block_match = re.search(
+            rf"(?m)^\s*{re.escape(key)}\s*:\s*\n((?:\s*-\s*\[[^\n]+\]\s*\n?)+)",
+            text,
+        )
+        if block_match:
+            block = block_match.group(1)
+    if not block:
         if required:
             raise ValueError(f"{name}: missing required calibration matrix {key}")
         return None
-    values = [float(token) for token in re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", match.group(1))]
+    values = [float(token) for token in re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", block)]
     if len(values) != 16:
         raise ValueError(f"{name}: calibration matrix {key} expects 16 values, got {len(values)}")
     return np.asarray(values, dtype=float).reshape(4, 4)
@@ -721,7 +666,7 @@ def _read_text(source: str | bytes | Path | io.BytesIO) -> tuple[str, str]:
 
     支持：
     - Path: 本地文件路径。
-    - bytes / BytesIO: Streamlit 上传文件或浏览器上传内容。
+    - bytes / BytesIO: 浏览器上传内容或类文件对象。
     - 普通字符串: 如果是已有路径就读文件，否则当作原始文本。
 
     指标影响：
@@ -733,6 +678,8 @@ def _read_text(source: str | bytes | Path | io.BytesIO) -> tuple[str, str]:
     if isinstance(source, bytes):
         return source.decode("utf-8", errors="replace"), "uploaded"
     if hasattr(source, "read"):
+        if hasattr(source, "seek"):
+            source.seek(0)
         data = source.read()
         if isinstance(data, str):
             return data, getattr(source, "name", "uploaded")
@@ -740,7 +687,24 @@ def _read_text(source: str | bytes | Path | io.BytesIO) -> tuple[str, str]:
     path = Path(str(source))
     if path.exists():
         return path.read_text(encoding="utf-8", errors="replace"), path.name
-    return str(source), "text"
+    source_text = str(source)
+    if "\n" not in source_text and _looks_like_path(source_text):
+        raise FileNotFoundError(source_text)
+    return source_text, "text"
+
+
+def _looks_like_path(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return False
+    if any(ch.isspace() for ch in stripped):
+        return False
+    return (
+        "/" in stripped
+        or "\\" in stripped
+        or stripped.startswith(("~", "."))
+        or Path(stripped).suffix.lower() in {".txt", ".tum", ".csv", ".tsv", ".log", ".yaml", ".yml"}
+    )
 
 
 def _meaningful_lines(text: str) -> list[str]:
@@ -767,7 +731,7 @@ def _parse_tum_numeric_table(lines: list[str], name: str) -> Trajectory:
     stamps = _normalize_timestamps(data[:, 0])
     positions = data[:, 1:4]
     rotations = quaternion_to_matrix(data[:, 4], data[:, 5], data[:, 6], data[:, 7])
-    return Trajectory(name, stamps, positions, rotations, extras={"raw_numeric_table": data}, source_format="tum")
+    return Trajectory(name, stamps, positions, rotations, source_format="tum")
 
 def _normalize_timestamps(stamps: np.ndarray) -> np.ndarray:
     """固定把输入时间戳作为秒读取。

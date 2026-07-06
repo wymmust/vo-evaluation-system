@@ -1,6 +1,6 @@
 """纯 Python 交互式 HTML 报告生成。
 
-不依赖 static_web/ 目录或 Node.js，直接用 Plotly Python API 生成图表，
+不依赖 web/ 目录或 Node.js，直接用 Plotly Python API 生成图表，
 嵌入 ~300 行 JS 实现跨图表点选联动和图表目录功能。
 """
 

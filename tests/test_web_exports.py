@@ -746,8 +746,6 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
         context.renderCharts({
           inputs: { entry_mode: "vo" },
           per_pose: perPose,
-          segment_errors: [],
-          speed_bins: [],
           vo_details: {
             nav_status: [
               { timestamp: 0, flight_mode: 3, navi_mode: 5, rtk_yaw: 1, rtk_alti: 0, position_reset_count: 0, altitude_reset_count: 1, heading_reset_count: 2, vx: 0.1, vy: 0.2, vz: 0.3, velocity_norm: 0.374 },

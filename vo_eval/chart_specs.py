@@ -1,6 +1,6 @@
 """Plotly Python 图表定义，从 report dict 提取数据生成交互式图表。
 
-替代 static_web/visualization/figure_specs.js，完全独立实现。
+当前主前端在 web/ 下，CLI/HTML fallback 复用这里的 Python 图表构建逻辑。
 """
 
 from __future__ import annotations

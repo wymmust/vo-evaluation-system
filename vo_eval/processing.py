@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -22,11 +22,11 @@ from .data_loader import (
     VO_MIN_VALID_SEGMENT_FRAMES,
 )
 from .report import (
-    _dataclass_to_jsonable,
     ate_frame_dataframe,
     build_trajectory_export_sheets,
     build_vloc_detail_report,
     build_vo_detail_report,
+    evaluation_config_to_jsonable,
     tum_dataframe_from_arrays,
 )
 from .utils import (
@@ -52,7 +52,6 @@ from .utils import (
     subset_trajectory,
     vo_valid_segment_indices,
     wrap_pi,
-    _gt_coverage_ratio,
 )
 
 @dataclass
@@ -75,6 +74,56 @@ class EvaluationConfig:
     scale_delta_value: float | None = None
     scale_delta_unit: str = "frames"
     scale_distance_tolerance_ratio: float = 0.05
+
+    def __post_init__(self) -> None:
+        self.rpe_delta_unit = _normalize_delta_unit(self.rpe_delta_unit, "rpe_delta_unit")
+        self.scale_delta_unit = _normalize_delta_unit(self.scale_delta_unit, "scale_delta_unit")
+        self.rpe_delta_frames = _positive_int(self.rpe_delta_frames, "rpe_delta_frames")
+        if self.rpe_delta_value is not None:
+            self.rpe_delta_value = _positive_finite_float(self.rpe_delta_value, "rpe_delta_value")
+        if self.scale_delta_value is not None:
+            self.scale_delta_value = _positive_finite_float(self.scale_delta_value, "scale_delta_value")
+        self.rpe_distance_tolerance_ratio = _nonnegative_finite_float(
+            self.rpe_distance_tolerance_ratio,
+            "rpe_distance_tolerance_ratio",
+        )
+        self.scale_distance_tolerance_ratio = _nonnegative_finite_float(
+            self.scale_distance_tolerance_ratio,
+            "scale_distance_tolerance_ratio",
+        )
+
+
+def _normalize_delta_unit(value: str, name: str) -> str:
+    token = str(value or "frames").strip().lower()
+    if token in {"f", "frame", "frames"}:
+        return "frames"
+    if token in {"m", "meter", "meters", "metre", "metres"}:
+        return "meters"
+    raise ValueError(f"{name} must be 'frames' or 'meters'")
+
+
+def _positive_int(value: int, name: str) -> int:
+    try:
+        out = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if out < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return out
+
+
+def _positive_finite_float(value: float, name: str) -> float:
+    out = float(value)
+    if not math.isfinite(out) or out <= 0:
+        raise ValueError(f"{name} must be a positive finite value")
+    return out
+
+
+def _nonnegative_finite_float(value: float, name: str) -> float:
+    out = float(value)
+    if not math.isfinite(out) or out < 0:
+        raise ValueError(f"{name} must be a non-negative finite value")
+    return out
 
 def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None = None) -> dict[str, Any]:
     """按需求文档固定流程评估 sf_vloc。
@@ -188,7 +237,7 @@ def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = Non
 
 def normalized_vloc_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
     """把用户配置收敛成 sf_vloc 固定评估参数。"""
-    return _copy_user_delta_config(config)
+    return replace(config) if config is not None else EvaluationConfig()
 
 
 def normalized_vo_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
@@ -197,21 +246,7 @@ def normalized_vo_evaluation_config(config: EvaluationConfig | None = None) -> E
     VO 和 VLOC 的关键区别是：VO 是可能无尺度且会 reset 的轨迹，因此固定走 Sim3，
     并把 reset_count 形成的连续段交给 evaluate_trajectories() 逐段对齐。
     """
-    return _copy_user_delta_config(config)
-
-
-def _copy_user_delta_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
-    """只复制仍允许用户控制的 RPE/尺度窗口参数。"""
-    base = config if config is not None else EvaluationConfig()
-    return EvaluationConfig(
-        rpe_delta_frames=base.rpe_delta_frames,
-        rpe_delta_value=base.rpe_delta_value,
-        rpe_delta_unit=base.rpe_delta_unit,
-        rpe_distance_tolerance_ratio=base.rpe_distance_tolerance_ratio,
-        scale_delta_value=base.scale_delta_value,
-        scale_delta_unit=base.scale_delta_unit,
-        scale_distance_tolerance_ratio=base.scale_distance_tolerance_ratio,
-    )
+    return replace(config) if config is not None else EvaluationConfig()
 
 def evaluate_trajectories(
     gt: Trajectory,
@@ -561,15 +596,12 @@ def _evaluate_trajectories_core(
         "original_matched_poses": original_match_count,
         "gt_poses": int(len(original_gt.positions)),
         "est_poses": int(len(original_est.positions)),
-        "coverage_ratio": _gt_coverage_ratio(total_duration_s, original_gt),
-        "gt_pose_coverage_ratio": _gt_coverage_ratio(total_duration_s, original_gt),
-        "gt_time_coverage_ratio": float(total_duration_s / original_gt.duration_s) if original_gt.duration_s > 0 else 1.0,
+        "gt_pose_coverage_ratio": float(total_duration_s / original_gt.duration_s) if original_gt.duration_s > 0 else 1.0,
         "est_pose_coverage_ratio": float(len(used_est_idx) / max(1, len(original_est.positions))),
         "raw_path_scale_ratio_est_over_gt": float(total_raw_est_path_m / total_gt_path_m) if total_gt_path_m > 0 else math.nan,
     }
 
     # 15. report 是唯一对外返回值。前端的所有图表/表格/下载都从这里取数据。
-    #     新增 report 指标时，同步更新 METRIC_CODE_MAP 和 README 的指标-代码总表。
     trajectory_exports = build_trajectory_export_sheets(
         original_gt,
         original_est,
@@ -586,7 +618,7 @@ def _evaluate_trajectories_core(
             "ground_truth": {"name": original_gt.name, "format": original_gt.source_format},
             "estimate": {"name": original_est.name, "format": original_est.source_format},
         },
-        "config": _dataclass_to_jsonable(cfg),
+        "config": evaluation_config_to_jsonable(cfg),
         "association": assoc,
         "discontinuities": {
             "all_matches": discontinuities_all,

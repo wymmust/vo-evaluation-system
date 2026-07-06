@@ -6,7 +6,6 @@ import { state } from "./state.js";
 import { PLOTLY_SCRIPT_URL, VLOC_CHART_OPTIONS, VO_CHART_OPTIONS, POINT_SELECTION_COLORS } from "./constants.js";
 import { reportEntryMode } from "./entry-mode.js";
 import { metricItems } from "./metrics.js";
-import { orientationCorrectionLabel } from "./metrics.js";
 import { ExportPointSelection } from "./point-selection.js";
 import { downloadText } from "./download-utils.js";
 import { evaluationExportFilename } from "./download-utils.js";
@@ -289,7 +288,6 @@ function reportForHtmlExport(report) {
   const {
     trajectory_exports: trajectoryExports,
     per_pose: _perPose,
-    segment_records: _segmentRecords,
     ...htmlReport
   } = report || {};
   if (trajectoryExports?.rpe_per_frame) {

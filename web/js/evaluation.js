@@ -35,19 +35,7 @@ export function buildConfig() {
   const rpeDeltaUnit = isVloc ? "frames" : valueOf("rpeDeltaUnit");
   const scaleDeltaValue = isVloc ? 1.0 : numberOf("scaleDeltaValue");
   const scaleDeltaUnit = isVloc ? "frames" : valueOf("scaleDeltaUnit");
-  const defaultSegmentLengthsM = [50, 100, 200, 500, 1000, 2000, 5000];
   return {
-    profile: "monocular_long_range_uav",
-    alignment: isVloc ? "none" : "sim3",
-    orientation_correction: "none",
-    association_mode: "interpolate_gt",
-    max_time_diff_s: null,
-    max_interpolation_gap_s: 1.0,
-    allow_extrapolation: false,
-    interpolate_rotation: true,
-    interpolation_position_method: "linear",
-    interpolation_rotation_method: "slerp",
-    time_offset_s: 0.0,
     rpe_delta_frames: rpeDeltaUnit === "frames" ? Math.max(1, Math.round(rpeDeltaValue)) : 1,
     rpe_delta_value: rpeDeltaValue,
     rpe_delta_unit: rpeDeltaUnit,
@@ -55,19 +43,6 @@ export function buildConfig() {
     scale_delta_value: scaleDeltaValue,
     scale_delta_unit: scaleDeltaUnit,
     scale_distance_tolerance_ratio: 0.05,
-    rpe_delta_seconds: [1, 5, 10],
-    segment_lengths_m: defaultSegmentLengthsM,
-    max_segments_per_length: 10000,
-    segment_step_frames: 10,
-    max_segment_length_diff_ratio: 0.05,
-    continuous_segment_policy: isVloc ? "vo_timestamps" : "segments",
-    discontinuity_step_m: 100,
-    discontinuity_time_gap_s: 5,
-    divergence_abs_m: 30,
-    divergence_rel_percent: 3,
-    divergence_min_distance_m: 100,
-    divergence_min_time_s: 5,
-    top_k_worst_segments: 10,
   };
 }
 

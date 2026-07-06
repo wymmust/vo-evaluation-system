@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import shutil
 import subprocess
@@ -39,6 +40,17 @@ def _default_html_output_path(report: dict, cwd: Path | None = None) -> Path:
         dataset = log_name or data_name or ""
     prefix = f"{dataset}_{entry_mode}" if dataset else entry_mode
     return (cwd or Path.cwd()) / f"{prefix}_evaluation_report.html"
+
+
+def _format_cli_number(value: object, precision: int = 4) -> str:
+    """Format optional numeric values without crashing on missing report fields."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    if not math.isfinite(number):
+        return "N/A"
+    return f"{number:.{precision}f}"
 
 
 def _write_html_report(report: dict, output_path: Path) -> None:
@@ -115,21 +127,21 @@ def main(argv: list[str] | None = None) -> int:
         rpe_trans = rpe.get("translation_m") or {}
         if rpe_trans:
             print(f"RPE 平移误差 (delta={args.delta}{args.unit}):")
-            print(f"  RMSE: {rpe_trans.get('rmse', 'N/A'):.4f} m")
-            print(f"  Mean: {rpe_trans.get('mean', 'N/A'):.4f} m")
-            print(f"  Max:  {rpe_trans.get('max', 'N/A'):.4f} m")
+            print(f"  RMSE: {_format_cli_number(rpe_trans.get('rmse'))} m")
+            print(f"  Mean: {_format_cli_number(rpe_trans.get('mean'))} m")
+            print(f"  Max:  {_format_cli_number(rpe_trans.get('max'))} m")
             print(f"  Count: {rpe.get('count', 'N/A')}")
 
         ate = report.get("ate_position_m") or {}
         if ate:
             print(f"\nATE 绝对轨迹误差:")
-            print(f"  RMSE: {ate.get('rmse', 'N/A'):.4f} m")
-            print(f"  Mean: {ate.get('mean', 'N/A'):.4f} m")
+            print(f"  RMSE: {_format_cli_number(ate.get('rmse'))} m")
+            print(f"  Mean: {_format_cli_number(ate.get('mean'))} m")
 
         alignment = report.get("alignment") or {}
-        if alignment:
+        if (alignment.get("base_mode") or alignment.get("mode")) == "sim3":
             print(f"\nSim3 对齐:")
-            print(f"  Scale: {alignment.get('scale', 'N/A'):.4f}")
+            print(f"  Scale: {_format_cli_number(alignment.get('scale'))}")
 
         print("================================\n")
 

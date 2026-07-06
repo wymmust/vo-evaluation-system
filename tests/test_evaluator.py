@@ -343,7 +343,53 @@ def test_vo_fixed_accepts_legacy_14_column_format_without_using_depth_columns():
     assert vo.source_format == "sf_vo"
     assert np.allclose(vo.positions[0], [21, 22, 23])
     assert np.allclose(vo.extras["time_cost"], [12.5])
-    assert vo.extras["raw_numeric_table"].shape == (1, 11)
+    assert "raw_numeric_table" not in vo.extras
+
+
+def test_fixed_parsers_do_not_keep_raw_numeric_tables_and_validate_integer_columns():
+    imu = parse_imu_fixed(sample_imu_text(), name="imu.txt")
+    vloc = parse_vloc_fixed(sample_vloc_text(), name="vloc.txt")
+    vo = parse_vo_fixed(sample_vo_text(), name="vo.txt")
+
+    assert "raw_numeric_table" not in imu.extras
+    assert "raw_numeric_table" not in vloc.extras
+    assert "raw_numeric_table" not in vo.extras
+    assert np.allclose(vloc.extras["altitude"], [5.0, 6.0])
+    assert np.allclose(vloc.extras["altitude_msl"], [5.0, 6.0])
+    assert np.allclose(vloc.extras["height"], [5.0, 6.0])
+
+    bad_status = sample_vloc_text().replace("10.0 2 42", "10.0 2.5 42", 1)
+    with pytest.raises(ValueError, match="integer"):
+        parse_vloc_fixed(bad_status, name="vloc.txt")
+
+
+def test_load_trajectory_rejects_missing_path_and_invalid_tum_quaternion(tmp_path):
+    missing = tmp_path / "missing.tum"
+    with pytest.raises(FileNotFoundError):
+        vo_eval.load_trajectory(missing)
+    with pytest.raises(FileNotFoundError):
+        vo_eval.load_trajectory(str(missing))
+
+    with pytest.raises(ValueError, match="zero-norm"):
+        load_trajectory_from_text("0 0 0 0 0 0 0 0\n1 1 0 0 0 0 0 1\n", fmt="tum", name="bad")
+
+
+def test_trajectory_helpers_reject_mismatched_extra_lengths():
+    with pytest.raises(ValueError, match="extras"):
+        Trajectory("bad", [0, 1], [[0, 0, 0], [1, 0, 0]], extras={"bad": np.asarray([1, 2, 3])})
+
+
+def test_evaluation_config_normalizes_units_and_rejects_invalid_values():
+    cfg = EvaluationConfig(rpe_delta_value=100, rpe_delta_unit="m", scale_delta_value=10, scale_delta_unit="f")
+    assert cfg.rpe_delta_unit == "meters"
+    assert cfg.scale_delta_unit == "frames"
+
+    with pytest.raises(ValueError, match="rpe_delta_value"):
+        EvaluationConfig(rpe_delta_value=0)
+    with pytest.raises(ValueError, match="rpe_delta_unit"):
+        EvaluationConfig(rpe_delta_unit="seconds")
+    with pytest.raises(ValueError, match="rpe_distance_tolerance_ratio"):
+        EvaluationConfig(rpe_distance_tolerance_ratio=-1)
 
 
 def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
@@ -461,6 +507,26 @@ def test_package_all_exports_vo_bundle_entrypoint():
 def test_cli_requires_explicit_mode_and_directories():
     with pytest.raises(SystemExit):
         cli_main([])
+
+
+def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("vo_eval.__main__.load_vloc_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr(
+        "vo_eval.__main__.evaluate_vloc_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vloc"},
+            "rpe_frame_delta": {"translation_m": {"rmse": math.nan, "mean": None, "max": "bad"}, "count": 0},
+            "ate_position_m": {"rmse": math.nan, "mean": None},
+            "alignment": {"base_mode": "sim3", "scale": None},
+        },
+    )
+
+    exit_code = cli_main(["--mode", "sf_vloc", "--data_dir", str(tmp_path), "--log_dir", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "RMSE: N/A m" in captured.out
+    assert "Scale: N/A" in captured.out
 
 
 def test_cli_p_option_previews_temp_html_report(tmp_path, monkeypatch):
@@ -608,7 +674,9 @@ def test_tum_zero_error_without_user_alignment_config():
     report = evaluate_trajectories(gt, est, EvaluationConfig())
     assert report["ate_position_m"]["rmse"] < 1e-6
     assert report["rpe_frame_delta"]["translation_m"]["rmse"] < 1e-9
-    assert report["summary"]["coverage_ratio"] == 1.0
+    assert report["summary"]["gt_pose_coverage_ratio"] == 1.0
+    assert "coverage_ratio" not in report["summary"]
+    assert "gt_time_coverage_ratio" not in report["summary"]
 
 
 def test_sim3_recovers_scale_for_monocular_like_output():
@@ -918,23 +986,12 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
     gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
     est_stamps = np.arange(6, dtype=float) * 0.1
     est_positions = np.column_stack([np.arange(6, dtype=float), np.sin(np.arange(6, dtype=float)), np.ones(6, dtype=float)])
-    raw_numeric = np.asarray(
-        [
-            [0.0, 9, 0.0, 0.000000, 1.0, 0, 0, 10, 1, 0.1, 0],
-            [0.1, 9, 1.0, 0.841471, 1.0, 0, 0, 10, 1, 0.1, 0],
-            [0.2, 9, 2.0, 0.909297, 1.0, 0, 0, 10, 1, 0.1, 1],
-            [0.3, 9, 3.0, 0.141120, 1.0, 0, 0, 10, 1, 0.1, 1],
-            [0.4, 9, 4.0, -0.756802, 1.0, 0, 0, 10, 1, 0.1, 2],
-            [0.5, 9, 5.0, -0.958924, 1.0, 0, 0, 10, 1, 0.1, 2],
-        ],
-        dtype=float,
-    )
     est = Trajectory(
         "vo",
         est_stamps,
         est_positions,
         rotations=None,
-        extras={"raw_numeric_table": raw_numeric, "reset_count": raw_numeric[:, 10]},
+        extras={"reset_count": np.asarray([0, 0, 1, 1, 2, 2], dtype=int)},
         source_format="sf_vo",
     )
     report = evaluate_trajectories(

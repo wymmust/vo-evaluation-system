@@ -402,7 +402,6 @@ def interpolate_reference_to_estimate(
         },
         source_format=f"{reference.source_format}+interpolated",
     )
-    matched_duration = float(common_stamps[-1] - common_stamps[0]) if len(common_stamps) > 1 else 0.0
     info = {
         "method": "interpolate_gt",
         "mode": "interpolate_gt",
@@ -446,7 +445,6 @@ def interpolate_reference_to_estimate(
         "max_abs_time_offset_to_left_sample_s": float(np.max(left_offsets)) if len(left_offsets) else 0.0,
         "max_abs_time_offset_to_right_sample_s": float(np.max(right_offsets)) if len(right_offsets) else 0.0,
         "mean_abs_time_offset_to_left_or_right_s": float(np.mean(nearest_side_offsets)) if len(nearest_side_offsets) else 0.0,
-        "gt_time_coverage_ratio": float(matched_duration / reference.duration_s) if reference.duration_s > 0 else 1.0,
     }
     if ref_unique.rotations is None:
         info["rotation_interpolation_note"] = "rotation interpolation skipped: no reference rotation"
@@ -470,7 +468,15 @@ def _unique_timestamp_trajectory(traj: Trajectory) -> Trajectory:
 def subset_trajectory(traj: Trajectory, indices: np.ndarray, stamps_override: np.ndarray | None = None) -> Trajectory:
     """按索引截取轨迹，并可把时间戳替换成统一后的评估时间戳。"""
     rotations = traj.rotations[indices] if traj.rotations is not None else None
-    extras = {key: np.asarray(value)[indices] for key, value in traj.extras.items() if len(value) == len(traj.positions)}
+    extras: dict[str, np.ndarray] = {}
+    for key, value in traj.extras.items():
+        arr = np.asarray(value)
+        if arr.ndim == 0:
+            extras[key] = arr
+        elif len(arr) == len(traj.positions):
+            extras[key] = arr[indices]
+        else:
+            raise ValueError(f"extras['{key}'] length must match trajectory length or be scalar")
     stamps = np.asarray(stamps_override, dtype=float) if stamps_override is not None else traj.stamps[indices]
     return Trajectory(traj.name, stamps, traj.positions[indices], rotations, extras=extras, source_format=traj.source_format)
 
@@ -599,12 +605,11 @@ def slerp_quaternion(q0: np.ndarray, q1: np.ndarray, alpha: float) -> np.ndarray
     sin_theta_0 = math.sin(theta_0)
     s0 = math.cos(theta) - dot * sin_theta / sin_theta_0
     s1 = sin_theta / sin_theta_0
-    return s0 * q0 + s1 * q1
-
-
-def _gt_coverage_ratio(total_duration_s: float, original_gt: Trajectory) -> float:
-    """GT 覆盖率口径：按有效评估时间窗口占原始 GT 总时长计算。"""
-    return float(total_duration_s / original_gt.duration_s) if original_gt.duration_s > 0 else 1.0
+    out = s0 * q0 + s1 * q1
+    out_norm = np.linalg.norm(out)
+    if out_norm == 0 or not np.isfinite(out_norm):
+        raise ValueError("SLERP produced an invalid quaternion")
+    return out / out_norm
 
 
 def identity_alignment() -> dict[str, Any]:
@@ -928,6 +933,7 @@ def describe(values: Any) -> dict[str, float | int] | None:
 
     所有 RMSE/mean/median/std/min/max/p95/p99 都从这里产生，
     因此 ATE、RPE 和局部尺度的统计口径一致。
+    std 使用 numpy 默认的总体标准差 ddof=0。
 
     来源对应：
     - RMSE 是 Sturm12/TUM 和 Zhang18 轨迹误差报告中最常用的汇总方式。
@@ -1001,8 +1007,10 @@ def quaternion_to_matrix(qx: np.ndarray, qy: np.ndarray, qz: np.ndarray, qw: np.
     """
     q = np.column_stack([qx, qy, qz, qw]).astype(float)
     norms = np.linalg.norm(q, axis=1)
-    valid = norms > 0
-    q[valid] /= norms[valid, None]
+    valid = np.isfinite(norms) & (norms > 0)
+    if not np.all(valid):
+        raise ValueError("TUM quaternion contains zero-norm or non-finite values")
+    q /= norms[:, None]
     x, y, z, w = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
     n = len(q)
     rot = np.empty((n, 3, 3), dtype=float)
@@ -1085,7 +1093,12 @@ def matrix_to_quaternion(rot: np.ndarray) -> np.ndarray:
                 qy = (r[1, 2] + r[2, 1]) / s
                 qz = 0.25 * s
         out.append([qx, qy, qz, qw])
-    return np.asarray(out, dtype=float)
+    quats = np.asarray(out, dtype=float)
+    norms = np.linalg.norm(quats, axis=1)
+    valid = np.isfinite(norms) & (norms > 0)
+    if not np.all(valid):
+        raise ValueError("rotation matrix produced zero-norm or non-finite quaternion")
+    return quats / norms[:, None]
 
 def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
     """把 RPE 的 UI/API 配置统一成 report 可读字段。
