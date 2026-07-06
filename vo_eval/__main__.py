@@ -12,6 +12,7 @@ import webbrowser
 from pathlib import Path
 
 from .data_loader import load_vloc_evaluation_bundle, load_vo_evaluation_bundle
+# from .html_report import report_to_interactive_html  # 纯 Python 报告，暂不用，保留模块
 from .processing import EvaluationConfig, evaluate_vloc_bundle, evaluate_vo_bundle
 from .report import report_to_json
 
@@ -41,11 +42,12 @@ def _default_html_output_path(report: dict, cwd: Path | None = None) -> Path:
 
 
 def _write_html_report(report: dict, output_path: Path) -> None:
+    """通过 Node.js export_report_cli.js 生成交互式 HTML 报告（与 web UI 同一套可视化）。"""
     node = shutil.which("node")
     if not node:
         raise RuntimeError("生成 HTML 报告需要 Node.js：请先安装 node，或不使用 -p")
     repo_root = Path(__file__).resolve().parents[1]
-    exporter = repo_root / "static_web" / "export_report_cli.js"
+    exporter = repo_root / "web" / "cli" / "export_report_cli.js"
     if not exporter.exists():
         raise RuntimeError(f"找不到 HTML 导出器：{exporter}")
     try:

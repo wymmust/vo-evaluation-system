@@ -2,17 +2,11 @@
 
 ## Commands
 
-### Run the Streamlit app
+### Run local server (required for evaluation)
 ```bash
-streamlit run app.py
+python web/server.py --host 127.0.0.1 --port 8766
 ```
-Opens on http://localhost:8501 by default.
-
-### Run static web version locally
-```bash
-cd static_web && python3 -m http.server 8765
-```
-Open http://localhost:8765 — must use HTTP, not file://.
+Open http://127.0.0.1:8765/ — the server provides both static files and evaluation API endpoints. Must run from repo root so that `vo_eval/` is importable.
 
 ### Run all tests
 ```bash
@@ -24,19 +18,13 @@ pytest
 pytest tests/test_evaluator.py -k "test_sim3_recovers_scale"
 ```
 
-### Sync static_web Python modules (automatic via git hook)
-```bash
-python scripts/sync_static_web.py   # manual sync if needed
-```
-Copies the split `vo_eval` Python modules into `static_web/py/vo_eval/` for Pyodide browser deployment. A git pre-commit hook (`scripts/pre-commit-sync.sh`) runs this automatically when the core modules are changed, so the browser copy stays in sync.
-
 ## Architecture
 
-This is a VO (Visual Odometry) trajectory evaluation tool with two deployment modes: a Streamlit Python server (`app.py`) and a static web version (`static_web/`) that runs evaluation entirely in the browser via Pyodide.
+This is a VO (Visual Odometry) trajectory evaluation tool with a local-server-based web UI (`web/`). All evaluation runs in Python on the server side via HTTP API.
 
 ### Layer separation
 
-**Data loading layer** (`vo_eval/data_loader.py`): Defines `Trajectory`, `EvaluationFormatSpec`, `HomePoint`, `Calibration`, `SfVlocBundle`, `SfVoBundle`, fixed SF/VO/VLOC columns, parsers, directory loaders, TUM readers, and input normalization.
+**Data loading layer** (`vo_eval/data_loader.py`): Defines `Trajectory`, `EvaluationFormatSpec`, `HomePoint`, `Calibration`, `SfVlocBundle`, `SfVoBundle`, fixed SF/VO/VLOC columns, parsers, directory loaders, TUM readers, and input normalization. Also provides `load_vo_evaluation_bundle_from_text()` and `load_vloc_evaluation_bundle_from_text()` for file-upload API evaluation.
 
 **Processing layer** (`vo_eval/processing.py`): Owns `EvaluationConfig`, `evaluate_vloc_bundle()`, `evaluate_vo_bundle()`, and `evaluate_trajectories()`. It controls the evaluation flow and assembles the report, but delegates low-level math to `utils.py` and export tables to `report.py`.
 
@@ -44,9 +32,7 @@ This is a VO (Visual Odometry) trajectory evaluation tool with two deployment mo
 
 **Report layer** (`vo_eval/report.py`): Builds VLOC/VO detail tables and export artifacts, including JSON and Excel output.
 
-**UI layer** (`app.py`): Streamlit sidebar collects config, calls `load_*_evaluation_bundle()` and `evaluate_*_bundle()`, then renders metric cards, Plotly charts, and downloads. It does not compute metrics directly.
-
-**Static web layer** (`static_web/`): Pure client-side alternative. `app.js` builds UI and calls `static_web/py/browser_runner.py`, which imports the split `vo_eval` modules inside Pyodide and returns report JSON. The browser copies live under `static_web/py/vo_eval/`.
+**Web UI layer** (`web/`): Local-server + browser UI. `js/main.js` is the ES module entry point that wires all UI modules; `js/state.js`, `js/constants.js`, `js/dom-refs.js`, `js/utils.js`, `js/labels.js` are foundational modules with no cross-dependencies. `server.py` is the HTTP server providing `/api/evaluate-paths`, `/api/evaluate-bundle`, `/api/report-slice`, and `/api/health` endpoints. `visualization/figure_specs.js` and `visualization/report_templates.js` use ES module `export` (no globalThis handshake). `cli/export_report_cli.js` is the Node.js CLI for offline HTML report generation. `css/style.css` provides base styles and CSS variables; `css/report-export.css` extends them for offline HTML reports.
 
 ### Key data structures
 
@@ -66,11 +52,3 @@ This is a VO (Visual Odometry) trajectory evaluation tool with two deployment mo
 ### Metric-code synchronization
 
 `METRIC_CODE_MAP` in `vo_eval/data_loader.py` is the authoritative index linking each metric to its report field and function names. When adding or renaming a metric, update `METRIC_CODE_MAP` and the README "指标与代码总表" table simultaneously to prevent documentation/code divergence.
-
-### Static deployment copy
-
-Pyodide fetches Python files over HTTP and writes them into a virtual filesystem. After modifying `vo_eval/data_loader.py`, `vo_eval/utils.py`, `vo_eval/report.py`, or `vo_eval/processing.py`, run `python scripts/sync_static_web.py` to update `static_web/py/vo_eval/`. `static_web/py/browser_runner.py` is the thin Pyodide adapter.
-
-### Streamlit config
-
-`.streamlit/config.toml`: upload size limit 200MB (`maxUploadSize = 200`), headless mode, port 8501.

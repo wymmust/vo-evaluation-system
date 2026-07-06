@@ -8,67 +8,23 @@
 
 ## 运行
 
-```bash
-python3 -m pip install -r requirements.txt
-streamlit run app.py
-```
+### 本地评估服务器
 
-## 公网部署
-
-这个项目是 Streamlit/Python 应用，需要部署到能运行 Python 服务的平台；GitHub Pages 只能托管静态网页，不能直接运行本工具。
-
-## 纯静态网页版本
-
-如果不想维护 Python 服务，可以直接部署 `static_web/` 文件夹。这个版本用 Pyodide 在浏览器里运行 Python 评估代码，用户上传的轨迹文件只在浏览器内处理，不需要后端服务器。
-
-本地预览：
+从仓库根目录启动带评估 API 的本地服务器：
 
 ```bash
-cd static_web
-python3 -m http.server 8765
+python web/server.py --host 127.0.0.1 --port 8766
 ```
 
-然后打开 `http://localhost:8765/`。不要直接双击 `index.html`，因为浏览器通常会限制本地文件读取，导致 Pyodide 或评估代码无法加载。
+然后打开 `http://127.0.0.1:8766/`。页面左侧可填写 `data_dir` / `log_dir` 本地路径直接运行评估：`data_dir` 只读取 `imu.txt`；VO 的 `log_dir` 只读取 `vo.txt` 和 `calib_raw.yaml`；VLOC 的 `log_dir` 读取 `vloc.txt`、`home_point.txt` 和 `calib_raw.yaml`。
 
-如果要在网页左侧直接输入 `data_dir` / `log_dir` 本地路径运行评估，请使用带本地读取接口的启动方式：
-
-```bash
-python3 static_web/local_server.py --host 127.0.0.1 --port 8766
-```
-
-然后打开 `http://127.0.0.1:8766/`。这个模式由本机 Python 服务读取必需文件：`data_dir` 只读取 `imu.txt`；VO 的 `log_dir` 只读取 `vo.txt` 和 `calib_raw.yaml`；VLOC 的 `log_dir` 读取 `vloc.txt`、`home_point.txt` 和 `calib_raw.yaml`。
-
-公网部署时，把完整的 `static_web/` 文件夹上传到任意静态网站托管平台即可，例如 Netlify、Vercel、Cloudflare Pages、对象存储静态站点或普通 Nginx 静态目录。`static_web/vendor/` 已包含固定版本的 Plotly、Pyodide、numpy、pandas 及其必要依赖，页面运行时只从同源静态资源加载代码，不再访问第三方 CDN；超大日志仍会受浏览器内存限制。
-
-静态版如果出现 `Failed to fetch`，优先检查三点：
-
-- 当前地址必须是 `http://...` 或 `https://...`，不能是 `file://.../index.html`。
-- 本地预览时 `python3 -m http.server 8765` 必须保持运行。
-- 公网部署时必须把 `static_web/py/`、`static_web/vendor/` 和 `index.html` 一起上传；如果漏传 `vendor/`，页面会在加载 Python 运行环境时失败。
-
-推荐方式一：Streamlit Community Cloud
-
-1. 打开 Streamlit Community Cloud，新建 app。
-2. 选择 GitHub 仓库 `wymmust/vo-evaluation-system`。
-3. Main file path 填 `app.py`。
-4. 部署完成后，平台会生成一个公网 URL，任何人都可以通过该 URL 上传自己的 GT/VO 文件并查看评估结果。
-
-推荐方式二：Docker 平台
-
-仓库已经包含 `Dockerfile`，可部署到 Render、Railway、Fly.io 或任意支持 Docker 的服务器。容器启动后监听 `8501` 端口。
-
-本地 Docker 验证：
-
-```bash
-docker build -t vo-evaluation-system .
-docker run --rm -p 8501:8501 vo-evaluation-system
-```
+公网部署时，把 `vo_eval/` 和 `web/` 两个目录一起上传到任意静态网站托管平台（例如 Netlify、Vercel、Cloudflare Pages、对象存储静态站点或普通 Nginx 静态目录）。`web/vendor/` 已包含固定版本的 Plotly，页面运行时只从同源静态资源加载，不再访问第三方 CDN；超大日志仍会受浏览器内存限制。
 
 部署注意事项：
 
-- 不要把飞行日志、测试数据或导出报告提交到仓库；`.gitignore` 和 `.dockerignore` 已经默认排除这些文件。
-- 上传文件大小默认上限为 200 MB，可在 `.streamlit/config.toml` 中调整 `maxUploadSize`。
+- 不要把飞行日志、测试数据或导出报告提交到仓库；`.gitignore` 已经默认排除这些文件。
 - 如果要让所有人访问应用，部署平台上的访问权限需要设置为 public。
+- 公网部署时必须把 `vo_eval/`、`web/` 目录一起上传；如果漏传，评估 API 将无法工作。
 
 ## 支持格式
 
@@ -152,7 +108,7 @@ docker run --rm -p 8501:8501 vo-evaluation-system
 
 ## 运行结果截图指标卡与代码/公式对应
 
-本节对应页面第一屏 `EVALUATION SUMMARY / 运行结果` 的 15 个卡片。前端卡片由 `vo-evaluation-system/static_web/app.js` 生成，后端指标主要由 `vo-evaluation-system/vo_eval/processing.py:evaluate_trajectories()` 生成。所有 `rmse/mean/median/std/min/max/p95/p99` 统计最终都走 `describe()`：
+本节对应页面第一屏 `EVALUATION SUMMARY / 运行结果` 的 15 个卡片。前端卡片由 `vo-evaluation-system/web/js/main.js` 生成，后端指标主要由 `vo-evaluation-system/vo_eval/processing.py:evaluate_trajectories()` 生成。所有 `rmse/mean/median/std/min/max/p95/p99` 统计最终都走 `describe()`：
 
 ```python
 "rmse": float(np.sqrt(np.mean(arr * arr)))
@@ -504,7 +460,7 @@ $$
 
 ### 1. 报告 Hero 基本信息
 
-- 前端代码：`static_web/app.js` 的报告模板读取 `report.inputs`、`report.summary`、`report.config`、`alignmentSummaryLabel(report)` 和 `tuningRiskStatus(tuningRows)`。
+- 前端代码：`web/js/main.js` 的报告模板读取 `report.inputs`、`report.summary`、`report.config`、`alignmentSummaryLabel(report)` 和 `tuningRiskStatus(tuningRows)`。
 - 新增字段：
   - `estimate`：`report.inputs.estimate.name`，本次评估的 VO 文件名。
   - `reference`：`report.inputs.ground_truth.name`，本次评估的 GT/reference 文件名；如果文件名像 `imu.txt`，报告会提示确认它是否是真值。

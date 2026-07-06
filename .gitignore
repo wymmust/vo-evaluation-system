@@ -16,10 +16,9 @@ reports/
 outputs/
 
 *.html
-!static_web/index.html
+!web/index.html
 *.bag
 *.zip
-!static_web/vendor/pyodide/v0.26.4/full/python_stdlib.zip
 *.tar
 *.tar.gz
 *.tgz
@@ -35,3 +34,9 @@ vo.txt
 *_GT.txt
 *Trajectory*.txt
 KITTI_*.txt
+
+.codebuddy
+.claude
+.specify
+specs/
+*.code-workspace
