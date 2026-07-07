@@ -12,7 +12,7 @@ env/
 examples/
 data/
 datasets/
-reports/
+/reports/
 outputs/
 
 *.html
