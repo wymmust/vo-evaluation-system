@@ -13,12 +13,15 @@ from .reports import _default_html_output_path, _format_cli_number, _preview_htm
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m voeval eval",
+        prog="python -m voeval {sf_vo,sf_vloc}",
         description="Trajectory VO/VLOC evaluation CLI.",
     )
-    parser.add_argument("--mode", choices=["sf_vo", "sf_vloc"], required=True, help="Evaluation workflow")
-    parser.add_argument("--data_dir", type=Path, required=True, help="Directory containing imu.txt")
-    parser.add_argument("--log_dir", type=Path, required=True, help="Directory containing vo.txt/vloc.txt + calib_raw.yaml; VLOC also requires home_point.txt")
+    parser.add_argument("mode_arg", nargs="?", choices=["sf_vo", "sf_vloc"], help="Evaluation workflow")
+    parser.add_argument("data_dir_arg", nargs="?", type=Path, help="Directory containing imu.txt")
+    parser.add_argument("log_dir_arg", nargs="?", type=Path, help="Directory containing vo.txt/vloc.txt + calib_raw.yaml; VLOC also requires home_point.txt")
+    parser.add_argument("--mode", dest="mode_option", choices=["sf_vo", "sf_vloc"], help=argparse.SUPPRESS)
+    parser.add_argument("--data_dir", dest="data_dir_option", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--log_dir", dest="log_dir_option", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("-d", "--delta", type=float, default=100.0, help="RPE delta value (default: 100)")
     parser.add_argument("-u", "--unit", default="m", choices=["m", "f"], help="RPE delta unit: m=meters, f=frames (default: m)")
     parser.add_argument("-o", "--output", type=Path, default=None, help="Output JSON path (optional)")
@@ -31,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--logfile", type=Path, default=None, help="Write DEBUG logs to this file")
 
     args = parser.parse_args(argv)
+    _resolve_eval_arguments(parser, args)
     if args.html_output and not args.save_html:
         parser.error("--html-output requires -s/--save-html")
     logger = configure_logging(verbose=args.verbose, silent=args.silent, debug=args.debug, logfile=args.logfile)
@@ -83,6 +87,34 @@ def main(argv: list[str] | None = None) -> int:
         else:
             logger.error("[voeval] error: %s", exc)
         return 1
+
+
+def _resolve_eval_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Normalize new positional CLI arguments and legacy flag arguments."""
+
+    if args.mode_arg and args.mode_option:
+        parser.error("use either positional mode or --mode, not both")
+    if args.data_dir_arg and args.data_dir_option:
+        parser.error("use either positional data_dir or --data_dir, not both")
+    if args.log_dir_arg and args.log_dir_option:
+        parser.error("use either positional log_dir or --log_dir, not both")
+
+    args.mode = args.mode_arg or args.mode_option
+    args.data_dir = args.data_dir_arg or args.data_dir_option
+    args.log_dir = args.log_dir_arg or args.log_dir_option
+    missing = []
+    if args.mode is None:
+        missing.append("mode")
+    if args.data_dir is None:
+        missing.append("data_dir")
+    if args.log_dir is None:
+        missing.append("log_dir")
+    if missing:
+        parser.error(
+            "missing required arguments: "
+            + ", ".join(missing)
+            + "; use: python -m voeval sf_vloc DATA_DIR LOG_DIR"
+        )
 
 
 def _log_vo_result_summary(logger, report: dict[str, object], args: argparse.Namespace) -> None:

@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 import voeval
+from voeval import __main__ as voeval_main
 from voeval.io import (
     Calibration,
     HomePoint,
@@ -510,6 +511,48 @@ def test_package_all_exports_vo_bundle_entrypoint():
 def test_cli_requires_explicit_mode_and_directories():
     with pytest.raises(SystemExit):
         cli_main([])
+
+
+def test_module_main_dispatches_direct_sf_mode_to_cli(monkeypatch):
+    received: list[list[str]] = []
+
+    monkeypatch.setattr(voeval_main.cli, "main", lambda argv: received.append(list(argv)) or 0)
+
+    exit_code = voeval_main.main(["sf_vloc", "/data/path", "/log/path", "-v"])
+
+    assert exit_code == 0
+    assert received == [["sf_vloc", "/data/path", "/log/path", "-v"]]
+
+
+def test_module_main_keeps_legacy_flag_mode_entry(monkeypatch):
+    received: list[list[str]] = []
+
+    monkeypatch.setattr(voeval_main.cli, "main", lambda argv: received.append(list(argv)) or 0)
+
+    exit_code = voeval_main.main(["--mode", "sf_vloc", "--data_dir", "/data/path", "--log_dir", "/log/path"])
+
+    assert exit_code == 0
+    assert received == [["--mode", "sf_vloc", "--data_dir", "/data/path", "--log_dir", "/log/path"]]
+
+
+def test_cli_accepts_positional_mode_and_directories(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vloc_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vloc"},
+            "rpe_frame_delta": {"translation_m": {"rmse": 1.0, "mean": 0.5, "max": 2.0}, "count": 3},
+            "ate_position_m": {"rmse": 2.0, "mean": 1.0},
+            "alignment": {"base_mode": "none"},
+            "vloc_details": {"summary": {"trajectory_length_m": 100.0}},
+        },
+    )
+
+    exit_code = cli_main(["sf_vloc", str(tmp_path), str(tmp_path), "-v"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "========== VLOC 评估结果 ==========" in captured.out
 
 
 def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, capsys):
