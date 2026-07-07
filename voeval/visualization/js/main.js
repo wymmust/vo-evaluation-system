@@ -1,5 +1,5 @@
 // main.js — ES module 入口
-// import 所有模块并 wire init() + wireEvents()，替代原 app.js 的初始化逻辑
+// 前端模块入口：装配 init() 和 wireEvents()
 
 import { state } from "./state.js";
 import { els } from "./dom-refs.js";

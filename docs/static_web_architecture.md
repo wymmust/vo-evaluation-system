@@ -1,195 +1,148 @@
-# 静态网页架构说明
+# 本地网页架构说明
 
 ## 整体架构
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                        浏览器 (Browser)                          │
-│                                                                  │
-│  ┌──────────────┐   postMessage    ┌──────────────────────────┐  │
-│  │   app.js     │ ◄──────────────► │       worker.js          │  │
-│  │  (主线程)     │                  │    (Web Worker 线程)      │  │
-│  │              │                  │                          │  │
-│  │ • 用户交互    │                  │  ┌────────────────────┐  │  │
-│  │ • DOM 操作   │                  │  │     Pyodide        │  │  │
-│  │ • Plotly 渲染│                  │  │  (Python 运行时)    │  │  │
-│  │ • 导出文件   │                  │  │                    │  │  │
-│  │              │                  │  │  /vo_eval/         │  │  │
-│  └──────┬───────┘                  │  │   ├ data_loader.py │  │  │
-│         │                          │  │   ├ utils.py       │  │  │
-│         │                          │  │   ├ report.py      │  │  │
-│         │                          │  │   └ processing.py  │  │  │
-│         │                          │  │                    │  │  │
-│         │                          │  │  /browser_runner.py│  │  │
-│         │                          │  └────────────────────┘  │  │
-│         │                          └──────────────────────────┘  │
-│         │                                                        │
-│  ┌──────▼───────┐  ┌──────────────────┐  ┌──────────────────┐   │
-│  │  index.html  │  │  figure_specs.js │  │  report_templates│   │
-│  │  (页面结构)   │  │  (图表规格)       │  │  .js (报告模板)   │   │
-│  └──────────────┘  └──────────────────┘  └──────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ fetch("../vo_eval/*.py")
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     HTTP 服务器 / 文件系统                        │
-│                                                                  │
-│   vo_eval/                    web/                        │
-│   ├ data_loader.py            ├ index.html                       │
-│   ├ utils.py                  ├ app.js                           │
-│   ├ report.py                 ├ worker.js                        │
-│   ├ processing.py             ├ style.css                        │
-│   └ __init__.py               ├ py/browser_runner.py             │
-│                               ├ visualization/                   │
-│                               │  ├ figure_specs.js               │
-│                               │  └ report_templates.js           │
-│                               └ vendor/                          │
-│                                  ├ pyodide/  (Python 运行时)      │
-│                                  └ plotly/   (图表库)             │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## 各文件职责
-
-### HTML 层
-
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `index.html` | 179 | 页面骨架：左侧控制面板（输入选择、参数设置、图表目录）+ 右侧内容区（指标卡片、图表网格、导出按钮）。加载 3 个 JS 文件 |
-
-### JavaScript 层
-
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `app.js` | 2641 | **核心控制器**：用户交互、文件读取、调用 worker 执行评估、接收结果、渲染指标卡片和图表、导出下载 |
-| `worker.js` | 130 | **Pyodide 桥接**：在 Web Worker 中初始化 Python 运行时，fetch vo_eval 模块，暴露评估函数给主线程 |
-| `figure_specs.js` | ~600 | **图表规格**：定义每种图表（3D 轨迹、误差曲线、状态信息等）的 Plotly 数据提取和布局规则 |
-| `report_templates.js` | ~300 | **报告模板**：HTML 报告导出的模板生成 |
-
-### Python 层
-
-| 文件 | 职责 |
-|------|------|
-| `browser_runner.py` | **浏览器入口**：接收 JS 传入的文件文本，调用 vo_eval 解析和评估，返回 JSON 报告。支持 light/full 两种载荷模式 |
-| `vo_eval/data_loader.py` | 数据加载：解析 imu.txt、vloc.txt、vo.txt、calib_raw.yaml、home_point.txt |
-| `vo_eval/utils.py` | 数值工具：坐标转换、插值、对齐（Sim3）、旋转、统计 |
-| `vo_eval/processing.py` | 评估流水线：编排 VLOC/VO 评估，生成 report dict |
-| `vo_eval/report.py` | 报告导出：JSON、Excel、HTML 报告生成 |
-
-### 静态资源
-
-| 路径 | 内容 |
-|------|------|
-| `vendor/pyodide/v0.26.4/` | Pyodide Python 运行时（~20MB，含 numpy/pandas） |
-| `vendor/plotly/plotly-2.35.2.min.js` | Plotly 图表库（~3.5MB） |
-
-## 数据流
-
-### 初始化阶段
+当前网页不是纯静态离线评估。浏览器负责交互、目录读取、图表渲染和导出交互；Python 评估逻辑运行在本机 `voeval server` HTTP 服务中。
 
 ```text
-1. 浏览器加载 index.html
-2. index.html 加载 Plotly CDN → vendor/plotly/
-3. app.js 创建 Web Worker → worker.js
-4. worker.js 加载 Pyodide → vendor/pyodide/
-5. worker.js fetch("../vo_eval/*.py") → 获取 4 个 Python 模块源码
-6. worker.js 将源码写入 Pyodide 虚拟文件系统 /vo_eval/
-7. worker.js 导入 browser_runner.py，暴露 3 个函数给主线程
-8. app.js 收到 init 完成信号，启用"运行评估"按钮
+┌────────────────────────────────────────────────────────────────────┐
+│ Browser                                                            │
+│                                                                    │
+│ voeval/visualization/index.html                                    │
+│   ├─ js/main.js                         页面入口和事件装配          │
+│   ├─ js/evaluation.js                   调用评估 API                │
+│   ├─ js/file-bundle.js                  目录选择和固定文件读取      │
+│   ├─ js/report-render.js                指标、图表、明细渲染        │
+│   ├─ js/chart-render.js                 Plotly 图表渲染             │
+│   ├─ js/point-selection.js              选点对比                    │
+│   ├─ js/excel-export.js                 浏览器端 Excel 导出         │
+│   └─ js/html-export.js                  浏览器端 HTML 快照组装      │
+│                                                                    │
+│                 fetch /api/evaluate-* /api/report-slice             │
+└───────────────────────────────────┬────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ voeval/server.py                                                    │
+│                                                                    │
+│ 1. 托管 voeval/visualization/                                      │
+│ 2. 读取本地 data_dir/log_dir 或接收浏览器上传的文件文本             │
+│ 3. 调用 voeval.io 解析固定格式                                      │
+│ 4. 调用 voeval.core 执行评估                                        │
+│ 5. 调用 voeval.reports 输出 JSON-safe report                        │
+└───────────────────────────────────┬────────────────────────────────┘
+                                    │
+               ┌────────────────────┼────────────────────┐
+               ▼                    ▼                    ▼
+        voeval/io/            voeval/core/          voeval/reports/
+        固定格式读取          评估计算核心          明细、导出、预览
 ```
 
-### 评估阶段
+## 文件职责
+
+### Python 服务与评估层
+
+| 文件 / 目录 | 职责 |
+| --- | --- |
+| `voeval/__main__.py` | 统一分发 `python -m voeval eval` 和 `python -m voeval server` |
+| `voeval/cli.py` | CLI 评估入口：解析参数、加载 bundle、运行评估、保存 JSON/HTML |
+| `voeval/server.py` | 本地 HTTP 服务：托管网页并提供评估 API |
+| `voeval/io/` | 输入层：固定列定义、轨迹结构、SF bundle、标定和解析函数 |
+| `voeval/core/` | 计算层：时间同步、插值、Sim3/Umeyama、误差、统计、分段和评估 pipeline |
+| `voeval/reports/` | 报告层：VLOC/VO 明细、导出表、JSON/Excel/HTML、路径和预览工具 |
+
+### 前端可视化层
+
+| 文件 / 目录 | 职责 |
+| --- | --- |
+| `voeval/visualization/index.html` | 页面骨架：模式、目录输入、参数、指标、图表、导出按钮 |
+| `voeval/visualization/js/main.js` | 前端入口，装配初始化和事件绑定 |
+| `voeval/visualization/js/evaluation.js` | 构造配置并调用 `/api/evaluate-bundle` 或 `/api/evaluate-paths` |
+| `voeval/visualization/js/file-bundle.js` | 从浏览器目录选择中读取 `imu.txt`、`vo.txt`、`vloc.txt`、`calib_raw.yaml`、`home_point.txt` |
+| `voeval/visualization/js/report-render.js` | 渲染指标卡、图表目录、下载状态和消息 |
+| `voeval/visualization/js/chart-render.js` | 按图表规格调用 Plotly |
+| `voeval/visualization/js/point-selection.js` | 图表选点、清除和输出对比 |
+| `voeval/visualization/js/excel-export.js` | 在浏览器端生成 Excel 工作簿 |
+| `voeval/visualization/js/html-export.js` | 生成可下载的独立 HTML 报告 |
+| `voeval/visualization/visualization/figure_specs.js` | VLOC/VO 图表规格 |
+| `voeval/visualization/visualization/report_templates.js` | 离线 HTML 报告模板 |
+| `voeval/visualization/vendor/plotly/` | 固定版本 Plotly |
+
+## API
+
+| Endpoint | 方法 | 用途 |
+| --- | --- | --- |
+| `/api/health` | GET | 前端启动时检查本机评估服务是否可用 |
+| `/api/evaluate-bundle` | POST | 浏览器目录选择模式：提交文件文本给 Python 解析和评估 |
+| `/api/evaluate-paths` | POST | 本地路径模式：提交 `data_dir` / `log_dir` 字符串，由 Python 读取磁盘文件 |
+| `/api/report-slice?slice=...` | GET | 评估后按需获取完整 report、逐帧数据或导出表 |
+
+## 运行流程
+
+### 初始化
 
 ```text
-用户操作                              app.js                           worker.js                       Python
-────────                              ──────                           ─────────                       ──────
-点击"选择目录" ──────────► 读取目录中必需文件 ─┐
-                                               │
-点击"运行评估" ──────────► buildBundlePayload() │
-                                               │
-                          postMessage("evaluate", payload)
-                                               │───────────────────────► evaluateBundle()
-                                               │                         │
-                                               │                         ├─ entryMode == "vloc" ?
-                                               │                         │   evaluate_vloc_bundle_json_light()
-                                               │                         │     │
-                                               │                         │     ├─ parse_imu_fixed()
-                                               │                         │     ├─ parse_vloc_fixed()
-                                               │                         │     ├─ parse_home_point_fixed()
-                                               │                         │     ├─ parse_calib_raw_fixed()
-                                               │                         │     └─ evaluate_vloc_bundle() → report
-                                               │                         │
-                                               │                         └─ entryMode == "vo" ?
-                                               │                             evaluate_vo_bundle_json_light()
-                                               │                               │
-                                               │                               ├─ parse_imu_fixed()
-                                               │                               ├─ parse_vo_fixed()
-                                               │                               ├─ parse_calib_raw_fixed()
-                                               │                               └─ evaluate_vo_bundle() → report
-                                               │
-                          postMessage({ok, result: JSON})
-                          ◄────────────────────────
-                          │
-                          ├─ renderMetrics()       → 指标卡片
-                          ├─ buildFigureSpecs()    → 图表规格
-                          └─ Plotly.newPlot()      → 渲染图表
+1. 用户运行 python -m voeval server
+2. voeval/server.py 托管 voeval/visualization/
+3. 默认浏览器自动打开 http://127.0.0.1:8766/
+4. js/main.js 初始化页面、图表目录、输入控件和导出按钮
+5. 前端请求 /api/health，确认本机评估服务可用
 ```
 
-### 导出阶段
+### 目录选择评估
 
 ```text
-用户点击"下载 Excel"
-       │
-       ▼
-app.js: buildTrajectoryWorkbook()
-       │
-       ├─ 从 report 提取 trajectory_exports 中的 DataFrame
-       ├─ 生成 XML (xlsx 格式)
-       ├─ CRC32 + ZIP 打包
-       └─ downloadBytes("trajectory.xlsx", bytes)
-
-用户点击"下载 HTML 报告"
-       │
-       ▼
-app.js: postMessage("slice", "full_report") → worker.js
-       │                                        │
-       │   ◄── get_report_slice_json("full_report")  ← Python
-       │
-       ▼
-report_templates.js: 生成 HTML 报告字符串
-       │
-       └─ downloadText("report.html", html)
+用户选择 data_dir/log_dir
+  │
+  ▼
+file-bundle.js 读取必需文件文本
+  │
+  ▼
+evaluation.js POST /api/evaluate-bundle
+  │
+  ▼
+voeval/server.py
+  ├─ voeval.io.load_*_evaluation_bundle_from_text()
+  ├─ voeval.core.evaluate_*_bundle()
+  └─ voeval.reports.export.report_to_json()
+  │
+  ▼
+report-render.js + chart-render.js 渲染指标和图表
 ```
 
-## 关键设计决策
+### 本地路径评估
 
-### 1. Web Worker 隔离
+```text
+用户填写 data_dir/log_dir 绝对路径
+  │
+  ▼
+evaluation.js POST /api/evaluate-paths
+  │
+  ▼
+voeval/server.py 读取本机目录
+  ├─ data_dir/imu.txt
+  ├─ VO: log_dir/vo.txt + log_dir/calib_raw.yaml
+  └─ VLOC: log_dir/vloc.txt + log_dir/home_point.txt + log_dir/calib_raw.yaml
+  │
+  ▼
+io -> core -> reports
+```
 
-Python 评估在 Web Worker 中运行，不阻塞主线程 UI。通过 `postMessage` 通信，使用请求 ID 匹配响应。
+### 导出
 
-### 2. Light/Full 分层载荷
-
-首次评估返回 **light report**（排除 `per_pose`、`trajectory_exports` 等大数据），
-用于渲染可见图表。导出时按需请求 **full report slices**，避免首次渲染时传输大量数据。
-
-### 3. 两种输入模式
-
-- **文件上传模式**：用户通过 `<input type="file" webkitdirectory>` 选择目录，JS 读取文件内容传给 Python
-- **本地路径模式**：用户输入本地路径，JS 请求 `local_server.py` 读取文件（需要 HTTP 服务）
-
-### 4. 图表目录可配置
-
-每种评估模式（VLOC/VO）有独立的图表列表，用户可选择显示哪些图表。图表规格由 `figure_specs.js` 定义。
-
-### 5. 跨图表点选联动
-
-用户可以在任意图表上点击数据点，选中信息汇总到左侧"输出对比"面板，支持跨图表对比。
+```text
+JSON 指标       浏览器直接下载当前 light report 或完整 report
+Excel           excel-export.js 从 trajectory_exports 生成工作簿
+HTML 报告       html-export.js + report_templates.js 生成独立页面
+完整数据切片    evaluation.js 按需请求 /api/report-slice
+```
 
 ## 启动方式
 
-| 方式 | 命令 | 适用场景 |
-|------|------|---------|
-| 静态预览 | `cd 项目根目录 && python3 -m http.server 8765` → 打开 `localhost:8765/web/` | 本地预览，仅文件上传 |
-| 本地路径 | `python3 web/server.py --port 8766` → 打开 `127.0.0.1:8766` | 支持本地路径输入 |
-| 公网部署 | 上传 `vo_eval/` + `web/` 到静态托管 | 远程访问 |
+```bash
+python -m voeval server
+```
+
+运行后会自动打开默认浏览器。默认地址是 `http://127.0.0.1:8766/`；如果端口被占用，可以加 `--port 8767`。
+
+不要直接双击 `index.html`，也不要只用普通静态文件服务器启动页面；这些方式没有评估 API，无法完成 VO/VLOC 计算。

@@ -9,7 +9,7 @@
 - 文件格式固定：不再依赖旧版自动表头识别，减少字段猜错导致的坐标、姿态和时间戳错误。
 - VLOC 直接做 nav-vloc 对比：VLOC 有真实尺度，不做 Sim3 尺度对齐，不导出 Sim3 中间表。
 - VO 仍保留 Sim3/尺度分析：VO 可以无尺度或尺度不稳定，因此保留按连续段的 Sim3 对齐、RPE 和局部尺度图。
-- 静态网页离线化：Plotly、Pyodide、numpy、pandas 及依赖固定在 `web/vendor/`，页面运行时不再访问第三方 CDN。
+- 本地网页服务化：Plotly 固定在 `voeval/visualization/vendor/`，Python 评估由 `python -m voeval server` 提供的本机 HTTP API 执行。
 
 ## 目录和文件约定
 
@@ -201,78 +201,56 @@ VLOC Excel 不包含 Sim3 工作簿；VO Excel 保留 Sim3 相关中间表。导
 
 ## 安全与隐私
 
-- 上传数据只在当前浏览器内处理，不会发送到后端服务器。
-- 静态网页版本通过 Pyodide 在浏览器中运行 Python 评估逻辑。
-- `web/vendor/` 固定包含 Plotly、Pyodide、numpy、pandas 及必要依赖，运行时不再从第三方 CDN 拉取脚本。
-- `_headers` 中的 CSP 已移除第三方 CDN 白名单，脚本和数据连接限制在同源资源。
+- 上传数据只发送到本机 `voeval server` 进程，不会发送到外部服务器。
+- Python 评估逻辑运行在本机服务端，浏览器负责目录读取、参数提交、图表渲染和导出交互。
+- `voeval/visualization/vendor/` 固定包含 Plotly，运行时不再从第三方 CDN 拉取图表脚本。
 - 仓库不应提交真实飞行日志、测试数据或导出报告。
 
 ## 部署方式
 
-静态网页部署时上传完整 `web/` 目录：
-
-```text
-web/
-  index.html
-  app.js
-  style.css
-  worker.js
-  py/
-  vendor/
-```
-
-本地预览：
+本地运行时从仓库根目录启动：
 
 ```bash
-cd web
-python3 -m http.server 8765
+python -m voeval server
 ```
 
-然后打开：
+运行后会自动打开默认浏览器。默认地址是 `http://127.0.0.1:8766/`；如果端口被占用，可以加 `--port 8767`。
+
+`voeval/server.py` 会托管完整 `voeval/visualization/` 目录，并提供评估 API：
 
 ```text
-http://localhost:8765/
+/api/evaluate-paths
+/api/evaluate-bundle
+/api/report-slice
+/api/health
 ```
 
-如果要使用页面左侧的 `data_dir` / `log_dir` 本地路径输入框，请从仓库根目录启动本地路径服务：
+本机 Python 读取固定文件契约：`data_dir/imu.txt`；VO 的 `log_dir/vo.txt`、`log_dir/calib_raw.yaml`；VLOC 的 `log_dir/vloc.txt`、`log_dir/home_point.txt`、`log_dir/calib_raw.yaml`。
 
-```bash
-python3 web/server.py --host 127.0.0.1 --port 8766
-```
-
-然后打开：
-
-```text
-http://127.0.0.1:8766/
-```
-
-该模式由本机 Python 读取固定文件契约：`data_dir/imu.txt`；VO 的 `log_dir/vo.txt`、`log_dir/calib_raw.yaml`；VLOC 的 `log_dir/vloc.txt`、`log_dir/home_point.txt`、`log_dir/calib_raw.yaml`。
-
-不要直接双击 `index.html`，否则浏览器可能阻止本地资源读取。
+不要直接双击 `index.html`，也不要只用普通静态文件服务器启动页面；这两种方式都没有评估 API。
 
 ## 验证命令
 
 推荐在提交前运行：
 
 ```bash
-node --check web/js/main.js
+node --check voeval/visualization/js/main.js
 python -m pytest -q
 ```
 
-静态资源访问验证：
+服务入口验证：
 
 ```bash
-cd web
-python3 -m http.server 8765
+python -m voeval server --help
 ```
 
-确认页面、`vendor/plotly/plotly-2.35.2.min.js` 和 `vendor/pyodide/v0.26.4/full/pyodide-lock.json` 都能通过 HTTP 访问。
+确认页面和 `vendor/plotly/plotly-2.35.2.min.js` 都能通过 `voeval server` 托管访问。
 
 ## 与旧版的主要区别
 
 - 不再把所有格式混在一个入口中自动猜测。
 - 不再在 VLOC 中做 Sim3 尺度对齐。
 - 不再显示需求外的大量调参项和图表。
-- 不再依赖公网 CDN 加载运行时代码。
+- 不再依赖公网 CDN 加载图表运行时代码。
 - 导出内容按 VLOC/VO 模式分开，避免把无关中间表塞进报告。
 - 页面图表支持目录化展示和点选对比，更适合从长航程曲线中定位异常点。

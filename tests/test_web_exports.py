@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 
 
 def test_static_browser_evaluator_exports_new_vloc_summary_metrics():
-    source = Path("vo_eval/report.py").read_text()
+    source = Path("voeval/reports/detail.py").read_text()
     assert "mean_error_pos_xy" in source
     assert "mean_error_pos_z" in source
     assert "mean_error_euler" in source
@@ -21,7 +21,7 @@ def test_static_browser_evaluator_exports_new_vloc_summary_metrics():
 
 
 def test_static_dead_report_and_time_series_helpers_are_removed():
-    source = Path("web/js/main.js").read_text()
+    source = Path("voeval/visualization/js/main.js").read_text()
     removed_names = [
         "associationLabel",
         "renderGtVoTimeChart",
@@ -64,7 +64,7 @@ def test_static_dead_report_and_time_series_helpers_are_removed():
         assert f"function {name}" not in source
 @pytest.mark.skip("ES Module refactor: need bundler or vm-modules to load split JS files")
 def test_static_scale_interval_controls_are_wired_into_config():
-    html = Path("web/index.html").read_text()
+    html = Path("voeval/visualization/index.html").read_text()
     assert 'id="rpeDeltaValue"' in html
     assert 'id="rpeDeltaUnit"' in html
     assert 'id="scaleDeltaValue"' in html
@@ -115,11 +115,11 @@ def test_static_scale_interval_controls_are_wired_into_config():
           Plotly: { newPlot() {}, purge() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         process.stdout.write(JSON.stringify(context.buildConfig()));
         """
@@ -163,11 +163,11 @@ def test_static_html_export_keeps_light_chart_exports_and_xlsx_has_sheets():
           URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
         const report = {
@@ -269,11 +269,11 @@ def test_static_trajectory_workbook_omits_missing_vloc_sim3_sheets():
           URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
         const workbook = context.buildTrajectoryWorkbook({
@@ -331,11 +331,11 @@ def test_static_export_filenames_include_directory_name_and_entry_mode():
           URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
         const vlocReport = {
@@ -408,11 +408,11 @@ def test_static_html_export_is_visualization_snapshot_with_point_selection():
           URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
         const report = {
@@ -431,8 +431,8 @@ def test_static_html_export_is_visualization_snapshot_with_point_selection():
             vloc_status: [{ timestamp: 1, vloc_mode: 2, num_inliers: 40, reset_count: 0 }],
           },
         };
-        const cssSource = fs.readFileSync("web/css/style.css", "utf8");
-        const reportCssSource = fs.readFileSync("web/visualization/report_export.css", "utf8");
+        const cssSource = fs.readFileSync("voeval/visualization/css/style.css", "utf8");
+        const reportCssSource = fs.readFileSync("voeval/visualization/css/report-export.css", "utf8");
         process.stdout.write(context.buildHtmlReport(report, { cssSource, reportCssSource }));
         """
     )
@@ -613,11 +613,11 @@ def test_static_html_export_uses_vo_chart_set_for_vo_reports():
           URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
         const report = {
@@ -659,7 +659,7 @@ def test_static_html_export_uses_vo_chart_set_for_vo_reports():
 
 @pytest.mark.skip("ES Module refactor: need bundler or vm-modules to load split JS files")
 def test_static_visualization_renders_time_series_and_rpe_charts():
-    html = Path("web/index.html").read_text()
+    html = Path("voeval/visualization/index.html").read_text()
     expected_ids = [
         "trajectory3d",
         "errorDistance",
@@ -710,11 +710,11 @@ def test_static_visualization_renders_time_series_and_rpe_charts():
           Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); }, purge() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         const perPose = [0, 1, 2].map((index) => ({
           timestamp: index,
@@ -848,11 +848,11 @@ def test_static_composite_angle_time_series_unwraps_180_degree_boundary():
           Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); }, purge() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         const figure = context.pairCompositeFigure("attitudeCompareComposite", "Roll", [
           { timestamp: 0, segment_id: 0, gt_roll_deg: 0, est_roll_aligned_deg: 179 },
@@ -905,11 +905,11 @@ def test_static_composite_angle_error_time_series_unwraps_180_degree_boundary():
           Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); }, purge() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         const figure = context.singleCompositeFigure("attitudeErrorComposite", "Roll error", [
           { timestamp: 0, segment_id: 0, roll_error_signed_deg: 179 },
@@ -961,11 +961,11 @@ def test_static_composite_charts_disable_native_spikes_for_custom_overlay():
           Plotly: { newPlot(id, data, layout) { plots.push({ id, data, layout }); return Promise.resolve(); }, purge() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         const plot = context.pairCompositeFigure("positionCompareComposite", "NED", [
           { timestamp: 1, nav_n_m: 10, vloc_n_m: 9, nav_e_m: 20, vloc_e_m: 19 },
@@ -1036,11 +1036,11 @@ def test_static_composite_payload_helpers_compute_hover_and_range_payloads():
           Plotly: { newPlot() { return Promise.resolve(); }, purge() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         const rows = [
           { timestamp: 10, nav_n_m: 1, vloc_n_m: 2, position_error_n_m: 0.1 },
@@ -1142,11 +1142,11 @@ def test_static_composite_hover_overlay_spans_chart_and_follows_cursor():
           Plotly: { newPlot() { return Promise.resolve(); }, purge() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
         const figure = context.pairCompositeFigure("positionCompareComposite", "NED", [
           { timestamp: 10, nav_n_m: 1, vloc_n_m: 2, nav_e_m: 3, vloc_e_m: 4, nav_d_m: -5, vloc_d_m: -6 },
@@ -1262,11 +1262,11 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
           Plotly: { newPlot() {}, purge() {} },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
         context.updateEntryModeUi();
@@ -1307,7 +1307,7 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
 
 @pytest.mark.skip("ES Module refactor: need bundler or vm-modules to load split JS files")
 def test_static_vloc_chart_directory_controls_only_vloc_charts():
-    html = Path("web/index.html").read_text()
+    html = Path("voeval/visualization/index.html").read_text()
     assert "图表目录" in html
     for element_id in ["vlocChartDirectorySection", "vlocChartList", "vlocChartSelectAll", "vlocChartClear"]:
         assert f'id="{element_id}"' in html
@@ -1382,11 +1382,11 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
           Plotly: { newPlot() {}, purge(id) { purged.push(id); } },
         };
         context.globalThis = context;
-        const templateCode = fs.readFileSync("web/visualization/report_templates.js", "utf8");
+        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
         vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("web/visualization/figure_specs.js", "utf8");
+        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
         vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("web/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
+        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
         vm.runInNewContext(code, context);
 
         context.renderVlocChartDirectory();

@@ -16,7 +16,7 @@ reports/
 outputs/
 
 *.html
-!web/index.html
+!voeval/visualization/index.html
 *.bag
 *.zip
 *.tar

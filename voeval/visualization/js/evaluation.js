@@ -75,7 +75,7 @@ async function evaluateSelectedFileBundle(entryMode, config) {
   if (!response.ok || result?.ok === false) {
     throw new Error(result?.error || `HTTP ${response.status}`);
   }
-  state.reportSource = "local_server";
+  state.reportSource = "server_bundle";
   return JSON.stringify(result.report || result);
 }
 

@@ -7,32 +7,28 @@
 从仓库根目录启动本地评估服务器：
 
 ```bash
-python web/server.py --host 127.0.0.1 --port 8766
+python -m voeval server
 ```
 
-打开：
-
-```text
-http://127.0.0.1:8766/
-```
+运行后会自动打开浏览器进入本地可视化页面。默认地址是 `http://127.0.0.1:8766/`；如果端口被占用，可以加 `--port 8767`。
 
 页面支持两种输入：
 
 - 目录选择：浏览器读取必要文件内容后提交给后端。
-- 本地路径：填写 `data_dir` / `log_dir`，由 `web/server.py` 在本机读取文件。
+- 本地路径：填写 `data_dir` / `log_dir`，由 `voeval/server.py` 在本机读取文件。
 
 ## CLI
 
 VO：
 
 ```bash
-python -m vo_eval --mode sf_vo --data_dir "/path/to/data_dir" --log_dir "/path/to/log_dir" -d 100 -u m
+python -m voeval eval --mode sf_vo --data_dir "/path/to/data_dir" --log_dir "/path/to/log_dir" -d 100 -u m
 ```
 
 VLOC：
 
 ```bash
-python -m vo_eval --mode sf_vloc --data_dir "/path/to/data_dir" --log_dir "/path/to/log_dir" -d 100 -u m
+python -m voeval eval --mode sf_vloc --data_dir "/path/to/data_dir" --log_dir "/path/to/log_dir" -d 100 -u m
 ```
 
 参数：
@@ -47,7 +43,7 @@ python -m vo_eval --mode sf_vloc --data_dir "/path/to/data_dir" --log_dir "/path
 示例：
 
 ```bash
-python -m vo_eval --mode sf_vo \
+python -m voeval eval --mode sf_vo \
   --data_dir "/Volumes/Extreme SSD/Baseline/01_Normal/03_综合/5066/1509" \
   --log_dir "/Volumes/Extreme SSD/Baseline/01_Normal/03_综合/5066/1509" \
   -d 100 -u m -p
@@ -125,18 +121,18 @@ TUM 主要用于测试、调试和与 evo 对齐口径，不是页面主输入�
 
 | 指标 / 报告项 | report 字段 | 主要代码 |
 | --- | --- | --- |
-| 固定格式读取 | `inputs`、`trajectory_exports` | `vo_eval/data_loader.py` |
-| 时间同步 / GT 插值 | `association` | `prepare_evaluation_trajectories()`、`interpolate_reference_to_estimate()` |
-| VO Sim3 对齐 | `alignment` | `compute_alignment()`、`sim3_alignment()`、`apply_alignment()` |
-| ATE 位置误差 | `ate_position_m`、`ate_horizontal_m`、`ate_vertical_m` | `evaluate_trajectories()`、`describe()` |
-| ATE 姿态 / yaw 误差 | `ate_orientation_deg`、`ate_yaw_deg` | `rotation_errors()`、`yaw_from_rot()`、`wrap_pi()` |
-| RPE 帧数/距离间隔误差 | `rpe_frame_delta`、`rpe_per_frame` | `rpe_frame_dataframe()`、`relative_error()` |
-| VO 局部尺度图 | `scale_frame_delta`、`scale_per_frame` | `scale_frame_dataframe()`、`local_scale_records()` |
-| 断点 / reset 段诊断 | `discontinuities` | `detect_associated_discontinuities()`、`select_evaluation_segments()` |
-| VLOC 明细 | `vloc_details` | `build_vloc_details()` |
-| VO 明细 | `vo_details` | `build_vo_details()` |
-| Excel / JSON 导出 | `trajectory_exports`、完整 report | `report_to_excel()`、`report_to_json()` |
-| HTML 导出 | 离线 HTML | `web/cli/export_report_cli.js` |
+| 固定格式读取 | `inputs`、`trajectory_exports` | `voeval/io/formats.py`、`voeval/io/parsers.py`、`voeval/io/bundle.py` |
+| 时间同步 / GT 插值 | `association` | `voeval/core/interpolation.py` |
+| VO Sim3 对齐 | `alignment` | `voeval/core/alignment.py` |
+| ATE 位置误差 | `ate_position_m`、`ate_horizontal_m`、`ate_vertical_m` | `voeval/core/pipeline.py`、`voeval/core/statistics.py` |
+| ATE 姿态 / yaw 误差 | `ate_orientation_deg`、`ate_yaw_deg` | `voeval/core/errors.py`、`voeval/core/geometry.py` |
+| RPE 帧数/距离间隔误差 | `rpe_frame_delta`、`rpe_per_frame` | `voeval/core/statistics.py`、`voeval/core/errors.py` |
+| VO 局部尺度图 | `scale_frame_delta`、`scale_per_frame` | `voeval/core/statistics.py` |
+| 断点 / reset 段诊断 | `discontinuities` | `voeval/core/segments.py` |
+| VLOC 明细 | `vloc_details` | `voeval/reports/detail.py` |
+| VO 明细 | `vo_details` | `voeval/reports/detail.py` |
+| Excel / JSON 导出 | `trajectory_exports`、完整 report | `voeval/reports/export.py` |
+| HTML 导出 | 离线 HTML | `voeval/visualization/cli/export_report_cli.js` |
 
 ## 当前保留指标
 
@@ -186,7 +182,7 @@ python -m pytest -q
 
 ```bash
 python -m coverage run -m pytest tests/test_evaluator.py
-python -m coverage report -m vo_eval/data_loader.py vo_eval/processing.py vo_eval/report.py vo_eval/utils.py
+python -m coverage report -m voeval/io/*.py voeval/core/*.py voeval/reports/*.py
 python -m coverage html
 ```
 

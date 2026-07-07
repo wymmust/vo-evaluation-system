@@ -1,6 +1,7 @@
 """VO/VLOC evaluation package."""
 
-from .data_loader import (
+from .core import EvaluationConfig
+from .io import (
     Calibration,
     EvaluationFormatSpec,
     HomePoint,
@@ -19,8 +20,7 @@ from .data_loader import (
     parse_vloc_fixed,
     parse_vo_fixed,
 )
-from .processing import EvaluationConfig, evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle
-from .report import report_to_json
+from .reports import evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle, report_to_json
 
 __all__ = [
     "Calibration",

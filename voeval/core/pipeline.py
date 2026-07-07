@@ -1,15 +1,15 @@
-"""Evaluation orchestration for VO/VLOC reports."""
+"""Core evaluation orchestration for VO/VLOC workflows."""
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from .data_loader import (
+from ..io import (
     FIXED_DISCONTINUITY_STEP_M,
     FIXED_DISCONTINUITY_TIME_GAP_S,
     FIXED_TIME_OFFSET_S,
@@ -21,111 +21,48 @@ from .data_loader import (
     VO_MIN_VALID_SEGMENT_DURATION_S,
     VO_MIN_VALID_SEGMENT_FRAMES,
 )
-from .report import (
-    ate_frame_dataframe,
-    build_trajectory_export_sheets,
-    build_vloc_detail_report,
-    build_vo_detail_report,
-    evaluation_config_to_jsonable,
-    tum_dataframe_from_arrays,
-)
-from .utils import (
-    aggregate_alignment,
-    alignment_export_columns,
-    apply_alignment,
-    apply_rotation_alignment,
-    describe,
-    detect_associated_discontinuities,
-    euler_yaw_pitch_roll_from_matrix,
-    identity_alignment,
-    normalize_rpe_delta_config,
-    normalize_scale_delta_config,
-    path_distance,
-    prepare_evaluation_trajectories,
-    rpe_frame_dataframe,
-    rotation_errors,
-    scale_frame_dataframe,
-    sim3_alignment,
-    sf_nav_to_body_ned_trajectory,
-    sf_nav_to_camera_trajectory,
-    sf_vloc_to_body_ned_trajectory,
-    subset_trajectory,
-    vo_valid_segment_indices,
-    wrap_pi,
-)
-
-@dataclass
-class EvaluationConfig:
-    """评估配置。
-
-    当前前端只暴露少量必要参数：
-    - sf_vloc: 页面不暴露对齐/时间同步/RPE 配置，固定 GT 插值到 VLOC 时间戳、最大 GT 插值间隔 1.0s、禁止外推、不做 Sim3。
-    - sf_vo: 页面只保留 RPE 统计间隔和尺度图间隔，固定 GT 插值到 VO 时间戳、最大 GT 插值间隔 1.0s、禁止外推、按 reset 连续段分别 Sim3。
-
-    配置与指标/流程的对应关系：
-    - rpe_delta_value/rpe_delta_unit: 控制 VO 页面 RPE 按 evo consecutive-pairs 的帧数或距离间隔统计，对应 report["rpe_frame_delta"] 和 rpe_per_frame。
-    - scale_delta_value/scale_delta_unit: 控制 VO 页面局部尺度图按帧数或按 GT 距离取窗口，对应 report["scale_frame_delta"] 和 scale_per_frame。
-    """
-
-    rpe_delta_frames: int = 1
-    rpe_delta_value: float | None = None
-    rpe_delta_unit: str = "frames"
-    rpe_distance_tolerance_ratio: float = 0.05
-    scale_delta_value: float | None = None
-    scale_delta_unit: str = "frames"
-    scale_distance_tolerance_ratio: float = 0.05
-
-    def __post_init__(self) -> None:
-        self.rpe_delta_unit = _normalize_delta_unit(self.rpe_delta_unit, "rpe_delta_unit")
-        self.scale_delta_unit = _normalize_delta_unit(self.scale_delta_unit, "scale_delta_unit")
-        self.rpe_delta_frames = _positive_int(self.rpe_delta_frames, "rpe_delta_frames")
-        if self.rpe_delta_value is not None:
-            self.rpe_delta_value = _positive_finite_float(self.rpe_delta_value, "rpe_delta_value")
-        if self.scale_delta_value is not None:
-            self.scale_delta_value = _positive_finite_float(self.scale_delta_value, "scale_delta_value")
-        self.rpe_distance_tolerance_ratio = _nonnegative_finite_float(
-            self.rpe_distance_tolerance_ratio,
-            "rpe_distance_tolerance_ratio",
-        )
-        self.scale_distance_tolerance_ratio = _nonnegative_finite_float(
-            self.scale_distance_tolerance_ratio,
-            "scale_distance_tolerance_ratio",
-        )
+from .alignment import aggregate_alignment, alignment_export_columns, apply_alignment, apply_rotation_alignment, identity_alignment, sim3_alignment
+from .config import EvaluationConfig
+from .geometry import euler_yaw_pitch_roll_from_matrix, sf_nav_to_body_ned_trajectory, sf_nav_to_camera_trajectory, sf_vloc_to_body_ned_trajectory, wrap_pi
+from .interpolation import prepare_evaluation_trajectories, subset_trajectory
+from .segments import detect_associated_discontinuities, vo_valid_segment_indices
+from .statistics import describe, normalize_rpe_delta_config, normalize_scale_delta_config, path_distance, rpe_frame_dataframe, scale_frame_dataframe
+from .errors import rotation_errors
 
 
-def _normalize_delta_unit(value: str, name: str) -> str:
-    token = str(value or "frames").strip().lower()
-    if token in {"f", "frame", "frames"}:
-        return "frames"
-    if token in {"m", "meter", "meters", "metre", "metres"}:
-        return "meters"
-    raise ValueError(f"{name} must be 'frames' or 'meters'")
+@dataclass(frozen=True)
+class AlignedSegmentResult:
+    stamps: np.ndarray
+    gt_positions: np.ndarray
+    gt_rotations: np.ndarray | None
+    est_positions: np.ndarray
+    est_rotations: np.ndarray | None
+    extras: dict[str, Any]
 
 
-def _positive_int(value: int, name: str) -> int:
-    try:
-        out = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-    if out < 1:
-        raise ValueError(f"{name} must be a positive integer")
-    return out
+@dataclass(frozen=True)
+class TrajectoryEvaluationResult:
+    report: dict[str, Any]
+    original_gt: Trajectory
+    original_est: Trajectory
+    gt_eval: Trajectory
+    est_eval: Trajectory
+    rpe_per_frame: pd.DataFrame
+    scale_per_frame: pd.DataFrame
+    aligned_segments: tuple[AlignedSegmentResult, ...]
 
 
-def _positive_finite_float(value: float, name: str) -> float:
-    out = float(value)
-    if not math.isfinite(out) or out <= 0:
-        raise ValueError(f"{name} must be a positive finite value")
-    return out
+@dataclass(frozen=True)
+class BundleEvaluationResult:
+    report: dict[str, Any]
+    reference: Trajectory
+    estimate: Trajectory
+    reference_eval: Trajectory
+    estimate_eval: Trajectory
+    trajectory: TrajectoryEvaluationResult
 
 
-def _nonnegative_finite_float(value: float, name: str) -> float:
-    out = float(value)
-    if not math.isfinite(out) or out < 0:
-        raise ValueError(f"{name} must be a non-negative finite value")
-    return out
-
-def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None = None) -> dict[str, Any]:
+def evaluate_vloc_bundle_core(bundle: SfVlocBundle, config: EvaluationConfig | None = None) -> BundleEvaluationResult:
     """按需求文档固定流程评估 sf_vloc。
 
     这条入口不暴露对齐/姿态修正/时间同步模式选择：
@@ -148,19 +85,8 @@ def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None =
 
     valid_indices = np.flatnonzero(valid_mode)
     vloc_valid = subset_trajectory(vloc_ned_body, valid_indices)
-    report, nav_eval, vloc_eval = _evaluate_trajectories_core(nav_ned_body, vloc_valid, cfg)
-    visual_segment_ids = (
-        report["per_pose"]["visual_segment_id"].to_numpy(dtype=int)
-        if "visual_segment_id" in report["per_pose"]
-        else None
-    )
-    report["vloc_details"] = build_vloc_detail_report(
-        nav_ned_body,
-        vloc_valid,
-        visual_segment_ids=visual_segment_ids,
-        nav_eval=nav_eval,
-        vloc_eval=vloc_eval,
-    )
+    trajectory = evaluate_trajectory_result(nav_ned_body, vloc_valid, cfg)
+    report = trajectory.report
     report["inputs"]["entry_mode"] = "vloc"
     report["inputs"]["workflow"] = "sf_vloc"
     report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
@@ -175,12 +101,15 @@ def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None =
     report["association"]["dropped_est_invalid_mode"] = dropped_invalid_mode
     report["association"]["valid_est_after_mode_filter"] = int(len(vloc_valid.positions))
     report["summary"]["raw_est_poses"] = int(len(bundle.vloc.positions))
-    for sheet_name in ("sim3_gt_tum", "sim3_vo_tum"):
-        report["trajectory_exports"].pop(sheet_name, None)
-    return report
-
-
-def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = None) -> dict[str, Any]:
+    return BundleEvaluationResult(
+        report=report,
+        reference=nav_ned_body,
+        estimate=vloc_valid,
+        reference_eval=trajectory.gt_eval,
+        estimate_eval=trajectory.est_eval,
+        trajectory=trajectory,
+    )
+def evaluate_vo_bundle_core(bundle: SfVoBundle, config: EvaluationConfig | None = None) -> BundleEvaluationResult:
     """按需求文档固定流程评估 sf_vo。
 
     这条入口和 VLOC 分开：
@@ -201,23 +130,11 @@ def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = Non
 
     vo_valid = subset_trajectory(vo_cam, valid_indices)
     vo_valid.extras["evaluation_segment_id"] = np.asarray(valid_segment_ids, dtype=int)
-    report, nav_eval, vo_eval = _evaluate_trajectories_core(nav_cam, vo_valid, cfg)
+    trajectory = evaluate_trajectory_result(nav_cam, vo_valid, cfg)
+    report = trajectory.report
     report["association"]["dropped_est_invalid_segment"] = int(segment_filter["dropped_pose_count"])
     report["association"]["valid_est_after_segment_filter"] = int(len(vo_valid.positions))
     report["association"]["vo_reset_segment_filter"] = segment_filter
-    visual_segment_ids = (
-        report["per_pose"]["visual_segment_id"].to_numpy(dtype=int)
-        if "visual_segment_id" in report["per_pose"]
-        else None
-    )
-    report["vo_details"] = build_vo_detail_report(
-        nav_cam,
-        vo_valid,
-        report,
-        visual_segment_ids=visual_segment_ids,
-        nav_eval=nav_eval,
-        vo_eval=vo_eval,
-    )
     report["inputs"]["entry_mode"] = "vo"
     report["inputs"]["workflow"] = "sf_vo"
     report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
@@ -233,13 +150,17 @@ def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = Non
         "min_valid_segment_frames": int(VO_MIN_VALID_SEGMENT_FRAMES),
     }
     report["summary"]["raw_est_poses"] = int(len(bundle.vo.positions))
-    return report
-
+    return BundleEvaluationResult(
+        report=report,
+        reference=nav_cam,
+        estimate=vo_valid,
+        reference_eval=trajectory.gt_eval,
+        estimate_eval=trajectory.est_eval,
+        trajectory=trajectory,
+    )
 def normalized_vloc_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
     """把用户配置收敛成 sf_vloc 固定评估参数。"""
     return replace(config) if config is not None else EvaluationConfig()
-
-
 def normalized_vo_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
     """把用户配置收敛成 sf_vo 固定评估参数。
 
@@ -247,34 +168,30 @@ def normalized_vo_evaluation_config(config: EvaluationConfig | None = None) -> E
     并把 reset_count 形成的连续段交给 evaluate_trajectories() 逐段对齐。
     """
     return replace(config) if config is not None else EvaluationConfig()
-
 def evaluate_trajectories(
     gt: Trajectory,
     est: Trajectory,
     config: EvaluationConfig | None = None,
 ) -> dict[str, Any]:
-    report, _gt_eval, _est_eval = _evaluate_trajectories_core(gt, est, config)
-    return report
-
-
-def _evaluate_trajectories_core(
+    return evaluate_trajectory_result(gt, est, config).report
+def evaluate_trajectory_result(
     gt: Trajectory,
     est: Trajectory,
     config: EvaluationConfig | None = None,
-) -> tuple[dict[str, Any], Trajectory, Trajectory]:
-    """通用轨迹评估入口：输入 GT/reference 和 estimate，输出完整 report。
+) -> TrajectoryEvaluationResult:
+    """通用轨迹评估入口：输入 GT/reference 和 estimate，输出核心评估结果。
 
     这里是 VLOC 和 VO 都会复用的核心计算层：
     - VLOC 入口会先把 nav/vloc 都转成 body/NED，再固定不对齐地调用这里。
     - VO 入口会先把 nav/GT 转成 camera pose、按 reset_count 筛掉短段，再用分段 Sim3 调用这里。
     - TUM/测试入口也可以直接传两条 Trajectory 进来。
 
-    流程对应页面上的“运行结果、可视化、明细与导出”：
+    流程对应页面上的“运行结果”和基础可视化数据：
     1. 时间同步 -> association / coverage。
     2. 大跳变诊断 -> discontinuities。
     3. 对每个选中连续段做对齐和误差计算。
     4. 汇总 ATE/RPE/局部尺度等指标。
-    5. 返回 report dict，前端只负责展示这个 report。
+    5. 返回基础 report dict 和 reports 层生成导出/明细所需的中间结果。
 
     来源对应：
     - ATE/RPE 主干来自 Sturm12 和 Zhang18。
@@ -341,8 +258,7 @@ def _evaluate_trajectories_core(
     used_est_indices: list[np.ndarray] = []
     used_match_indices: list[np.ndarray] = []
     alignments: list[dict[str, Any]] = []
-    sim3_gt_export_frames: list[pd.DataFrame] = []
-    sim3_vo_export_frames: list[pd.DataFrame] = []
+    aligned_segments: list[AlignedSegmentResult] = []
     rpe_frame_export_frames: list[pd.DataFrame] = []
     scale_frame_export_frames: list[pd.DataFrame] = []
     total_gt_path_m = 0.0
@@ -387,8 +303,16 @@ def _evaluate_trajectories_core(
                 "match_index": np.arange(start, end, dtype=int),
             }
             sim3_extra.update(alignment_export_columns(alignment, len(stamps), "sim3"))
-            sim3_gt_export_frames.append(tum_dataframe_from_arrays(stamps, gt_pos, gt_rot, extra=sim3_extra))
-            sim3_vo_export_frames.append(tum_dataframe_from_arrays(stamps, est_pos_aligned, est_rot_aligned, extra=sim3_extra))
+            aligned_segments.append(
+                AlignedSegmentResult(
+                    stamps=stamps,
+                    gt_positions=gt_pos,
+                    gt_rotations=gt_rot,
+                    est_positions=est_pos_aligned,
+                    est_rotations=est_rot_aligned,
+                    extras=sim3_extra,
+                )
+            )
 
         # 6. ATE 逐帧误差：
         #    error_m -> ate_position_m，horizontal_error_m -> ate_horizontal_m，
@@ -601,24 +525,13 @@ def _evaluate_trajectories_core(
         "raw_path_scale_ratio_est_over_gt": float(total_raw_est_path_m / total_gt_path_m) if total_gt_path_m > 0 else math.nan,
     }
 
-    # 15. report 是唯一对外返回值。前端的所有图表/表格/下载都从这里取数据。
-    trajectory_exports = build_trajectory_export_sheets(
-        original_gt,
-        original_est,
-        gt,
-        est,
-        pd.concat(sim3_gt_export_frames, ignore_index=True) if sim3_gt_export_frames else pd.DataFrame(),
-        pd.concat(sim3_vo_export_frames, ignore_index=True) if sim3_vo_export_frames else pd.DataFrame(),
-        ate_frame_dataframe(per_pose),
-        rpe_per_frame,
-        scale_per_frame,
-    )
+    # 15. core 只返回评估指标和中间结果；导出 sheet 和页面明细由 reports 层补充。
     report = {
         "inputs": {
             "ground_truth": {"name": original_gt.name, "format": original_gt.source_format},
             "estimate": {"name": original_est.name, "format": original_est.source_format},
         },
-        "config": evaluation_config_to_jsonable(cfg),
+        "config": asdict(cfg),
         "association": assoc,
         "discontinuities": {
             "all_matches": discontinuities_all,
@@ -638,8 +551,16 @@ def _evaluate_trajectories_core(
         "yaw_error_abs_deg": describe(yaw_error_abs_deg) if yaw_error_abs_deg is not None else None,
         "rpe_frame_delta": rpe,
         "per_pose": per_pose,
-        "trajectory_exports": trajectory_exports,
     }
     if scale_frame_delta is not None:
         report["scale_frame_delta"] = scale_frame_delta
-    return report, gt, est
+    return TrajectoryEvaluationResult(
+        report=report,
+        original_gt=original_gt,
+        original_est=original_est,
+        gt_eval=gt,
+        est_eval=est,
+        rpe_per_frame=rpe_per_frame,
+        scale_per_frame=scale_per_frame,
+        aligned_segments=tuple(aligned_segments),
+    )

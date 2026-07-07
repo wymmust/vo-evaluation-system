@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import vo_eval
-from vo_eval.data_loader import (
+import voeval
+from voeval.io import (
     Calibration,
     HomePoint,
     SfVlocBundle,
@@ -26,10 +26,10 @@ from vo_eval.data_loader import (
     parse_vloc_fixed,
     parse_vo_fixed,
 )
-from vo_eval.processing import EvaluationConfig, evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle
-from vo_eval.__main__ import main as cli_main
-from vo_eval.report import report_to_excel, report_to_json
-from vo_eval.utils import (
+from voeval.core import EvaluationConfig
+from voeval.cli import main as cli_main
+from voeval.reports import evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle, report_to_excel, report_to_json
+from voeval.core import (
     euler_yaw_pitch_roll_to_matrix,
     interpolate_reference_to_estimate,
     sim3_alignment,
@@ -366,9 +366,9 @@ def test_fixed_parsers_do_not_keep_raw_numeric_tables_and_validate_integer_colum
 def test_load_trajectory_rejects_missing_path_and_invalid_tum_quaternion(tmp_path):
     missing = tmp_path / "missing.tum"
     with pytest.raises(FileNotFoundError):
-        vo_eval.load_trajectory(missing)
+        voeval.load_trajectory(missing)
     with pytest.raises(FileNotFoundError):
-        vo_eval.load_trajectory(str(missing))
+        voeval.load_trajectory(str(missing))
 
     with pytest.raises(ValueError, match="zero-norm"):
         load_trajectory_from_text("0 0 0 0 0 0 0 0\n1 1 0 0 0 0 0 1\n", fmt="tum", name="bad")
@@ -501,7 +501,7 @@ def test_vloc_excel_export_omits_sim3_sheets_because_vloc_has_metric_scale():
 
 
 def test_package_all_exports_vo_bundle_entrypoint():
-    assert "evaluate_vo_bundle" in vo_eval.__all__
+    assert "evaluate_vo_bundle" in voeval.__all__
 
 
 def test_cli_requires_explicit_mode_and_directories():
@@ -510,9 +510,9 @@ def test_cli_requires_explicit_mode_and_directories():
 
 
 def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("vo_eval.__main__.load_vloc_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir: object())
     monkeypatch.setattr(
-        "vo_eval.__main__.evaluate_vloc_bundle",
+        "voeval.cli.evaluate_vloc_bundle",
         lambda bundle, config: {
             "inputs": {"entry_mode": "vloc"},
             "rpe_frame_delta": {"translation_m": {"rmse": math.nan, "mean": None, "max": "bad"}, "count": 0},
@@ -534,7 +534,7 @@ def test_cli_p_option_previews_temp_html_report(tmp_path, monkeypatch):
     opened_urls: list[str] = []
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("vo_eval.__main__.webbrowser.open", lambda url: opened_urls.append(url) or True)
+    monkeypatch.setattr("voeval.reports.preview.webbrowser.open", lambda url: opened_urls.append(url) or True)
 
     exit_code = cli_main(
         [

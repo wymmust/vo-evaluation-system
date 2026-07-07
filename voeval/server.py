@@ -2,7 +2,7 @@
 
 Run from the repository root:
 
-    python web/server.py --host 127.0.0.1 --port 8766
+    python -m voeval server
 
 The plain static page cannot read absolute local paths because browsers block
 that access. This server keeps the same browser UI, but reads the fixed input
@@ -13,21 +13,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import webbrowser
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-STATIC_ROOT = Path(__file__).resolve().parents[0]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+PACKAGE_ROOT = Path(__file__).resolve().parent
+STATIC_ROOT = PACKAGE_ROOT / "visualization"
 
-from vo_eval.data_loader import load_vloc_evaluation_bundle, load_vloc_evaluation_bundle_from_text, load_vo_evaluation_bundle, load_vo_evaluation_bundle_from_text  # noqa: E402
-from vo_eval.processing import EvaluationConfig, evaluate_vloc_bundle, evaluate_vo_bundle  # noqa: E402
-from vo_eval.report import report_to_json, _jsonable_report  # noqa: E402
+from .core import EvaluationConfig
+from .io import load_vloc_evaluation_bundle, load_vloc_evaluation_bundle_from_text, load_vo_evaluation_bundle, load_vo_evaluation_bundle_from_text
+from .reports import evaluate_vloc_bundle, evaluate_vo_bundle
+from .reports.export import _jsonable_report, report_to_json
 
 LAST_REPORT: dict | None = None  # stored as _jsonable_report dict (JSON-safe)
 
@@ -121,7 +119,7 @@ def get_report_slice(slice_name: str) -> object:
 
 
 def _light_report(report: dict) -> dict:
-    """Match the Pyodide worker's initial light payload."""
+    """Return the initial light payload used by the browser UI."""
 
     skip_keys = {"per_pose", "trajectory_exports"}
     light = {key: value for key, value in report.items() if key not in skip_keys}
@@ -201,7 +199,10 @@ class LocalEvaluationHandler(SimpleHTTPRequestHandler):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Serve web UI with local data_dir/log_dir path evaluation.")
+    parser = argparse.ArgumentParser(
+        prog="python -m voeval server",
+        description="Serve web UI with local data_dir/log_dir path evaluation.",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--no-open", action="store_true", help="Do not auto-open browser on start")
