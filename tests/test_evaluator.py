@@ -520,7 +520,18 @@ def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, 
             "inputs": {"entry_mode": "vloc"},
             "rpe_frame_delta": {"translation_m": {"rmse": math.nan, "mean": None, "max": "bad"}, "count": 0},
             "ate_position_m": {"rmse": math.nan, "mean": None},
-            "alignment": {"base_mode": "sim3", "scale": None},
+            "alignment": {"base_mode": "none"},
+            "vloc_details": {
+                "summary": {
+                    "trajectory_length_m": math.nan,
+                    "mean_error_pos_xy": None,
+                    "mean_error_pos_z": "bad",
+                    "mean_error_euler": math.nan,
+                    "max_error_pos_xy": None,
+                    "max_error_pos_z": "bad",
+                    "max_error_euler": math.nan,
+                }
+            },
         },
     )
 
@@ -529,7 +540,49 @@ def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, 
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "RMSE: N/A m" in captured.out
-    assert "Scale: N/A" in captured.out
+    assert "mean_error_pos_xy: N/A m" in captured.out
+    assert "max_error_euler: N/A deg" in captured.out
+
+
+def test_cli_vloc_outputs_common_summary_and_vloc_specific_metrics(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vloc_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vloc"},
+            "rpe_frame_delta": {"translation_m": {"rmse": 0.75, "mean": 0.5, "max": 1.2}, "count": 9},
+            "ate_position_m": {"rmse": 1.25, "mean": 0.9},
+            "alignment": {"base_mode": "none"},
+            "vloc_details": {
+                "summary": {
+                    "trajectory_length_m": 5645.292,
+                    "mean_error_pos_xy": 4.720043,
+                    "mean_error_pos_z": 1.639898,
+                    "mean_error_euler": 0.707676,
+                    "max_error_pos_xy": 11.641345,
+                    "max_error_pos_z": 7.929585,
+                    "max_error_euler": 3.963572,
+                }
+            },
+        },
+    )
+
+    exit_code = cli_main(["--mode", "sf_vloc", "--data_dir", str(tmp_path), "--log_dir", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "========== VLOC 评估结果 ==========" in captured.out
+    assert "RPE 平移误差" in captured.out
+    assert "ATE 绝对轨迹误差" in captured.out
+    assert "VLOC 专项指标" in captured.out
+    assert "trajectory_length_m: 5645.2920 m" in captured.out
+    assert "mean_error_pos_xy: 4.7200 m" in captured.out
+    assert "mean_error_pos_z: 1.6399 m" in captured.out
+    assert "mean_error_euler: 0.7077 deg" in captured.out
+    assert "max_error_pos_xy: 11.6413 m" in captured.out
+    assert "max_error_pos_z: 7.9296 m" in captured.out
+    assert "max_error_euler: 3.9636 deg" in captured.out
+    assert "Sim3 对齐" not in captured.out
 
 
 def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, capsys):
@@ -554,17 +607,20 @@ def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, 
     assert "Platform:" not in captured.out
     assert "Executable:" not in captured.out
     assert "main_parser config:" in captured.out
-    assert "'align': True" in captured.out
-    assert "'correct_scale': True" in captured.out
+    assert "'mode': 'sf_vo'" in captured.out
     assert "'delta': 100.0" in captured.out
-    assert "'delta_tol': 0.1" in captured.out
     assert "'delta_unit': 'm'" in captured.out
-    assert "'pose_relation': 'trans_part'" in captured.out
     assert "'ref_file':" in captured.out and "imu.txt" in captured.out
     assert "'est_file':" in captured.out and "vo.txt" in captured.out
-    assert "'subcommand': 'sf_vo'" in captured.out
-    assert "'t_max_diff': 0.01" in captured.out
-    assert "'t_offset': 0.0" in captured.out
+    assert "'data_dir':" in captured.out
+    assert "'log_dir':" in captured.out
+    assert "'align':" not in captured.out
+    assert "'correct_scale':" not in captured.out
+    assert "'delta_tol':" not in captured.out
+    assert "'pose_relation':" not in captured.out
+    assert "'subcommand':" not in captured.out
+    assert "'t_max_diff':" not in captured.out
+    assert "'t_offset':" not in captured.out
     assert "--------------------------------------------------------------------------------" in captured.out
     assert "RPE 平移误差" in captured.out
 

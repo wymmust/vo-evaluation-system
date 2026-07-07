@@ -55,33 +55,10 @@ def main(argv: list[str] | None = None) -> int:
             bundle = load_vloc_evaluation_bundle(args.data_dir, args.log_dir)
             report = evaluate_vloc_bundle(bundle, config)
 
-        # 提取关键误差指标
-        logger.info("\n========== 评估结果 ==========")
-
-        rpe = report.get("rpe_frame_delta") or {}
-        rpe_trans = rpe.get("translation_m") or {}
-        if rpe_trans:
-            logger.debug("RPE translation summary: count=%s stats=%s", rpe.get("count", "N/A"), rpe_trans)
-            logger.info(f"RPE 平移误差 (delta={args.delta}{args.unit}):")
-            logger.info(f"  RMSE: {_format_cli_number(rpe_trans.get('rmse'))} m")
-            logger.info(f"  Mean: {_format_cli_number(rpe_trans.get('mean'))} m")
-            logger.info(f"  Max:  {_format_cli_number(rpe_trans.get('max'))} m")
-            logger.info(f"  Count: {rpe.get('count', 'N/A')}")
-
-        ate = report.get("ate_position_m") or {}
-        if ate:
-            logger.debug("ATE position summary: %s", ate)
-            logger.info("\nATE 绝对轨迹误差:")
-            logger.info(f"  RMSE: {_format_cli_number(ate.get('rmse'))} m")
-            logger.info(f"  Mean: {_format_cli_number(ate.get('mean'))} m")
-
-        alignment = report.get("alignment") or {}
-        if (alignment.get("base_mode") or alignment.get("mode")) == "sim3":
-            logger.debug("Alignment summary: %s", alignment)
-            logger.info("\nSim3 对齐:")
-            logger.info(f"  Scale: {_format_cli_number(alignment.get('scale'))}")
-
-        logger.info("================================\n")
+        if args.mode == "sf_vo":
+            _log_vo_result_summary(logger, report, args)
+        else:
+            _log_vloc_result_summary(logger, report, args)
 
         # JSON 输出到文件
         if args.output:
@@ -108,57 +85,94 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+def _log_vo_result_summary(logger, report: dict[str, object], args: argparse.Namespace) -> None:
+    """Print CLI result summary for VO evaluation."""
+
+    logger.info("\n========== VO 评估结果 ==========")
+    _log_common_trajectory_summary(logger, report, args)
+
+    alignment = report.get("alignment") or {}
+    if isinstance(alignment, dict) and (alignment.get("base_mode") or alignment.get("mode")) == "sim3":
+        logger.debug("Alignment summary: %s", alignment)
+        logger.info("\nSim3 对齐:")
+        logger.info(f"  Scale: {_format_cli_number(alignment.get('scale'))}")
+
+    logger.info("================================\n")
+
+
+def _log_vloc_result_summary(logger, report: dict[str, object], args: argparse.Namespace) -> None:
+    """Print CLI result summary for VLOC evaluation."""
+
+    logger.info("\n========== VLOC 评估结果 ==========")
+    _log_common_trajectory_summary(logger, report, args)
+    _log_vloc_specific_metrics(logger, report)
+    logger.info("================================\n")
+
+
+def _log_common_trajectory_summary(logger, report: dict[str, object], args: argparse.Namespace) -> None:
+    """Print metrics shared by VO and VLOC CLI summaries."""
+
+    rpe = report.get("rpe_frame_delta") or {}
+    rpe_trans = rpe.get("translation_m") if isinstance(rpe, dict) else {}
+    if isinstance(rpe, dict) and isinstance(rpe_trans, dict) and rpe_trans:
+        logger.debug("RPE translation summary: count=%s stats=%s", rpe.get("count", "N/A"), rpe_trans)
+        logger.info(f"RPE 平移误差 (delta={args.delta}{args.unit}):")
+        logger.info(f"  RMSE: {_format_cli_number(rpe_trans.get('rmse'))} m")
+        logger.info(f"  Mean: {_format_cli_number(rpe_trans.get('mean'))} m")
+        logger.info(f"  Max:  {_format_cli_number(rpe_trans.get('max'))} m")
+        logger.info(f"  Count: {rpe.get('count', 'N/A')}")
+
+    ate = report.get("ate_position_m") or {}
+    if isinstance(ate, dict) and ate:
+        logger.debug("ATE position summary: %s", ate)
+        logger.info("\nATE 绝对轨迹误差:")
+        logger.info(f"  RMSE: {_format_cli_number(ate.get('rmse'))} m")
+        logger.info(f"  Mean: {_format_cli_number(ate.get('mean'))} m")
+
+
+def _log_vloc_specific_metrics(logger, report: dict[str, object]) -> None:
+    """Print VLOC-only position, attitude, and trajectory-length metrics."""
+
+    details = report.get("vloc_details") or {}
+    summary = details.get("summary") if isinstance(details, dict) else {}
+    if not isinstance(summary, dict) or not summary:
+        return
+
+    logger.debug("VLOC detail summary: %s", summary)
+    logger.info("\nVLOC 专项指标:")
+    for key, unit in (
+        ("trajectory_length_m", "m"),
+        ("mean_error_pos_xy", "m"),
+        ("mean_error_pos_z", "m"),
+        ("mean_error_euler", "deg"),
+        ("max_error_pos_xy", "m"),
+        ("max_error_pos_z", "m"),
+        ("max_error_euler", "deg"),
+    ):
+        logger.info(f"  {key}: {_format_cli_number(summary.get(key))} {unit}")
+
+
 def _debug_args_dict(args: argparse.Namespace) -> dict[str, object]:
-    """Return parser config with evo-compatible debug field names."""
+    """Return CLI debug config with only user-visible variable inputs."""
 
     is_vo = args.mode == "sf_vo"
     estimate_name = "vo.txt" if is_vo else "vloc.txt"
     data_dir = Path(args.data_dir)
     log_dir = Path(args.log_dir)
     return {
-        "align": is_vo,
-        "align_origin": False,
-        "all_pairs": False,
-        "change_unit": None,
-        "config": None,
-        "correct_scale": is_vo,
-        "debug": bool(args.debug),
-        "delta": float(args.delta),
-        "delta_tol": 0.1,
-        "delta_unit": args.unit,
-        "downsample": None,
-        "est_file": str(log_dir / estimate_name),
-        "logfile": str(args.logfile) if args.logfile else None,
-        "map_tile": None,
-        "motion_filter": None,
-        "n_to_align": -1,
-        "no_warnings": False,
-        "pairs_from_reference": False,
-        "plot": False,
-        "plot_colormap_max": None,
-        "plot_colormap_max_percentile": None,
-        "plot_colormap_min": None,
-        "plot_full_ref": False,
-        "plot_mode": "xyz",
-        "plot_x_dimension": "seconds",
-        "pose_relation": "trans_part",
-        "project_to_plane": None,
-        "ref_file": str(data_dir / "imu.txt"),
-        "rerun": False,
-        "rerun_rec_id": None,
-        "ros_map_yaml": None,
-        "save_plot": None,
-        "save_results": str(args.output) if args.output else None,
-        "silent": bool(args.silent),
-        "subcommand": args.mode,
-        "t_end": None,
-        "t_max_diff": 0.01,
-        "t_offset": 0.0,
-        "t_start": None,
-        "verbose": bool(args.verbose),
+        "mode": args.mode,
         "data_dir": str(data_dir),
         "log_dir": str(log_dir),
-        "html_output": str(args.html_output) if args.html_output else None,
+        "ref_file": str(data_dir / "imu.txt"),
+        "est_file": str(log_dir / estimate_name),
+        "delta": float(args.delta),
+        "delta_unit": args.unit,
+        "output": str(args.output) if args.output else None,
         "preview_html": bool(args.p),
         "save_html": bool(args.save_html),
+        "html_output": str(args.html_output) if args.html_output else None,
+        "debug": bool(args.debug),
+        "verbose": bool(args.verbose),
+        "silent": bool(args.silent),
+        "logfile": str(args.logfile) if args.logfile else None,
     }

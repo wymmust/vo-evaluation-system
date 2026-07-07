@@ -1,4 +1,5 @@
 from pathlib import Path
+import errno
 
 from test_evaluator import sample_calib_text
 
@@ -77,3 +78,20 @@ def test_server_main_auto_opens_browser(monkeypatch):
     assert server.main([]) == 0
     assert opened_urls == ["http://127.0.0.1:8766/"]
     assert closed == [True]
+
+
+def test_server_main_reports_port_in_use_with_fix_hint(monkeypatch, capsys):
+    from voeval import server
+
+    class PortBusyHTTPServer:
+        def __init__(self, address, handler):
+            raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(server, "ThreadingHTTPServer", PortBusyHTTPServer)
+
+    assert server.main([]) == 1
+
+    captured = capsys.readouterr()
+    assert "端口 8766 已被占用" in captured.err
+    assert "python -m voeval server --port 8767" in captured.err
+    assert "Traceback" not in captured.err

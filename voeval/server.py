@@ -12,7 +12,9 @@ files on the local Python side when the user fills data_dir/log_dir path boxes.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
+import sys
 import webbrowser
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -207,7 +209,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--no-open", action="store_true", help="Do not auto-open browser on start")
     args = parser.parse_args(argv)
-    server = ThreadingHTTPServer((args.host, args.port), LocalEvaluationHandler)
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), LocalEvaluationHandler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            next_port = args.port + 1
+            print(f"端口 {args.port} 已被占用，通常是上一次 server 还在运行。", file=sys.stderr)
+            print("解决方法：换一个端口重新启动，例如：", file=sys.stderr)
+            print(f"  python -m voeval server --port {next_port}", file=sys.stderr)
+            return 1
+        raise
     url = f"http://{args.host}:{args.port}/"
     print(f"Serving VO evaluation web UI on {url}")
     print("Local path evaluation API is enabled for this machine.")
