@@ -13,9 +13,8 @@ from ..io.trajectory import Trajectory
 def sf_nav_to_body_ned_trajectory(nav: Trajectory, home_point: HomePoint) -> Trajectory:
     """把 nav GT 转成以 home_point 为原点的 body/NED 轨迹。
 
-    水平 N/E 使用经纬度转 NED；垂直分量按原 MATLAB VLOC 口径处理：
-    nav 使用 altitude_msl，VLOC 使用 raw z，因此后续误差等价于
-    abs(nav_altitude_msl + vloc_body_z)。
+    口径对齐 MATLAB VLOC 脚本：
+    nav_data.ned = TransformToNed(nav_data.lati, nav_data.longi, nav_data.alti_msl, homepoint)。
     """
     latitude = _required_extra(nav, "latitude")
     longitude = _required_extra(nav, "longitude")
@@ -37,7 +36,12 @@ def sf_nav_to_body_ned_trajectory(nav: Trajectory, home_point: HomePoint) -> Tra
         source_format="sf_imu_body_ned",
     )
 def sf_vloc_to_body_ned_trajectory(vloc: Trajectory, home_point: HomePoint, calibration: Calibration) -> Trajectory:
-    """把 vloc 的 imu 位姿转成 body/NED 轨迹。"""
+    """把 vloc 的 imu 位姿转成 body/NED 轨迹。
+
+    口径对齐 MATLAB:
+    - LoadVlocData.m 使用 abs(pos_z) 作为 alti_msl，解析阶段已经写入 extras。
+    - TransformVlocToBody.m 使用 T_i_b，因此这里把 calib_raw.yaml 的 T_imu_body 取逆后应用。
+    """
     latitude = _required_extra(vloc, "latitude")
     longitude = _required_extra(vloc, "longitude")
     altitude_msl = np.asarray(vloc.extras.get("altitude_msl", vloc.positions[:, 2]), dtype=float)
@@ -47,12 +51,11 @@ def sf_vloc_to_body_ned_trajectory(vloc: Trajectory, home_point: HomePoint, cali
     body_ned = imu_ned
     body_rot = rotations
     if rotations is not None:
-        rot_imu_body = np.asarray(calibration.t_imu_body[:3, :3], dtype=float)
-        trans_imu_body = np.asarray(calibration.t_imu_body[:3, 3], dtype=float)
-        rot_body_imu = rot_imu_body.T
-        trans_body_in_imu = -rot_body_imu @ trans_imu_body
-        body_ned = imu_ned + np.einsum("nij,j->ni", rotations, trans_body_in_imu)
-        body_rot = np.einsum("nij,jk->nik", rotations, rot_body_imu)
+        t_imu_body = np.linalg.inv(np.asarray(calibration.t_imu_body, dtype=float))
+        rot_imu_body = t_imu_body[:3, :3]
+        trans_imu_body = t_imu_body[:3, 3]
+        body_ned = imu_ned + np.einsum("nij,j->ni", rotations, trans_imu_body)
+        body_rot = np.einsum("nij,jk->nik", rotations, rot_imu_body)
 
     extras = dict(vloc.extras)
     extras["imu_x_m"] = vloc.positions[:, 0]

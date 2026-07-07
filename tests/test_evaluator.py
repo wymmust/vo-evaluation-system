@@ -189,6 +189,8 @@ def sample_vloc_bundle_with_large_nav_gap() -> SfVlocBundle:
             "reset_count": np.zeros(len(vloc_stamps), dtype=float),
             "latitude": vloc_lat,
             "longitude": np.full(len(vloc_stamps), home.longitude, dtype=float),
+            "altitude": np.abs(vloc_positions[:, 2]),
+            "altitude_msl": np.abs(vloc_positions[:, 2]),
             "height": np.asarray([5.0, 5.0, 5.0, 5.0, 5.0], dtype=float),
             "vloc_mode": np.asarray([2, 2, 2, 1, 2], dtype=float),
         },
@@ -355,8 +357,8 @@ def test_fixed_parsers_do_not_keep_raw_numeric_tables_and_validate_integer_colum
     assert "raw_numeric_table" not in imu.extras
     assert "raw_numeric_table" not in vloc.extras
     assert "raw_numeric_table" not in vo.extras
-    assert np.allclose(vloc.extras["altitude"], [5.0, 6.0])
-    assert np.allclose(vloc.extras["altitude_msl"], [5.0, 6.0])
+    assert np.allclose(vloc.extras["altitude"], np.abs(vloc.positions[:, 2]))
+    assert np.allclose(vloc.extras["altitude_msl"], np.abs(vloc.positions[:, 2]))
     assert np.allclose(vloc.extras["height"], [5.0, 6.0])
 
     bad_status = sample_vloc_text().replace("10.0 2 42", "10.0 2.5 42", 1)
@@ -468,7 +470,7 @@ def test_vloc_report_contains_nav_vloc_specific_detail_tables():
 
     assert details["summary"]["trajectory_length_m"] > 0
     assert details["summary"]["horizontal_error_mean_m"] == pytest.approx(1.0, abs=0.02)
-    assert details["summary"]["vertical_error_max_m"] == pytest.approx(100.0, abs=1e-3)
+    assert details["summary"]["vertical_error_max_m"] == pytest.approx(0.0, abs=1e-4)
     assert {"flight_mode", "navi_mode", "rtk_yaw", "rtk_alti", "velocity_norm"}.issubset(nav_status.columns)
     assert {"vloc_mode", "num_inliers", "reset_count"}.issubset(vloc_status.columns)
     assert {"position_error_n_m", "position_error_e_m", "position_error_d_m"}.issubset(comparison.columns)

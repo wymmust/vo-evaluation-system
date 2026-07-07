@@ -66,14 +66,15 @@ def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
     data = _read_fixed_numeric_table(text, len(VLOC_FIXED_COLUMNS), name, "VLOC")
     status = _require_integer_column(data[:, 1], name, "status")
     reset_count = _require_integer_column(data[:, 3], name, "reset_count")
+    altitude_msl = np.abs(data[:, 6])
     extras = {
         "status": status,
         "num_inliers": data[:, 2],
         "reset_count": reset_count,
         "latitude": data[:, 10],
         "longitude": data[:, 11],
-        "altitude": data[:, 12],
-        "altitude_msl": data[:, 12],
+        "altitude": altitude_msl,
+        "altitude_msl": altitude_msl,
         "height": data[:, 12],
         "vloc_mode": (status & 0x0F).astype(float),
     }
