@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 def identity_alignment() -> dict[str, Any]:
     """VLOC 固定不做轨迹对齐，直接统计 nav-vloc 坐标差。"""
@@ -69,6 +72,9 @@ def umeyama_alignment(src: np.ndarray, dst: np.ndarray) -> tuple[float, np.ndarr
 
     # 4. 在旋转/尺度确定后，用两条轨迹的中心点求平移。
     trans = mu_dst - scale * (rot @ mu_src)
+    logger.debug("Aligning using Umeyama's method... (with scale correction)")
+    logger.debug("Rotation of alignment:\n%s\nTranslation of alignment:\n%s", rot, trans)
+    logger.debug("Scale correction: %.12g", scale)
     return scale, rot, trans
 def apply_alignment(positions: np.ndarray, alignment: dict[str, Any]) -> np.ndarray:
     """把 estimate 位置应用到 GT 坐标系。

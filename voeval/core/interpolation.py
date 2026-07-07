@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
@@ -10,6 +11,8 @@ import numpy as np
 from ..io.formats import FIXED_TIME_OFFSET_S, VLOC_FIXED_MAX_INTERPOLATION_GAP_S
 from ..io.trajectory import Trajectory
 from .geometry import matrix_to_quaternion, quaternion_to_matrix
+
+logger = logging.getLogger(__name__)
 
 def trajectory_extra_or_nan(traj: Trajectory, key: str) -> np.ndarray:
     """读取等长 extras；不存在时返回 NaN，方便前端图表跳过。"""
@@ -199,6 +202,15 @@ def interpolate_reference_to_estimate(
         info["warning"] = "no estimate timestamp remains after interpolation filtering"
     elif len(est_indices) < 2:
         info["warning"] = "fewer than two estimate timestamps remain after interpolation filtering"
+    logger.debug(
+        "Found %d of max. %d possible matching timestamps between...\n\t%s\nand:\t%s\n..with max. interpolation gap: %.3g (s) and time offset: %.1f (s).",
+        int(info["matches"]),
+        int(info["estimate_count_input"]),
+        reference.name,
+        estimate.name,
+        float(info["max_interpolation_gap_s"]),
+        float(info["time_offset_s"]),
+    )
     return ref_interp, est_matched, info
 def _unique_timestamp_trajectory(traj: Trajectory) -> Trajectory:
     """Keep the first sample for duplicate timestamps before interpolation."""

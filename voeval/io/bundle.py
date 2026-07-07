@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from .calibration import Calibration, HomePoint
 from .parsers import parse_calib_raw_fixed, parse_home_point_fixed, parse_imu_fixed, parse_vloc_fixed, parse_vo_fixed
 from .trajectory import Trajectory
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -60,7 +63,7 @@ def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> Sf
     home_path = _required_bundle_file(log_path, "home_point.txt", "log_dir/home_point.txt")
     calib_path = _required_bundle_file(log_path, "calib_raw.yaml", "log_dir/calib_raw.yaml")
 
-    return SfVlocBundle(
+    bundle = SfVlocBundle(
         nav=parse_imu_fixed(imu_path.read_text(encoding="utf-8", errors="replace"), name=str(imu_path)),
         vloc=parse_vloc_fixed(vloc_path.read_text(encoding="utf-8", errors="replace"), name=str(vloc_path)),
         home_point=parse_home_point_fixed(home_path.read_text(encoding="utf-8", errors="replace"), name=str(home_path)),
@@ -74,6 +77,10 @@ def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> Sf
             "calib_raw": calib_path,
         },
     )
+    _log_loaded_trajectory(bundle.nav, imu_path)
+    _log_loaded_trajectory(bundle.vloc, vloc_path)
+    logger.debug("--------------------------------------------------------------------------------")
+    return bundle
 def load_vloc_evaluation_bundle_from_text(
     imu_text: str,
     vloc_text: str,
@@ -108,7 +115,7 @@ def load_vloc_evaluation_bundle_from_text(
         与 load_vloc_evaluation_bundle() 返回值结构一致
     """
 
-    return SfVlocBundle(
+    bundle = SfVlocBundle(
         nav=parse_imu_fixed(imu_text, name=imu_name),
         vloc=parse_vloc_fixed(vloc_text, name=vloc_name),
         home_point=parse_home_point_fixed(home_point_text, name=home_point_name),
@@ -122,6 +129,10 @@ def load_vloc_evaluation_bundle_from_text(
             "calib_raw": Path(calib_raw_name),
         },
     )
+    _log_loaded_trajectory(bundle.nav, imu_name)
+    _log_loaded_trajectory(bundle.vloc, vloc_name)
+    logger.debug("--------------------------------------------------------------------------------")
+    return bundle
 def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVoBundle:
     """读取 VO 评估目录。
 
@@ -139,7 +150,7 @@ def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVo
     vo_path = _required_bundle_file(log_path, "vo.txt", "log_dir/vo.txt")
     calib_path = _required_bundle_file(log_path, "calib_raw.yaml", "log_dir/calib_raw.yaml")
 
-    return SfVoBundle(
+    bundle = SfVoBundle(
         nav=parse_imu_fixed(imu_path.read_text(encoding="utf-8", errors="replace"), name=str(imu_path)),
         vo=parse_vo_fixed(vo_path.read_text(encoding="utf-8", errors="replace"), name=str(vo_path)),
         calibration=parse_calib_raw_fixed(calib_path.read_text(encoding="utf-8", errors="replace"), name=str(calib_path)),
@@ -151,6 +162,10 @@ def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVo
             "calib_raw": calib_path,
         },
     )
+    _log_loaded_trajectory(bundle.nav, imu_path)
+    _log_loaded_trajectory(bundle.vo, vo_path)
+    logger.debug("--------------------------------------------------------------------------------")
+    return bundle
 def load_vo_evaluation_bundle_from_text(
     imu_text: str,
     vo_text: str,
@@ -181,7 +196,7 @@ def load_vo_evaluation_bundle_from_text(
         与 load_vo_evaluation_bundle() 返回值结构一致
     """
 
-    return SfVoBundle(
+    bundle = SfVoBundle(
         nav=parse_imu_fixed(imu_text, name=imu_name),
         vo=parse_vo_fixed(vo_text, name=vo_name),
         calibration=parse_calib_raw_fixed(calib_raw_text, name=calib_raw_name),
@@ -193,6 +208,10 @@ def load_vo_evaluation_bundle_from_text(
             "calib_raw": Path(calib_raw_name),
         },
     )
+    _log_loaded_trajectory(bundle.nav, imu_name)
+    _log_loaded_trajectory(bundle.vo, vo_name)
+    logger.debug("--------------------------------------------------------------------------------")
+    return bundle
 def _require_directory(path: str | Path, label: str) -> Path:
     resolved = Path(path).expanduser()
     if not resolved.is_dir():
@@ -203,3 +222,9 @@ def _required_bundle_file(base_dir: Path, filename: str, requirement_label: str)
     if not path.is_file():
         raise FileNotFoundError(f"Missing required file {requirement_label}: {path}")
     return path
+
+
+def _log_loaded_trajectory(traj: Trajectory, source: str | Path) -> None:
+    """Emit evo-style trajectory loading debug line."""
+
+    logger.debug("Loaded %d stamps and poses from: %s", len(traj.stamps), source)

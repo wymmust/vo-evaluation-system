@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import asdict, dataclass, replace
 from typing import Any
@@ -28,6 +29,8 @@ from .interpolation import prepare_evaluation_trajectories, subset_trajectory
 from .segments import detect_associated_discontinuities, vo_valid_segment_indices
 from .statistics import describe, normalize_rpe_delta_config, normalize_scale_delta_config, path_distance, rpe_frame_dataframe, scale_frame_dataframe
 from .errors import rotation_errors
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -76,10 +79,20 @@ def evaluate_vloc_bundle_core(bundle: SfVlocBundle, config: EvaluationConfig | N
     cfg = normalized_vloc_evaluation_config(config)
     nav_ned_body = sf_nav_to_body_ned_trajectory(bundle.nav, bundle.home_point)
     vloc_ned_body = sf_vloc_to_body_ned_trajectory(bundle.vloc, bundle.home_point, bundle.calibration)
+    logger.debug(
+        "Evaluate sf_vloc bundle: nav_poses=%d vloc_poses=%d",
+        len(nav_ned_body.positions),
+        len(vloc_ned_body.positions),
+    )
 
     vloc_mode = np.asarray(vloc_ned_body.extras.get("vloc_mode", np.zeros(len(vloc_ned_body.positions))), dtype=float)
     valid_mode = np.isfinite(vloc_mode) & (vloc_mode > 1.0)
     dropped_invalid_mode = int(np.count_nonzero(~valid_mode))
+    logger.debug(
+        "VLOC mode filter: kept=%d dropped_invalid_mode=%d",
+        int(np.count_nonzero(valid_mode)),
+        dropped_invalid_mode,
+    )
     if not np.any(valid_mode):
         raise ValueError("No VLOC samples remain after filtering vloc_mode > 1")
 
@@ -123,8 +136,15 @@ def evaluate_vo_bundle_core(bundle: SfVoBundle, config: EvaluationConfig | None 
     cfg = normalized_vo_evaluation_config(config)
     nav_cam = sf_nav_to_camera_trajectory(bundle.nav, bundle.calibration)
     vo_cam = bundle.vo
+    logger.debug("Evaluate sf_vo bundle: nav_poses=%d vo_poses=%d", len(nav_cam.positions), len(vo_cam.positions))
 
     valid_indices, valid_segment_ids, segment_filter = vo_valid_segment_indices(vo_cam)
+    logger.debug(
+        "VO reset segment filter: kept=%d dropped=%d segments=%s",
+        len(valid_indices),
+        int(segment_filter["dropped_pose_count"]),
+        segment_filter.get("segments", []),
+    )
     if len(valid_indices) < 2:
         raise ValueError("No VO reset segment remains after filtering duration >= 10s and frame count >= 200")
 
@@ -202,6 +222,17 @@ def evaluate_trajectory_result(
     alignment_mode = "sim3" if is_vo_workflow else "none"
     segment_policy = "segments" if is_vo_workflow else "vo_timestamps"
     max_interpolation_gap_s = VO_FIXED_MAX_INTERPOLATION_GAP_S if is_vo_workflow else VLOC_FIXED_MAX_INTERPOLATION_GAP_S
+    logger.debug(
+        "Evaluate trajectory: gt=%s est=%s gt_poses=%d est_poses=%d workflow=%s alignment=%s",
+        gt.name,
+        est.name,
+        len(gt.positions),
+        len(est.positions),
+        "sf_vo" if is_vo_workflow else "sf_vloc_or_tum",
+        alignment_mode,
+    )
+    logger.debug("--------------------------------------------------------------------------------")
+    logger.debug("Synchronizing trajectories...")
 
     # 1. 时间同步：默认以 estimate 时间戳为评估基准，把 GT/reference 插值到 estimate 时刻。
     #    这样 GT=0.1/0.3/0.5、estimate=0.2/0.4/0.6 的相位错开数据不会被错误丢弃。
@@ -214,6 +245,12 @@ def evaluate_trajectory_result(
     )
     if len(gt_idx) < 2:
         raise ValueError("Need at least two associated poses to evaluate a trajectory")
+    logger.debug(
+        "Prepared evaluation trajectories: matches=%d dropped=%d max_gt_gap=%.6f",
+        int(assoc.get("matches", len(gt_idx))),
+        int(assoc.get("dropped", 0)),
+        float(assoc.get("max_used_gt_gap_s", 0.0)),
+    )
 
     # 2. 先在同步后的原始匹配序列上诊断断点/跳变。
     #    sf_vo 会把 reset_count 分段结果写入 evaluation_segment_id，因此 reset 边界也会被标为断点；
@@ -235,6 +272,11 @@ def evaluate_trajectory_result(
         time_gap_threshold_s=FIXED_DISCONTINUITY_TIME_GAP_S,
         forced_segment_ids=forced_segment_ids,
     )
+    logger.debug(
+        "Discontinuity diagnostics: breaks=%d segments=%d",
+        int(discontinuities_all["break_count"]),
+        int(discontinuities_all["segment_count"]),
+    )
     valid_segments = [seg for seg in discontinuities_all["segments"] if int(seg.get("count", 0)) >= 2]
     eval_ranges = (
         valid_segments
@@ -243,6 +285,8 @@ def evaluate_trajectory_result(
     )
     if not eval_ranges:
         raise ValueError("No continuous segment contains at least two matched poses")
+    if is_vo_workflow:
+        logger.debug("--------------------------------------------------------------------------------")
     # 这些列表会收集每个连续段的结果，最后统一 concat/describe。
     per_pose_frames: list[pd.DataFrame] = []
     pos_error_parts: list[np.ndarray] = []
@@ -292,6 +336,15 @@ def evaluate_trajectory_result(
         alignment["start_match_index"] = start
         alignment["end_match_index"] = end
         alignments.append(alignment)
+        logger.debug(
+            "Segment alignment: segment_id=%d start=%d end=%d count=%d mode=%s scale=%.12g",
+            int(seg_id),
+            start,
+            end,
+            len(cur_gt_idx),
+            alignment.get("mode"),
+            float(alignment["scale"]),
+        )
 
         est_pos_aligned = apply_alignment(est_pos, alignment)
         est_rot_aligned = apply_rotation_alignment(est_rot, alignment) if est_rot is not None else None
@@ -487,6 +540,25 @@ def evaluate_trajectory_result(
         "translation_m": describe(rpe_trans),
         "rotation_deg": describe(rpe_rot_deg) if len(rpe_rot_deg) else None,
     }
+    rpe_translation_summary = rpe["translation_m"] or {}
+    delta_unit_label = "m" if rpe_delta_info.get("delta_unit") == "meters" else "frames"
+    delta_value_label = _format_debug_delta(rpe_delta_info.get("delta_value"), delta_unit_label)
+    logger.debug("--------------------------------------------------------------------------------")
+    logger.debug(
+        "Found %d pairs with delta %s (%s) among %d poses using consecutive pairs.",
+        int(len(rpe_trans)),
+        delta_value_label,
+        delta_unit_label,
+        int(len(per_pose)),
+    )
+    logger.debug(
+        "Compared %d relative pose pairs, delta = %s (%s) with consecutive pairs.",
+        int(len(rpe_trans)),
+        delta_value_label,
+        delta_unit_label,
+    )
+    logger.debug("Calculating RPE for translation part pose relation...")
+    logger.debug("--------------------------------------------------------------------------------")
     scale_frame_delta = None
     if is_vo_workflow:
         scale_valid = scale_per_frame["scale_available"].to_numpy(dtype=bool) if "scale_available" in scale_per_frame else np.asarray([], dtype=bool)
@@ -554,6 +626,13 @@ def evaluate_trajectory_result(
     }
     if scale_frame_delta is not None:
         report["scale_frame_delta"] = scale_frame_delta
+    logger.debug(
+        "Trajectory evaluation summary: matched=%d duration=%.6f gt_path=%.6f ate_rmse=%.12g",
+        int(summary["matched_poses"]),
+        float(summary["duration_s"]),
+        float(summary["gt_path_length_m"]),
+        float(report["ate_position_m"]["rmse"]),
+    )
     return TrajectoryEvaluationResult(
         report=report,
         original_gt=original_gt,
@@ -564,3 +643,14 @@ def evaluate_trajectory_result(
         scale_per_frame=scale_per_frame,
         aligned_segments=tuple(aligned_segments),
     )
+
+
+def _format_debug_delta(value: Any, unit_label: str) -> str:
+    """Format delta values like evo debug output."""
+
+    numeric = float(value)
+    if unit_label == "frames" and numeric.is_integer():
+        return str(int(numeric))
+    if unit_label == "m" and numeric.is_integer():
+        return f"{numeric:.1f}"
+    return f"{numeric:g}"

@@ -28,6 +28,7 @@ from voeval.io import (
 )
 from voeval.core import EvaluationConfig
 from voeval.cli import main as cli_main
+from voeval.debug import configure_logging
 from voeval.reports import evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle, report_to_excel, report_to_json
 from voeval.core import (
     euler_yaw_pitch_roll_to_matrix,
@@ -527,6 +528,150 @@ def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, 
     assert exit_code == 0
     assert "RMSE: N/A m" in captured.out
     assert "Scale: N/A" in captured.out
+
+
+def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vo_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vo"},
+            "rpe_frame_delta": {"translation_m": {"rmse": 1.0, "mean": 0.5, "max": 2.0}, "count": 3},
+            "ate_position_m": {"rmse": 2.0, "mean": 1.0},
+            "alignment": {"base_mode": "sim3", "scale": 3.0},
+        },
+    )
+
+    exit_code = cli_main(["--mode", "sf_vo", "--data_dir", str(tmp_path), "--log_dir", str(tmp_path), "--debug"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "System info:" in captured.out
+    assert "\nPython " in captured.out
+    assert "Python:" not in captured.out
+    assert "Platform:" not in captured.out
+    assert "Executable:" not in captured.out
+    assert "main_parser config:" in captured.out
+    assert "'align': True" in captured.out
+    assert "'correct_scale': True" in captured.out
+    assert "'delta': 100.0" in captured.out
+    assert "'delta_tol': 0.1" in captured.out
+    assert "'delta_unit': 'm'" in captured.out
+    assert "'pose_relation': 'trans_part'" in captured.out
+    assert "'ref_file':" in captured.out and "imu.txt" in captured.out
+    assert "'est_file':" in captured.out and "vo.txt" in captured.out
+    assert "'subcommand': 'sf_vo'" in captured.out
+    assert "'t_max_diff': 0.01" in captured.out
+    assert "'t_offset': 0.0" in captured.out
+    assert "--------------------------------------------------------------------------------" in captured.out
+    assert "RPE 平移误差" in captured.out
+
+
+def test_cli_silent_suppresses_success_summary(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vo_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vo"},
+            "rpe_frame_delta": {"translation_m": {"rmse": 1.0, "mean": 0.5, "max": 2.0}, "count": 3},
+            "ate_position_m": {"rmse": 2.0, "mean": 1.0},
+            "alignment": {"base_mode": "sim3", "scale": 3.0},
+        },
+    )
+
+    exit_code = cli_main(["--mode", "sf_vo", "--data_dir", str(tmp_path), "--log_dir", str(tmp_path), "--silent"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "评估结果" not in captured.out
+    assert "RPE 平移误差" not in captured.out
+
+
+def test_cli_logfile_writes_debug_log(tmp_path, monkeypatch, capsys):
+    log_path = tmp_path / "voeval_debug.log"
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vo_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vo"},
+            "rpe_frame_delta": {"translation_m": {"rmse": 1.0, "mean": 0.5, "max": 2.0}, "count": 3},
+            "ate_position_m": {"rmse": 2.0, "mean": 1.0},
+            "alignment": {"base_mode": "sim3", "scale": 3.0},
+        },
+    )
+
+    exit_code = cli_main(
+        [
+            "--mode",
+            "sf_vo",
+            "--data_dir",
+            str(tmp_path),
+            "--log_dir",
+            str(tmp_path),
+            "--logfile",
+            str(log_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "RPE 平移误差" in captured.out
+    assert log_path.exists()
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "main_parser config:" in log_text
+    assert "--------------------------------------------------------------------------------" in log_text
+    assert "RPE translation summary" in log_text
+
+
+def test_cli_logfile_includes_backend_debug_steps(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    log_path = tmp_path / "voeval_backend_debug.log"
+
+    exit_code = cli_main(
+        [
+            "--mode",
+            "sf_vloc",
+            "--data_dir",
+            str(data_dir),
+            "--log_dir",
+            str(log_dir),
+            "--logfile",
+            str(log_path),
+        ]
+    )
+
+    assert exit_code == 0
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "Loaded " in log_text
+    assert " stamps and poses from:" in log_text
+    assert "Synchronizing trajectories..." in log_text
+    assert "Found " in log_text
+    assert " possible matching timestamps between..." in log_text
+    assert "VLOC mode filter" in log_text
+    assert "Trajectory evaluation summary" in log_text
+
+
+def test_debug_log_uses_evo_like_alignment_and_rpe_messages(tmp_path):
+    log_path = tmp_path / "voeval_evo_like_debug.log"
+    configure_logging(logfile=log_path)
+
+    report = evaluate_vo_bundle(
+        sample_vo_bundle_with_reset_segments(),
+        EvaluationConfig(rpe_delta_value=100, rpe_delta_unit="frames", rpe_delta_frames=100),
+    )
+
+    assert report["rpe_frame_delta"]["count"] > 0
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "Aligning using Umeyama's method... (with scale correction)" in log_text
+    assert "Rotation of alignment:" in log_text
+    assert "Translation of alignment:" in log_text
+    assert "Scale correction:" in log_text
+    assert "Found " in log_text
+    assert " pairs with delta 100 (frames) among " in log_text
+    assert " using consecutive pairs." in log_text
+    assert "Compared " in log_text
+    assert " relative pose pairs, delta = 100 (frames) with consecutive pairs." in log_text
+    assert "Calculating RPE for translation part pose relation..." in log_text
 
 
 def test_cli_p_option_previews_temp_html_report(tmp_path, monkeypatch):
