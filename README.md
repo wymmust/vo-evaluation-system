@@ -4,6 +4,25 @@
 
 ## 本地网页
 
+## 安装
+
+Python 3.8.10 也可以使用，但建议在虚拟环境里安装，避免 Ubuntu/Debian 的系统 Python 限制以及旧 pip 的 editable install 问题：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip setuptools wheel
+python3 -m pip install -e . --no-build-isolation
+```
+
+安装后可直接使用：
+
+```bash
+voeval --help
+```
+
+如果使用 Python 3.11+，同样建议使用上述虚拟环境方式。
+
 从仓库根目录启动本地评估服务器：
 
 ```bash

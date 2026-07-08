@@ -10,7 +10,7 @@ from . import cli, server
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in {"-h", "--help"}:
-        print("usage: python -m voeval {sf_vo,sf_vloc,eval,server} ...")
+        print("usage: voeval {sf_vo,sf_vloc,eval,server} ...")
         print()
         print("VO/VLOC evaluation tools.")
         print()
@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
         return server.main(remainder)
     if command.startswith("-"):
         return cli.main(args)
-    print(f"python -m voeval: unknown command: {command}", file=sys.stderr)
+    print(f"voeval: unknown command: {command}", file=sys.stderr)
     return 2
 
 

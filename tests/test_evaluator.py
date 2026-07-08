@@ -1,6 +1,7 @@
 import json
 import math
 import io
+import tomllib
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +38,45 @@ from voeval.core import (
     sim3_alignment,
     yaw_from_rot,
 )
+
+
+def test_package_exposes_voeval_console_script():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+
+    assert pyproject["project"]["scripts"]["voeval"] == "voeval.__main__:main"
+    package_data = pyproject["tool"]["setuptools"]["package-data"]["voeval"]
+    assert "visualization/package.json" in package_data
+    assert "visualization/**/*.html" in package_data
+    assert "visualization/**/*.css" in package_data
+    assert "visualization/**/*.js" in package_data
+
+
+def test_package_supports_python38_legacy_editable_install():
+    repo_root = Path(__file__).resolve().parents[1]
+    pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    setup_py = repo_root / "setup.py"
+
+    assert pyproject["project"]["requires-python"] == ">=3.8"
+    assert setup_py.exists()
+    setup_text = setup_py.read_text(encoding="utf-8")
+    assert "voeval=voeval.__main__:main" in setup_text
+    assert "python_requires=\">=3.8\"" in setup_text
+    assert "visualization" in setup_text
+    assert "package_data={\"voeval\": _package_data()}" in setup_text
+
+
+def test_runtime_modules_delay_annotation_evaluation_for_python38():
+    repo_root = Path(__file__).resolve().parents[1]
+    modern_annotation_markers = (" | None", " | Path", " | str", " | int", " | float", "list[", "dict[", "tuple[", "set[")
+    missing_future_import = []
+    for path in sorted((repo_root / "voeval").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if any(marker in text for marker in modern_annotation_markers):
+            if "from __future__ import annotations" not in text:
+                missing_future_import.append(path.relative_to(repo_root).as_posix())
+
+    assert missing_future_import == []
 
 
 def test_vloc_detail_visual_segments_follow_discontinuity_diagnostics():
@@ -552,6 +592,38 @@ def test_cli_accepts_positional_mode_and_directories(tmp_path, monkeypatch, caps
 
     captured = capsys.readouterr()
     assert exit_code == 0
+    assert "========== VLOC 评估结果 ==========" in captured.out
+
+
+def test_cli_reconstructs_unquoted_directory_paths_with_spaces(tmp_path, monkeypatch, capsys):
+    data_dir = tmp_path / "data dir"
+    log_dir = tmp_path / "log dir"
+    data_dir.mkdir()
+    log_dir.mkdir()
+    received: list[tuple[Path, Path]] = []
+
+    def fake_load_vloc(data_dir_arg: Path, log_dir_arg: Path) -> object:
+        received.append((data_dir_arg, log_dir_arg))
+        return object()
+
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", fake_load_vloc)
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vloc_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vloc"},
+            "rpe_frame_delta": {"translation_m": {"rmse": 1.0, "mean": 0.5, "max": 2.0}, "count": 3},
+            "ate_position_m": {"rmse": 2.0, "mean": 1.0},
+            "alignment": {"base_mode": "none"},
+            "vloc_details": {"summary": {"trajectory_length_m": 100.0}},
+        },
+    )
+
+    argv = ["sf_vloc", *str(data_dir).split(" "), *str(log_dir).split(" "), "-v"]
+    exit_code = cli_main(argv)
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert received == [(data_dir, log_dir)]
     assert "========== VLOC 评估结果 ==========" in captured.out
 
 
