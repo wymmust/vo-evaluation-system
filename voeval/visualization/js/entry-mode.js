@@ -255,7 +255,6 @@ export { handleEntryModeChange, updateEntryModeUi, resetRenderedReport, updateRu
 import { resetPointSelectionState } from "./point-selection.js";
 import { scheduleRenderCharts, purgeChart, purgeUnselectedCharts } from "./chart-render.js";
 import { showMessage, clearMessage, enableDownloads } from "./report-render.js";
-import { els } from "./dom-refs.js";
 
 function updateRunButton() {
   const hasRuntime = Boolean(state.serverReady);

@@ -489,15 +489,12 @@ def test_module_main_dispatches_direct_sf_mode_to_cli(monkeypatch):
     assert received == [["sf_vloc", "/data/path", "/log/path", "-v"]]
 
 
-def test_module_main_keeps_legacy_flag_mode_entry(monkeypatch):
-    received: list[list[str]] = []
+def test_module_main_rejects_legacy_flag_mode_entry(capsys):
+    exit_code = voeval_main.main(["--mode", "sf_vloc"])
 
-    monkeypatch.setattr(voeval_main.cli, "main", lambda argv: received.append(list(argv)) or 0)
-
-    exit_code = voeval_main.main(["--mode", "sf_vloc", "--data_dir", "/data/path", "--log_dir", "/log/path"])
-
-    assert exit_code == 0
-    assert received == [["--mode", "sf_vloc", "--data_dir", "/data/path", "--log_dir", "/log/path"]]
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "unknown command: --mode" in captured.err
 
 
 def test_cli_accepts_positional_mode_and_directories(tmp_path, monkeypatch, capsys):
@@ -520,36 +517,15 @@ def test_cli_accepts_positional_mode_and_directories(tmp_path, monkeypatch, caps
     assert "========== VLOC 评估结果 ==========" in captured.out
 
 
-def test_cli_reconstructs_unquoted_directory_paths_with_spaces(tmp_path, monkeypatch, capsys):
+def test_cli_does_not_reconstruct_unquoted_directory_paths_with_spaces(tmp_path):
     data_dir = tmp_path / "data dir"
     log_dir = tmp_path / "log dir"
     data_dir.mkdir()
     log_dir.mkdir()
-    received: list[tuple[Path, Path]] = []
-
-    def fake_load_vloc(data_dir_arg: Path, log_dir_arg: Path) -> object:
-        received.append((data_dir_arg, log_dir_arg))
-        return object()
-
-    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", fake_load_vloc)
-    monkeypatch.setattr(
-        "voeval.cli.evaluate_vloc_bundle",
-        lambda bundle, config: {
-            "inputs": {"entry_mode": "vloc"},
-            "rpe_frame_delta": {"translation_m": {"rmse": 1.0, "mean": 0.5, "max": 2.0}, "count": 3},
-            "ate_position_m": {"rmse": 2.0, "mean": 1.0},
-            "alignment": {"base_mode": "none"},
-            "vloc_details": {"summary": {"trajectory_length_m": 100.0}},
-        },
-    )
 
     argv = ["sf_vloc", *str(data_dir).split(" "), *str(log_dir).split(" "), "-v"]
-    exit_code = cli_main(argv)
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert received == [(data_dir, log_dir)]
-    assert "========== VLOC 评估结果 ==========" in captured.out
+    with pytest.raises(SystemExit):
+        cli_main(argv)
 
 
 def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, capsys):
@@ -575,7 +551,7 @@ def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, 
         },
     )
 
-    exit_code = cli_main(["--mode", "sf_vloc", "--data_dir", str(tmp_path), "--log_dir", str(tmp_path)])
+    exit_code = cli_main(["sf_vloc", str(tmp_path), str(tmp_path)])
 
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -607,7 +583,7 @@ def test_cli_vloc_outputs_common_summary_and_vloc_specific_metrics(tmp_path, mon
         },
     )
 
-    exit_code = cli_main(["--mode", "sf_vloc", "--data_dir", str(tmp_path), "--log_dir", str(tmp_path)])
+    exit_code = cli_main(["sf_vloc", str(tmp_path), str(tmp_path)])
 
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -637,7 +613,7 @@ def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, 
         },
     )
 
-    exit_code = cli_main(["--mode", "sf_vo", "--data_dir", str(tmp_path), "--log_dir", str(tmp_path), "--debug"])
+    exit_code = cli_main(["sf_vo", str(tmp_path), str(tmp_path), "--debug"])
 
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -677,7 +653,7 @@ def test_cli_silent_suppresses_success_summary(tmp_path, monkeypatch, capsys):
         },
     )
 
-    exit_code = cli_main(["--mode", "sf_vo", "--data_dir", str(tmp_path), "--log_dir", str(tmp_path), "--silent"])
+    exit_code = cli_main(["sf_vo", str(tmp_path), str(tmp_path), "--silent"])
 
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -700,11 +676,8 @@ def test_cli_logfile_writes_debug_log(tmp_path, monkeypatch, capsys):
 
     exit_code = cli_main(
         [
-            "--mode",
             "sf_vo",
-            "--data_dir",
             str(tmp_path),
-            "--log_dir",
             str(tmp_path),
             "--logfile",
             str(log_path),
@@ -727,11 +700,8 @@ def test_cli_logfile_includes_backend_debug_steps(tmp_path):
 
     exit_code = cli_main(
         [
-            "--mode",
             "sf_vloc",
-            "--data_dir",
             str(data_dir),
-            "--log_dir",
             str(log_dir),
             "--logfile",
             str(log_path),
@@ -781,11 +751,8 @@ def test_cli_p_option_previews_temp_html_report(tmp_path, monkeypatch):
 
     exit_code = cli_main(
         [
-            "--mode",
             "sf_vloc",
-            "--data_dir",
             str(data_dir),
-            "--log_dir",
             str(log_dir),
             "-p",
         ]
@@ -814,11 +781,8 @@ def test_cli_s_option_uses_default_html_filename(tmp_path, monkeypatch):
 
     exit_code = cli_main(
         [
-            "--mode",
             "sf_vloc",
-            "--data_dir",
             str(dataset_dir),
-            "--log_dir",
             str(dataset_dir),
             "-s",
         ]
@@ -836,11 +800,8 @@ def test_cli_s_option_writes_custom_html_output(tmp_path):
 
     exit_code = cli_main(
         [
-            "--mode",
             "sf_vloc",
-            "--data_dir",
             str(data_dir),
-            "--log_dir",
             str(log_dir),
             "-s",
             "--html-output",
@@ -860,11 +821,8 @@ def test_cli_html_output_requires_save_flag(tmp_path):
     with pytest.raises(SystemExit):
         cli_main(
             [
-                "--mode",
                 "sf_vloc",
-                "--data_dir",
                 str(data_dir),
-                "--log_dir",
                 str(log_dir),
                 "-p",
                 "--html-output",
