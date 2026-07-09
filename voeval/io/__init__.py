@@ -3,12 +3,10 @@
 from .bundle import SfVlocBundle, SfVoBundle, load_vloc_evaluation_bundle, load_vo_evaluation_bundle
 from .calibration import Calibration, HomePoint
 from .formats import (
-    EVALUATION_FORMAT_SPECS,
     FIXED_DISCONTINUITY_STEP_M,
     FIXED_DISCONTINUITY_TIME_GAP_S,
     FIXED_TIME_OFFSET_S,
     IMU_FIXED_COLUMNS,
-    SUPPORTED_EVALUATION_FORMATS,
     VLOC_FIXED_COLUMNS,
     VLOC_FIXED_MAX_INTERPOLATION_GAP_S,
     VO_FIXED_COLUMNS,
@@ -18,23 +16,17 @@ from .formats import (
     WGS84_A_M,
     WGS84_E2,
     WGS84_F,
-    EvaluationFormatSpec,
-    get_evaluation_format_spec,
-    normalize_evaluation_format,
 )
 from .parsers import parse_calib_raw_fixed, parse_home_point_fixed, parse_imu_fixed, parse_vloc_fixed, parse_vo_fixed
 from .trajectory import Trajectory
 
 __all__ = [
     "Calibration",
-    "EVALUATION_FORMAT_SPECS",
-    "EvaluationFormatSpec",
     "FIXED_DISCONTINUITY_STEP_M",
     "FIXED_DISCONTINUITY_TIME_GAP_S",
     "FIXED_TIME_OFFSET_S",
     "HomePoint",
     "IMU_FIXED_COLUMNS",
-    "SUPPORTED_EVALUATION_FORMATS",
     "SfVlocBundle",
     "SfVoBundle",
     "Trajectory",
@@ -47,10 +39,8 @@ __all__ = [
     "WGS84_A_M",
     "WGS84_E2",
     "WGS84_F",
-    "get_evaluation_format_spec",
     "load_vloc_evaluation_bundle",
     "load_vo_evaluation_bundle",
-    "normalize_evaluation_format",
     "parse_calib_raw_fixed",
     "parse_home_point_fixed",
     "parse_imu_fixed",
