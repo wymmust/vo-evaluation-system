@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -76,7 +76,7 @@ def evaluate_vloc_bundle_core(bundle: SfVlocBundle, config: EvaluationConfig | N
     - 固定不外推、固定 time_offset=0、固定不做 Sim3/SE3 用户选择。
     """
 
-    cfg = normalized_vloc_evaluation_config(config)
+    cfg = config if config is not None else EvaluationConfig()
     nav_ned_body = sf_nav_to_body_ned_trajectory(bundle.nav, bundle.home_point)
     vloc_ned_body = sf_vloc_to_body_ned_trajectory(bundle.vloc, bundle.home_point, bundle.calibration)
     logger.debug(
@@ -126,7 +126,7 @@ def evaluate_vo_bundle_core(bundle: SfVoBundle, config: EvaluationConfig | None 
     - 固定按连续段分别做 Sim3，让每个 VO 重置后的局部坐标系单独对齐。
     """
 
-    cfg = normalized_vo_evaluation_config(config)
+    cfg = config if config is not None else EvaluationConfig()
     nav_cam = sf_nav_to_camera_trajectory(bundle.nav, bundle.calibration)
     vo_cam = bundle.vo
     logger.debug("Evaluate sf_vo bundle: nav_poses=%d vo_poses=%d", len(nav_cam.positions), len(vo_cam.positions))
@@ -161,22 +161,6 @@ def evaluate_vo_bundle_core(bundle: SfVoBundle, config: EvaluationConfig | None 
         estimate_eval=trajectory.est_eval,
         trajectory=trajectory,
     )
-def normalized_vloc_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
-    """把用户配置收敛成 sf_vloc 固定评估参数。"""
-    return replace(config) if config is not None else EvaluationConfig()
-def normalized_vo_evaluation_config(config: EvaluationConfig | None = None) -> EvaluationConfig:
-    """把用户配置收敛成 sf_vo 固定评估参数。
-
-    VO 和 VLOC 的关键区别是：VO 是可能无尺度且会 reset 的轨迹，因此固定走 Sim3，
-    并把 reset_count 形成的连续段交给 evaluate_trajectories() 逐段对齐。
-    """
-    return replace(config) if config is not None else EvaluationConfig()
-def evaluate_trajectories(
-    gt: Trajectory,
-    est: Trajectory,
-    config: EvaluationConfig | None = None,
-) -> dict[str, Any]:
-    return evaluate_trajectory_result(gt, est, config).report
 def evaluate_trajectory_result(
     gt: Trajectory,
     est: Trajectory,
