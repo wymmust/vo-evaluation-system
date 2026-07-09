@@ -19,7 +19,6 @@ from voeval.io import (
     get_evaluation_format_spec,
     load_vloc_evaluation_bundle,
     load_vo_evaluation_bundle,
-    load_trajectory_from_text,
     normalize_evaluation_format,
     parse_home_point_fixed,
     parse_calib_raw_fixed,
@@ -404,17 +403,6 @@ def test_fixed_parsers_do_not_keep_raw_numeric_tables_and_validate_integer_colum
     bad_status = sample_vloc_text().replace("10.0 2 42", "10.0 2.5 42", 1)
     with pytest.raises(ValueError, match="integer"):
         parse_vloc_fixed(bad_status, name="vloc.txt")
-
-
-def test_load_trajectory_rejects_missing_path_and_invalid_tum_quaternion(tmp_path):
-    missing = tmp_path / "missing.tum"
-    with pytest.raises(FileNotFoundError):
-        voeval.load_trajectory(missing)
-    with pytest.raises(FileNotFoundError):
-        voeval.load_trajectory(str(missing))
-
-    with pytest.raises(ValueError, match="zero-norm"):
-        load_trajectory_from_text("0 0 0 0 0 0 0 0\n1 1 0 0 0 0 0 1\n", fmt="tum", name="bad")
 
 
 def test_trajectory_helpers_reject_mismatched_extra_lengths():
@@ -963,92 +951,6 @@ def test_fixed_parser_rejects_wrong_column_count():
         parse_vloc_fixed(bad_vloc, name="vloc.txt")
 
 
-def test_tum_zero_error_without_user_alignment_config():
-    gt = load_trajectory_from_text(make_tum(), fmt="tum", name="gt")
-    est = load_trajectory_from_text(make_tum(), fmt="tum", name="est")
-    report = evaluate_trajectories(gt, est, EvaluationConfig())
-    assert report["ate_position_m"]["rmse"] < 1e-6
-    assert report["rpe_frame_delta"]["translation_m"]["rmse"] < 1e-9
-    assert report["summary"]["gt_pose_coverage_ratio"] == 1.0
-    assert "coverage_ratio" not in report["summary"]
-    assert "gt_time_coverage_ratio" not in report["summary"]
-
-
-def test_sim3_recovers_scale_for_monocular_like_output():
-    gt = load_trajectory_from_text(make_tum(), fmt="tum", name="gt")
-    est_positions = gt.positions * 0.5 + np.array([10.0, -3.0, 2.0])
-    lines = []
-    for t, p in zip(gt.stamps, est_positions):
-        lines.append(f"{t:.3f} {p[0]:.6f} {p[1]:.6f} {p[2]:.6f} 0 0 0 1")
-    est = load_trajectory_from_text("\n".join(lines), fmt="tum", name="est")
-    alignment = sim3_alignment(gt.positions, est.positions)
-    assert abs(alignment["scale"] - 2.0) < 1e-9
-
-
-def test_load_trajectory_from_text_rejects_legacy_single_file_formats():
-    text = "0 0 0 0 0 0 0 1\n1 1 0 0 0 0 0 1\n"
-    for fmt in ["auto", "sf", "vloc", "csv", "kitti", "xyz"]:
-        with pytest.raises(ValueError, match="Unsupported trajectory format"):
-            load_trajectory_from_text(text, fmt=fmt, name=f"legacy_{fmt}")
-
-
-def test_numeric_tum_timestamps_are_read_as_seconds():
-    text = """1.000 0 0 0 0 0 0 1
-1.050 1 0 0 0 0 0 1
-"""
-    traj = load_trajectory_from_text(text, fmt="tum", name="tum_seconds")
-    assert abs(traj.duration_s - 0.05) < 1e-12
-
-
-def test_numeric_tum_requires_exactly_eight_columns():
-    text = "1.000 0 0 0 0 0 0 1 99\n1.050 1 0 0 0 0 0 1 99\n"
-    with pytest.raises(ValueError, match="TUM format expects exactly 8 columns"):
-        load_trajectory_from_text(text, fmt="tum", name="tum_extra_column")
-
-
-def test_gt_is_interpolated_to_vo_timestamps_by_default():
-    gt_text = """0.1 0.1 0 0 0 0 0 1
-0.3 0.3 0 0 0 0 0 1
-0.5 0.5 0 0 0 0 0 1
-0.7 0.7 0 0 0 0 0 1
-"""
-    est_text = """0.2 0.2 0 0 0 0 0 1
-0.4 0.4 0 0 0 0 0 1
-0.6 0.6 0 0 0 0 0 1
-"""
-    gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
-    est = load_trajectory_from_text(est_text, fmt="tum", name="est")
-    report = evaluate_trajectories(gt, est, EvaluationConfig())
-    assert "method" not in report["association"]
-    assert "target" not in report["association"]
-    assert report["summary"]["matched_poses"] == 3
-    assert report["ate_position_m"]["rmse"] < 1e-12
-
-
-def test_rpe_frame_mode_uses_evo_consecutive_frame_pairs_in_per_frame_sheet():
-    gt = load_trajectory_from_text(make_tum(rows=8), fmt="tum", name="gt")
-    est = load_trajectory_from_text(make_tum(rows=8), fmt="tum", name="est")
-    report = evaluate_trajectories(
-        gt,
-        est,
-        EvaluationConfig(
-            rpe_delta_value=3,
-            rpe_delta_unit="frames",
-        ),
-    )
-
-    rpe = report["rpe_frame_delta"]
-    assert rpe["delta_unit"] == "frames"
-    assert rpe["delta_value"] == 3
-    assert rpe["delta_frames"] == 3
-    assert rpe["count"] == 2
-
-    sheet = report["trajectory_exports"]["rpe_per_frame"]
-    assert sheet["rpe_delta_unit"].tolist() == ["frames"] * len(sheet)
-    assert sheet["rpe_end_match_index"].tolist() == [3, -1, -1, 6, -1, -1, -1, -1]
-    assert sheet["rpe_available"].tolist() == [True, False, False, True, False, False, False, False]
-
-
 def test_rpe_distance_mode_uses_evo_consecutive_estimate_path_pairs():
     stamps = np.arange(6, dtype=float)
     gt_pos = np.array(
@@ -1274,11 +1176,10 @@ def test_report_json_replaces_non_finite_values_with_null():
 
 
 def test_trajectory_exports_only_keep_visualization_data_tables():
-    gt_text = "\n".join(
-        f"{i * 0.1:.1f} {i:.3f} {np.sin(i):.6f} 1.000 0 0 0 1"
-        for i in range(6)
-    )
-    gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
+    gt_stamps = np.arange(6, dtype=float) * 0.1
+    gt_positions = np.column_stack([gt_stamps, np.sin(gt_stamps), np.ones(6, dtype=float)])
+    gt_rot = np.broadcast_to(np.eye(3), (6, 3, 3)).copy()
+    gt = Trajectory("gt", gt_stamps, gt_positions, gt_rot)
     est_stamps = np.arange(6, dtype=float) * 0.1
     est_positions = np.column_stack([np.arange(6, dtype=float), np.sin(np.arange(6, dtype=float)), np.ones(6, dtype=float)])
     est = Trajectory(

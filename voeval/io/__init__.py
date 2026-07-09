@@ -22,7 +22,7 @@ from .formats import (
     get_evaluation_format_spec,
     normalize_evaluation_format,
 )
-from .parsers import load_trajectory, load_trajectory_from_text, parse_calib_raw_fixed, parse_home_point_fixed, parse_imu_fixed, parse_vloc_fixed, parse_vo_fixed
+from .parsers import parse_calib_raw_fixed, parse_home_point_fixed, parse_imu_fixed, parse_vloc_fixed, parse_vo_fixed
 from .trajectory import Trajectory
 
 __all__ = [
@@ -48,8 +48,6 @@ __all__ = [
     "WGS84_E2",
     "WGS84_F",
     "get_evaluation_format_spec",
-    "load_trajectory",
-    "load_trajectory_from_text",
     "load_vloc_evaluation_bundle",
     "load_vo_evaluation_bundle",
     "normalize_evaluation_format",
