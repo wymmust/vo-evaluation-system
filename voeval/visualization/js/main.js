@@ -5,7 +5,6 @@ import { state } from "./state.js";
 import { els } from "./dom-refs.js";
 import { runEvaluation } from "./evaluation.js";
 import { updateRunButton, handleEntryModeChange, updateEntryModeUi, renderVlocChartDirectory, renderVoChartDirectory, handleVlocChartDirectoryChange, handleVoChartDirectoryChange, selectAllVlocChartDirectory, clearVlocChartDirectory, selectAllVoChartDirectory, clearVoChartDirectory } from "./entry-mode.js";
-import { updateDirectoryStatus } from "./file-bundle.js";
 import { clearAllPointSelections, handlePointSelectionKeydown } from "./point-selection.js";
 import { downloadReportJson } from "./download-utils.js";
 import { downloadHtmlReport } from "./html-export.js";
@@ -41,15 +40,9 @@ async function checkServerHealth() {
 }
 
 function wireEvents() {
-  [els.entryMode, els.dataDirFiles, els.logDirFiles].forEach((input) => input.addEventListener("change", updateRunButton));
+  els.entryMode.addEventListener("change", updateRunButton);
   [els.dataDirPath, els.logDirPath].forEach((input) => input?.addEventListener("input", updateRunButton));
-  els.dataDirFiles.addEventListener("change", () => updateDirectoryStatus("data"));
-  els.logDirFiles.addEventListener("change", () => updateDirectoryStatus("log"));
-  els.dataDirPath?.addEventListener("input", () => updateDirectoryStatus("data"));
-  els.logDirPath?.addEventListener("input", () => updateDirectoryStatus("log"));
   els.entryMode.addEventListener("change", handleEntryModeChange);
-  els.dataDirButton.addEventListener("click", () => els.dataDirFiles.click());
-  els.logDirButton.addEventListener("click", () => els.logDirFiles.click());
   els.vlocChartList?.addEventListener("change", handleVlocChartDirectoryChange);
   els.vlocChartSelectAll?.addEventListener("click", selectAllVlocChartDirectory);
   els.vlocChartClear?.addEventListener("click", clearVlocChartDirectory);
@@ -64,6 +57,4 @@ function wireEvents() {
   updateEntryModeUi();
   renderVlocChartDirectory();
   renderVoChartDirectory();
-  updateDirectoryStatus("data");
-  updateDirectoryStatus("log");
 }

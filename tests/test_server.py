@@ -1,20 +1,6 @@
-from pathlib import Path
 import errno
 
 from test_evaluator import sample_calib_text
-
-
-def test_local_path_server_uses_entry_specific_required_files():
-    from voeval.server import required_local_files
-
-    assert required_local_files("vo") == {
-        "data": ("imu.txt",),
-        "log": ("vo.txt", "calib_raw.yaml"),
-    }
-    assert required_local_files("vloc") == {
-        "data": ("imu.txt",),
-        "log": ("vloc.txt", "home_point.txt", "calib_raw.yaml"),
-    }
 
 
 def test_local_path_server_evaluates_vo_without_home_point(tmp_path):

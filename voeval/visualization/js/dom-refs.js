@@ -1,5 +1,5 @@
 // dom-refs.js — DOM 元素引用缓存
-// 避免重复 getElementById 调用，所有 UI 模块共享同一份 DOM 引用
+// 避免重复 getElementById 调用，所有模块共享同一份 DOM 引用
 
 export const els = {
   status: document.getElementById("runtimeStatus"),
@@ -12,14 +12,8 @@ export const els = {
   summaryTitle: document.getElementById("summaryTitle"),
   visualKicker: document.getElementById("visualKicker"),
   visualTitle: document.getElementById("visualTitle"),
-  dataDirFiles: document.getElementById("dataDirFiles"),
-  logDirFiles: document.getElementById("logDirFiles"),
   dataDirPath: document.getElementById("dataDirPath"),
   logDirPath: document.getElementById("logDirPath"),
-  dataDirButton: document.getElementById("dataDirButton"),
-  logDirButton: document.getElementById("logDirButton"),
-  dataDirStatus: document.getElementById("dataDirStatus"),
-  logDirStatus: document.getElementById("logDirStatus"),
   vlocChartDirectorySection: document.getElementById("vlocChartDirectorySection"),
   vlocChartList: document.getElementById("vlocChartList"),
   vlocChartSelectAll: document.getElementById("vlocChartSelectAll"),

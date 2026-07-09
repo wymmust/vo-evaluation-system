@@ -6,8 +6,6 @@ import { sanitizeFilenamePart } from "./utils.js";
 import { reportEntryMode } from "./entry-mode.js";
 import { showMessage } from "./report-render.js";
 import { LABELS } from "./labels.js";
-import { directoryNameFromFiles, selectedFiles } from "./file-bundle.js";
-import { els } from "./dom-refs.js";
 
 export function downloadText(filename, text, mime) {
   const blob = new Blob([text], { type: `${mime};charset=utf-8` });
@@ -39,8 +37,8 @@ function evaluationExportFilename(kind, extension, report = state.report) {
 
 function exportDatasetName(report = state.report) {
   const inputs = report?.inputs || {};
-  const dataName = meaningfulDirectoryName(inputs.data_dir_name || directoryNameFromFiles(selectedFiles(els.dataDirFiles)));
-  const logName = meaningfulDirectoryName(inputs.log_dir_name || directoryNameFromFiles(selectedFiles(els.logDirFiles)));
+  const dataName = meaningfulDirectoryName(inputs.data_dir_name);
+  const logName = meaningfulDirectoryName(inputs.log_dir_name);
   if (dataName && logName && dataName !== logName) {
     return `${dataName}__${logName}`;
   }

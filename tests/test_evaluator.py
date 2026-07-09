@@ -442,7 +442,6 @@ def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
     assert np.allclose(bundle.vloc.positions[0], [11, 12, 13])
     assert bundle.home_point.longitude == 121.2
     assert np.allclose(bundle.calibration.t_imu_body[:3, 3], [0.1, 0.2, 0.3])
-    assert bundle.files["estimate"].name == "vloc.txt"
 
 
 def test_vo_evaluation_bundle_loads_vo_directory_contract_without_using_vloc(tmp_path):
@@ -454,8 +453,6 @@ def test_vo_evaluation_bundle_loads_vo_directory_contract_without_using_vloc(tmp
     assert bundle.nav.source_format == "sf_imu"
     assert bundle.vo.source_format == "sf_vo"
     assert np.allclose(bundle.vo.positions[0], [21, 22, 23])
-    assert bundle.files["estimate"].name == "vo.txt"
-    assert "home_point" not in bundle.files
     assert not hasattr(bundle, "home_point")
 
 

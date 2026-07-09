@@ -1,4 +1,4 @@
-"""Directory and text bundle loaders for SF VO/VLOC workflows."""
+"""Directory bundle loaders for SF VO/VLOC workflows."""
 
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ class SfVlocBundle:
     calibration: Calibration
     data_dir: Path
     log_dir: Path
-    files: dict[str, Path]
 
 
 @dataclass(frozen=True)
@@ -43,7 +42,6 @@ class SfVoBundle:
     calibration: Calibration
     data_dir: Path
     log_dir: Path
-    files: dict[str, Path]
 def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVlocBundle:
     """读取 VLOC 评估目录。
 
@@ -70,67 +68,9 @@ def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> Sf
         calibration=parse_calib_raw_fixed(calib_path.read_text(encoding="utf-8", errors="replace"), name=str(calib_path)),
         data_dir=data_path,
         log_dir=log_path,
-        files={
-            "nav": imu_path,
-            "estimate": vloc_path,
-            "home_point": home_path,
-            "calib_raw": calib_path,
-        },
     )
     _log_loaded_trajectory(bundle.nav, imu_path)
     _log_loaded_trajectory(bundle.vloc, vloc_path)
-    logger.debug("--------------------------------------------------------------------------------")
-    return bundle
-def load_vloc_evaluation_bundle_from_text(
-    imu_text: str,
-    vloc_text: str,
-    home_point_text: str,
-    calib_raw_text: str,
-    imu_name: str = "imu.txt",
-    vloc_name: str = "vloc.txt",
-    home_point_name: str = "home_point.txt",
-    calib_raw_name: str = "calib_raw.yaml",
-) -> SfVlocBundle:
-    """从文本内容解析 VLOC 评估 bundle（无需本地目录）。
-
-    供 `/api/evaluate-bundle` 端点调用，浏览器上传文件内容后直接解析。
-    内部调用相同的 parse_*_fixed() 函数，保证与目录加载结果数值一致。
-
-    Parameters
-    ----------
-    imu_text : str
-        imu.txt 文件内容
-    vloc_text : str
-        vloc.txt 文件内容
-    home_point_text : str
-        home_point.txt 文件内容
-    calib_raw_text : str
-        calib_raw.yaml 文件内容
-    imu_name, vloc_name, home_point_name, calib_raw_name : str
-        原始文件名（用于日志和 report inputs 可追溯）
-
-    Returns
-    -------
-    SfVlocBundle
-        与 load_vloc_evaluation_bundle() 返回值结构一致
-    """
-
-    bundle = SfVlocBundle(
-        nav=parse_imu_fixed(imu_text, name=imu_name),
-        vloc=parse_vloc_fixed(vloc_text, name=vloc_name),
-        home_point=parse_home_point_fixed(home_point_text, name=home_point_name),
-        calibration=parse_calib_raw_fixed(calib_raw_text, name=calib_raw_name),
-        data_dir=Path("."),
-        log_dir=Path("."),
-        files={
-            "nav": Path(imu_name),
-            "estimate": Path(vloc_name),
-            "home_point": Path(home_point_name),
-            "calib_raw": Path(calib_raw_name),
-        },
-    )
-    _log_loaded_trajectory(bundle.nav, imu_name)
-    _log_loaded_trajectory(bundle.vloc, vloc_name)
     logger.debug("--------------------------------------------------------------------------------")
     return bundle
 def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path, vo_filename: str) -> SfVoBundle:
@@ -156,60 +96,9 @@ def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path, vo_file
         calibration=parse_calib_raw_fixed(calib_path.read_text(encoding="utf-8", errors="replace"), name=str(calib_path)),
         data_dir=data_path,
         log_dir=log_path,
-        files={
-            "nav": imu_path,
-            "estimate": vo_path,
-            "calib_raw": calib_path,
-        },
     )
     _log_loaded_trajectory(bundle.nav, imu_path)
     _log_loaded_trajectory(bundle.vo, vo_path)
-    logger.debug("--------------------------------------------------------------------------------")
-    return bundle
-def load_vo_evaluation_bundle_from_text(
-    imu_text: str,
-    vo_text: str,
-    calib_raw_text: str,
-    imu_name: str = "imu.txt",
-    vo_name: str = "vo.txt",
-    calib_raw_name: str = "calib_raw.yaml",
-) -> SfVoBundle:
-    """从文本内容解析 VO 评估 bundle（无需本地目录）。
-
-    供 `/api/evaluate-bundle` 端点调用，浏览器上传文件内容后直接解析。
-    内部调用相同的 parse_*_fixed() 函数，保证与目录加载结果数值一致。
-
-    Parameters
-    ----------
-    imu_text : str
-        imu.txt 文件内容
-    vo_text : str
-        vo.txt 文件内容
-    calib_raw_text : str
-        calib_raw.yaml 文件内容
-    imu_name, vo_name, calib_raw_name : str
-        原始文件名（用于日志和 report inputs 可追溯）
-
-    Returns
-    -------
-    SfVoBundle
-        与 load_vo_evaluation_bundle() 返回值结构一致
-    """
-
-    bundle = SfVoBundle(
-        nav=parse_imu_fixed(imu_text, name=imu_name),
-        vo=parse_vo_fixed(vo_text, name=vo_name),
-        calibration=parse_calib_raw_fixed(calib_raw_text, name=calib_raw_name),
-        data_dir=Path("."),
-        log_dir=Path("."),
-        files={
-            "nav": Path(imu_name),
-            "estimate": Path(vo_name),
-            "calib_raw": Path(calib_raw_name),
-        },
-    )
-    _log_loaded_trajectory(bundle.nav, imu_name)
-    _log_loaded_trajectory(bundle.vo, vo_name)
     logger.debug("--------------------------------------------------------------------------------")
     return bundle
 def _require_directory(path: str | Path, label: str) -> Path:

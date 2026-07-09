@@ -25,22 +25,12 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = PACKAGE_ROOT / "visualization"
 
 from .core import EvaluationConfig
-from .io import load_vloc_evaluation_bundle, load_vloc_evaluation_bundle_from_text, load_vo_evaluation_bundle, load_vo_evaluation_bundle_from_text
+from .io import load_vloc_evaluation_bundle, load_vo_evaluation_bundle
 from .reports import evaluate_vloc_bundle, evaluate_vo_bundle
 from .reports.export import _jsonable_report, report_to_json
 
 LAST_REPORT: dict | None = None  # stored as _jsonable_report dict (JSON-safe)
 VO_CONFIG_INPUT_KEYS = {"rpe_delta_value", "rpe_delta_unit", "scale_delta_value", "scale_delta_unit"}
-
-
-def required_local_files(entry_mode: str) -> dict[str, tuple[str, ...]]:
-    """Return the fixed file contract for direct local path evaluation."""
-
-    if entry_mode == "vo":
-        return {"data": ("imu.txt",), "log": ("vo.txt", "calib_raw.yaml")}
-    if entry_mode == "vloc":
-        return {"data": ("imu.txt",), "log": ("vloc.txt", "home_point.txt", "calib_raw.yaml")}
-    raise ValueError(f"unsupported entry mode: {entry_mode}")
 
 
 def evaluate_paths_payload(payload: dict) -> dict:
@@ -53,7 +43,6 @@ def evaluate_paths_payload(payload: dict) -> dict:
     config_data = payload.get("config") or {}
     if not entry_mode:
         raise ValueError("entryMode is required")
-    required_local_files(entry_mode)
     if not data_dir.is_dir():
         raise FileNotFoundError(f"data_dir not found: {data_dir}")
     if not log_dir.is_dir():
@@ -65,43 +54,6 @@ def evaluate_paths_payload(payload: dict) -> dict:
         report = evaluate_vo_bundle(bundle, config)
     else:
         bundle = load_vloc_evaluation_bundle(data_dir, log_dir)
-        report = evaluate_vloc_bundle(bundle, config)
-    LAST_REPORT = _jsonable_report(report)
-    return _light_report(report)
-
-
-def evaluate_bundle_payload(payload: dict) -> dict:
-    """Evaluate file-content upload request and return the light report."""
-
-    global LAST_REPORT
-    entry_mode = str(payload.get("entryMode") or payload.get("entry_mode") or "").strip()
-    if not entry_mode:
-        raise ValueError("entryMode is required")
-
-    config_data = json.loads(payload.get("configJson") or "{}") if isinstance(payload.get("configJson"), str) else (payload.get("config") or payload.get("configJson") or {})
-    config = _evaluation_config_from_payload(entry_mode, config_data)
-
-    if entry_mode == "vo":
-        bundle = load_vo_evaluation_bundle_from_text(
-            imu_text=payload.get("imuText") or "",
-            vo_text=payload.get("estimateText") or "",
-            calib_raw_text=payload.get("calibRawText") or "",
-            imu_name=payload.get("imuName") or "imu.txt",
-            vo_name=payload.get("estimateName") or "vo.txt",
-            calib_raw_name=payload.get("calibRawName") or "calib_raw.yaml",
-        )
-        report = evaluate_vo_bundle(bundle, config)
-    else:
-        bundle = load_vloc_evaluation_bundle_from_text(
-            imu_text=payload.get("imuText") or "",
-            vloc_text=payload.get("estimateText") or "",
-            home_point_text=payload.get("homePointText") or "",
-            calib_raw_text=payload.get("calibRawText") or "",
-            imu_name=payload.get("imuName") or "imu.txt",
-            vloc_name=payload.get("estimateName") or "vloc.txt",
-            home_point_name=payload.get("homePointName") or "home_point.txt",
-            calib_raw_name=payload.get("calibRawName") or "calib_raw.yaml",
-        )
         report = evaluate_vloc_bundle(bundle, config)
     LAST_REPORT = _jsonable_report(report)
     return _light_report(report)
@@ -159,14 +111,6 @@ class LocalEvaluationHandler(SimpleHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length") or "0")
                 payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
                 report = evaluate_paths_payload(payload)
-                self._send_json({"ok": True, "report": report})
-            except Exception as exc:  # pragma: no cover - exercised through browser/manual server use
-                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-        elif parsed == "/api/evaluate-bundle":
-            try:
-                length = int(self.headers.get("Content-Length") or "0")
-                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-                report = evaluate_bundle_payload(payload)
                 self._send_json({"ok": True, "report": report})
             except Exception as exc:  # pragma: no cover - exercised through browser/manual server use
                 self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

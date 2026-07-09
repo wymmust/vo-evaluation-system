@@ -18,18 +18,11 @@ export const LABELS = {
   error_local_fetch_failed: "无法读取静态资源",
   error_local_fetch_status: "无法读取静态资源",
   error_fetch_generic: "浏览器无法获取运行资源。请确认页面是通过 http/https 打开的、静态服务器没有停止。",
-  error_no_local_paths: "静态网页不能直接读取本地路径，请用选择按钮导入必需文件",
-  error_missing_files_prefix: "缺少必需文件：",
-  error_missing_files_in_static_prefix: "静态网页不能直接读取本地路径，请用选择按钮导入必需文件：",
   error_local_path_evaluation_failed_prefix: "本地路径评估失败：",
-  error_local_path_no_server: "当前页面不是通过 voeval server 启动，不能直接读取本地路径。请在仓库根目录运行 python -m voeval server，或者改用目录选择按钮导入文件。",
+  error_local_path_no_server: "当前页面不是通过 voeval server 启动，不能直接读取本地路径。请在仓库根目录运行 python -m voeval server。",
   error_export_json_prefix: "导出 JSON 失败：",
   error_export_html_prefix: "导出 HTML 失败：",
   error_cannot_fetch_prefix: "无法读取本地资源",
-
-  // 文件状态
-  file_unselected: "未选择目录",
-  file_path_typed: "已填写路径，静态网页仍需选择必需文件",
 
   // 入口模式标题
   summary_title_vloc: "VLOC 运行结果",
