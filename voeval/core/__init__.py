@@ -7,6 +7,6 @@ from .geometry import euler_yaw_pitch_roll_from_matrix, euler_yaw_pitch_roll_to_
 from .interpolation import extra_values_linear, extra_values_nearest, interpolate_positions_from_brackets, interpolate_reference_to_estimate, interpolate_rotations_from_brackets, interpolation_brackets, nearest_indices_for_stamps, prepare_evaluation_trajectories, slerp_quaternion, subset_trajectory, trajectory_extra_or_nan
 from .pipeline import BundleEvaluationResult, TrajectoryEvaluationResult, evaluate_trajectory_result, evaluate_vloc_bundle_core, evaluate_vo_bundle_core
 from .segments import detect_associated_discontinuities, segments_from_breaks, vo_valid_segment_indices
-from .statistics import describe, normalize_rpe_delta_config, normalize_scale_delta_config, path_distance, rpe_frame_dataframe, scale_frame_dataframe
+from .statistics import describe, normalize_delta_config, path_distance, rpe_frame_dataframe, scale_frame_dataframe
 
 __all__ = [name for name in globals() if not name.startswith("_")]

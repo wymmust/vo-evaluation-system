@@ -56,12 +56,12 @@ def describe(values: Any) -> dict[str, float | int] | None:
         "p95": float(np.percentile(arr, 95)),
         "p99": float(np.percentile(arr, 99)),
     }
-def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
-    """把 RPE 的 UI/API 配置统一成 report 可读字段。
+def normalize_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
+    """把 UI/API 配置统一成 report 可读字段。
 
     delta_unit 只支持 frames 和 meters 两类：
-    - frames: 按 evo consecutive-pairs 取 0->N、N->2N 这类非重叠 pair。
-    - meters: 按对齐后的 estimate 累计路程每达到目标距离记录锚点，相邻锚点组成 pair。
+    - frames: 按帧数间隔取样。
+    - meters: 按距离间隔取样。
 
     delta_value 是唯一的间隔数值入口；单位由 delta_unit 决定。
     """
@@ -79,43 +79,7 @@ def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
     if unit_raw == "meters":
         distance_m = float(cfg.delta_value)
         if distance_m <= 0:
-            raise ValueError("RPE distance delta must be positive")
-        return {
-            "delta_unit": "meters",
-            "delta_value": distance_m,
-            "delta_frames": None,
-            "delta_distance_m": distance_m,
-            "distance_tolerance_ratio": FIXED_DISTANCE_TOLERANCE_RATIO,
-            "distance_tolerance_percent": 100.0 * FIXED_DISTANCE_TOLERANCE_RATIO,
-        }
-    raise ValueError(f"Unknown delta_unit: {cfg.delta_unit}")
-
-
-def normalize_scale_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
-    """把尺度图的窗口配置统一成 report 可读字段。
-
-    这个配置与 RPE 共用 delta_value 和 delta_unit，但语义保持一致：
-    - frames: 从每个起点 i 往后取固定帧数 j=i+N。
-    - meters: 从每个起点 i 往后找 GT 路程 target*(1±tolerance) 内的候选终点。
-
-    meters 模式和 RPE 的差别在于：尺度图选 GT 距离最接近目标距离的候选，
-    不按误差最小选择，避免把尺度问题人为挑好。
-    """
-    unit_raw = str(cfg.delta_unit or "frames").strip().lower()
-    if unit_raw == "frames":
-        frames = max(1, int(round(float(cfg.delta_value))))
-        return {
-            "delta_unit": "frames",
-            "delta_value": float(frames),
-            "delta_frames": int(frames),
-            "delta_distance_m": None,
-            "distance_tolerance_ratio": None,
-            "distance_tolerance_percent": None,
-        }
-    if unit_raw == "meters":
-        distance_m = float(cfg.delta_value)
-        if distance_m <= 0:
-            raise ValueError("Scale distance delta must be positive")
+            raise ValueError("Distance delta must be positive")
         return {
             "delta_unit": "meters",
             "delta_value": distance_m,
@@ -164,9 +128,6 @@ def rpe_frame_dataframe(
     target_distance_m = float(delta_value) if unit == "meters" else math.nan
     if unit == "meters" and target_distance_m <= 0:
         raise ValueError("RPE distance delta must be positive")
-    tolerance_ratio = FIXED_DISTANCE_TOLERANCE_RATIO
-    min_distance_m = target_distance_m * (1.0 - tolerance_ratio) if unit == "meters" else math.nan
-    max_distance_m = target_distance_m * (1.0 + tolerance_ratio) if unit == "meters" else math.nan
     gt_distance = path_distance(gt_pos)
 
     rpe_translation = np.full(n, math.nan, dtype=float)
@@ -248,9 +209,6 @@ def rpe_frame_dataframe(
             "rpe_delta_unit": np.asarray([unit] * n, dtype=object),
             "rpe_delta_value": np.full(n, float(delta_frames if unit == "frames" else target_distance_m), dtype=float),
             "rpe_delta_frames": np.full(n, delta_frames if unit == "frames" else math.nan, dtype=float),
-            "rpe_target_distance_m": np.full(n, target_distance_m if unit == "meters" else math.nan, dtype=float),
-            "rpe_distance_tolerance_min_m": np.full(n, min_distance_m, dtype=float),
-            "rpe_distance_tolerance_max_m": np.full(n, max_distance_m, dtype=float),
             "rpe_end_match_index": end_match_index,
             "rpe_end_timestamp": end_timestamp,
             "rpe_time_delta_s": time_delta,

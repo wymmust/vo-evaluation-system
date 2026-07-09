@@ -27,7 +27,7 @@ from .config import EvaluationConfig
 from .geometry import euler_yaw_pitch_roll_from_matrix, sf_nav_to_body_ned_trajectory, sf_nav_to_camera_trajectory, sf_vloc_to_body_ned_trajectory, wrap_pi
 from .interpolation import prepare_evaluation_trajectories, subset_trajectory
 from .segments import detect_associated_discontinuities, vo_valid_segment_indices
-from .statistics import describe, normalize_rpe_delta_config, normalize_scale_delta_config, path_distance, rpe_frame_dataframe, scale_frame_dataframe
+from .statistics import describe, normalize_delta_config, path_distance, rpe_frame_dataframe, scale_frame_dataframe
 from .errors import rotation_errors
 
 logger = logging.getLogger(__name__)
@@ -492,7 +492,7 @@ def evaluate_trajectory_result(
         "primary_label": f"{alignment_mode.upper()} ATE",
         "primary_position_m": describe(pos_error_m),
     }
-    rpe_delta_info = normalize_rpe_delta_config(cfg)
+    rpe_delta_info = normalize_delta_config(cfg)
     rpe = {
         **rpe_delta_info,
         "count": int(len(rpe_trans)),
@@ -524,7 +524,7 @@ def evaluate_trajectory_result(
         local_sim3_scale = scale_per_frame.loc[scale_valid, "local_sim3_scale"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
         local_scale_ratio = scale_per_frame.loc[scale_valid, "local_scale_ratio_est_over_gt"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
         local_scale_drift = scale_per_frame.loc[scale_valid, "local_scale_drift_percent"].to_numpy(dtype=float) if len(scale_per_frame) else np.asarray([], dtype=float)
-        scale_delta_info = normalize_scale_delta_config(cfg)
+        scale_delta_info = normalize_delta_config(cfg)
         scale_frame_delta = {
             **scale_delta_info,
             "count": int(len(local_sim3_scale)),
