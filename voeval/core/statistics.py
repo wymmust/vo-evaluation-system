@@ -59,15 +59,15 @@ def describe(values: Any) -> dict[str, float | int] | None:
 def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
     """把 RPE 的 UI/API 配置统一成 report 可读字段。
 
-    rpe_delta_unit 只支持 frames 和 meters 两类：
+    delta_unit 只支持 frames 和 meters 两类：
     - frames: 按 evo consecutive-pairs 取 0->N、N->2N 这类非重叠 pair。
     - meters: 按对齐后的 estimate 累计路程每达到目标距离记录锚点，相邻锚点组成 pair。
 
-    rpe_delta_value 是唯一的间隔数值入口；单位由 rpe_delta_unit 决定。
+    delta_value 是唯一的间隔数值入口；单位由 delta_unit 决定。
     """
-    unit_raw = str(cfg.rpe_delta_unit or "frames").strip().lower()
+    unit_raw = str(cfg.delta_unit or "frames").strip().lower()
     if unit_raw == "frames":
-        frames = max(1, int(round(float(cfg.rpe_delta_value))))
+        frames = max(1, int(round(float(cfg.delta_value))))
         return {
             "delta_unit": "frames",
             "delta_value": float(frames),
@@ -77,7 +77,7 @@ def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
             "distance_tolerance_percent": None,
         }
     if unit_raw == "meters":
-        distance_m = float(cfg.rpe_delta_value)
+        distance_m = float(cfg.delta_value)
         if distance_m <= 0:
             raise ValueError("RPE distance delta must be positive")
         return {
@@ -88,20 +88,22 @@ def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
             "distance_tolerance_ratio": FIXED_DISTANCE_TOLERANCE_RATIO,
             "distance_tolerance_percent": 100.0 * FIXED_DISTANCE_TOLERANCE_RATIO,
         }
-    raise ValueError(f"Unknown rpe_delta_unit: {cfg.rpe_delta_unit}")
+    raise ValueError(f"Unknown delta_unit: {cfg.delta_unit}")
+
+
 def normalize_scale_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
     """把尺度图的窗口配置统一成 report 可读字段。
 
-    这个配置独立于 RPE，但单位和语义保持一致：
+    这个配置与 RPE 共用 delta_value 和 delta_unit，但语义保持一致：
     - frames: 从每个起点 i 往后取固定帧数 j=i+N。
     - meters: 从每个起点 i 往后找 GT 路程 target*(1±tolerance) 内的候选终点。
 
     meters 模式和 RPE 的差别在于：尺度图选 GT 距离最接近目标距离的候选，
     不按误差最小选择，避免把尺度问题人为挑好。
     """
-    unit_raw = str(cfg.scale_delta_unit or "frames").strip().lower()
+    unit_raw = str(cfg.delta_unit or "frames").strip().lower()
     if unit_raw == "frames":
-        frames = max(1, int(round(float(cfg.scale_delta_value))))
+        frames = max(1, int(round(float(cfg.delta_value))))
         return {
             "delta_unit": "frames",
             "delta_value": float(frames),
@@ -111,7 +113,7 @@ def normalize_scale_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
             "distance_tolerance_percent": None,
         }
     if unit_raw == "meters":
-        distance_m = float(cfg.scale_delta_value)
+        distance_m = float(cfg.delta_value)
         if distance_m <= 0:
             raise ValueError("Scale distance delta must be positive")
         return {
@@ -122,7 +124,7 @@ def normalize_scale_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
             "distance_tolerance_ratio": FIXED_DISTANCE_TOLERANCE_RATIO,
             "distance_tolerance_percent": 100.0 * FIXED_DISTANCE_TOLERANCE_RATIO,
         }
-    raise ValueError(f"Unknown scale_delta_unit: {cfg.scale_delta_unit}")
+    raise ValueError(f"Unknown delta_unit: {cfg.delta_unit}")
 def rpe_frame_dataframe(
     gt_pos: np.ndarray,
     est_pos: np.ndarray,
@@ -157,7 +159,7 @@ def rpe_frame_dataframe(
     elif unit_raw == "meters":
         unit = "meters"
     else:
-        raise ValueError(f"Unknown rpe_delta_unit: {delta_unit}")
+        raise ValueError(f"Unknown delta_unit: {delta_unit}")
     delta_frames = max(1, int(round(float(delta_value)))) if unit == "frames" else 1
     target_distance_m = float(delta_value) if unit == "meters" else math.nan
     if unit == "meters" and target_distance_m <= 0:
@@ -289,7 +291,7 @@ def scale_frame_dataframe(
     elif unit_raw == "meters":
         unit = "meters"
     else:
-        raise ValueError(f"Unknown scale_delta_unit: {delta_unit}")
+        raise ValueError(f"Unknown delta_unit: {delta_unit}")
     delta_frames = max(1, int(round(float(delta_value)))) if unit == "frames" else 1
     target_distance_m = float(delta_value) if unit == "meters" else math.nan
     if unit == "meters" and target_distance_m <= 0:

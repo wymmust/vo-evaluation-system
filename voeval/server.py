@@ -30,7 +30,7 @@ from .reports import evaluate_vloc_bundle, evaluate_vo_bundle
 from .reports.export import _jsonable_report, report_to_json
 
 LAST_REPORT: dict | None = None  # stored as _jsonable_report dict (JSON-safe)
-VO_CONFIG_INPUT_KEYS = {"rpe_delta_value", "rpe_delta_unit", "scale_delta_value", "scale_delta_unit"}
+VO_CONFIG_INPUT_KEYS = {"delta_value", "delta_unit"}
 
 
 def evaluate_paths_payload(payload: dict) -> dict:

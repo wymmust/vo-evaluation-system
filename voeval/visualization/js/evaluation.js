@@ -30,10 +30,8 @@ export function buildConfig() {
     return {};
   }
   return {
-    rpe_delta_value: numberOf("rpeDeltaValue"),
-    rpe_delta_unit: valueOf("rpeDeltaUnit"),
-    scale_delta_value: numberOf("scaleDeltaValue"),
-    scale_delta_unit: valueOf("scaleDeltaUnit"),
+    delta_value: numberOf("deltaValue"),
+    delta_unit: valueOf("deltaUnit"),
   };
 }
 

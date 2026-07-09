@@ -387,8 +387,8 @@ def evaluate_trajectory_result(
             stamps,
             segment_id=int(seg_id),
             match_indices=np.arange(start, end, dtype=int),
-            delta_value=cfg.rpe_delta_value,
-            delta_unit=cfg.rpe_delta_unit,
+            delta_value=cfg.delta_value,
+            delta_unit=cfg.delta_unit,
         )
         rpe_frame_export_frames.append(rpe_frame)
         rpe_valid = rpe_frame["rpe_available"].to_numpy(dtype=bool) if "rpe_available" in rpe_frame else np.asarray([], dtype=bool)
@@ -404,8 +404,8 @@ def evaluate_trajectory_result(
                 stamps,
                 segment_id=int(seg_id),
                 match_indices=np.arange(start, end, dtype=int),
-                delta_value=cfg.scale_delta_value,
-                delta_unit=cfg.scale_delta_unit,
+                delta_value=cfg.delta_value,
+                delta_unit=cfg.delta_unit,
             )
             scale_frame_export_frames.append(scale_frame)
 

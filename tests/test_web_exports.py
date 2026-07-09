@@ -123,10 +123,8 @@ def test_static_scale_interval_controls_are_wired_into_config():
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     config = json.loads(result.stdout)
     assert config == {
-        "rpe_delta_value": 1,
-        "rpe_delta_unit": "frames",
-        "scale_delta_value": 100,
-        "scale_delta_unit": "meters",
+        "delta_value": 1,
+        "delta_unit": "frames",
     }
 
 

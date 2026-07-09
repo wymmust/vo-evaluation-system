@@ -371,14 +371,13 @@ def test_trajectory_helpers_reject_mismatched_extra_lengths():
 
 
 def test_evaluation_config_normalizes_units_and_rejects_invalid_values():
-    cfg = EvaluationConfig(rpe_delta_value=100, rpe_delta_unit="m", scale_delta_value=10, scale_delta_unit="f")
-    assert cfg.rpe_delta_unit == "meters"
-    assert cfg.scale_delta_unit == "frames"
+    cfg = EvaluationConfig(delta_value=100, delta_unit="m")
+    assert cfg.delta_unit == "meters"
 
-    with pytest.raises(ValueError, match="rpe_delta_value"):
-        EvaluationConfig(rpe_delta_value=0)
-    with pytest.raises(ValueError, match="rpe_delta_unit"):
-        EvaluationConfig(rpe_delta_unit="seconds")
+    with pytest.raises(ValueError, match="delta_value"):
+        EvaluationConfig(delta_value=0)
+    with pytest.raises(ValueError, match="delta_unit"):
+        EvaluationConfig(delta_unit="seconds")
 
 
 def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
@@ -757,7 +756,7 @@ def test_debug_log_uses_evo_like_alignment_and_rpe_messages(tmp_path):
 
     report = evaluate_vo_bundle(
         sample_vo_bundle_with_reset_segments(),
-        EvaluationConfig(rpe_delta_value=100, rpe_delta_unit="frames"),
+        EvaluationConfig(delta_value=100, delta_unit="frames"),
     )
 
     assert report["rpe_frame_delta"]["count"] > 0
@@ -940,8 +939,8 @@ def test_rpe_distance_mode_uses_evo_consecutive_estimate_path_pairs():
         gt,
         est,
         EvaluationConfig(
-            rpe_delta_value=100.0,
-            rpe_delta_unit="meters",
+            delta_value=100.0,
+            delta_unit="meters",
         ),
     )
 
@@ -979,8 +978,8 @@ def test_scale_frame_mode_outputs_local_scale_per_start_timestamp():
         gt,
         est,
         EvaluationConfig(
-            scale_delta_value=2,
-            scale_delta_unit="frames",
+            delta_value=2,
+            delta_unit="frames",
         ),
     )
 
@@ -1016,8 +1015,8 @@ def test_scale_distance_mode_uses_gt_distance_window_closest_to_target():
         gt,
         est,
         EvaluationConfig(
-            scale_delta_value=100.0,
-            scale_delta_unit="meters",
+            delta_value=100.0,
+            delta_unit="meters",
         ),
     )
 

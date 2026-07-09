@@ -46,20 +46,10 @@
         <section id="evaluationParametersSection" data-entry-hide="vloc">
           <h2>评估参数</h2>
           <label>
-            RPE 统计间隔
+            统计间隔（RPE 和尺度图）
             <div class="inline-fields">
-              <input id="rpeDeltaValue" type="number" value="100" min="0.001" step="1" />
-              <select id="rpeDeltaUnit" aria-label="RPE unit">
-                <option value="frames">f</option>
-                <option value="meters" selected>m</option>
-              </select>
-            </div>
-          </label>
-          <label>
-            尺度图间隔
-            <div class="inline-fields">
-              <input id="scaleDeltaValue" type="number" value="100" min="0.001" step="1" />
-              <select id="scaleDeltaUnit" aria-label="Scale unit">
+              <input id="deltaValue" type="number" value="100" min="0.001" step="1" />
+              <select id="deltaUnit" aria-label="Delta unit">
                 <option value="frames">f</option>
                 <option value="meters" selected>m</option>
               </select>

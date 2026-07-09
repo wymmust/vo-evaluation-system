@@ -44,10 +44,8 @@ def main(argv: list[str] | None = None) -> int:
 
     unit = "meters" if args.unit == "m" else "frames"
     config = EvaluationConfig(
-        rpe_delta_value=args.delta,
-        rpe_delta_unit=unit,
-        scale_delta_value=args.delta,
-        scale_delta_unit=unit,
+        delta_value=args.delta,
+        delta_unit=unit,
     )
 
     try:
