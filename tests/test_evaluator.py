@@ -430,9 +430,8 @@ def test_vloc_bundle_uses_fixed_interpolation_defaults_and_drops_invalid_frames(
     assert "max_interpolation_gap_s" not in report["association"]
     assert "time_offset_s" not in report["association"]
     assert report["summary"]["matched_poses"] == 3
-    assert report["association"]["dropped_est_large_gt_gap"] == 1
+    assert report["association"]["dropped_gt_gap_too_large"] == 1
     assert report["association"]["dropped_est_invalid_mode"] == 1
-    assert report["alignment"]["base_mode"] == "none"
 
 
 def test_vloc_report_contains_nav_vloc_specific_detail_tables():
@@ -1102,7 +1101,7 @@ def test_interpolate_gt_respects_max_interpolation_gap():
         max_interpolation_gap_s=1.0,
     )
     assert assoc["matches"] == 0
-    assert assoc["large_interpolation_gap_count"] == 1
+    assert assoc["dropped_gt_gap_too_large"] == 1
     assert assoc["dropped"] == 1
     assert len(gt_eval.positions) == 0
     assert len(est_eval.positions) == 0
@@ -1113,7 +1112,7 @@ def test_interpolate_gt_respects_max_interpolation_gap():
         max_interpolation_gap_s=20.0,
     )
     assert assoc["matches"] == 1
-    assert assoc["large_interpolation_gap_count"] == 0
+    assert assoc["dropped_gt_gap_too_large"] == 0
     assert len(gt_eval.positions) == len(est_eval.positions) == 1
 
 

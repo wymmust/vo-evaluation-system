@@ -91,7 +91,6 @@ def interpolate_reference_to_estimate(
     - 返回的 ref_interp 和 est_matched 等长，且都使用原始 estimate 时间戳，target_stamp 会保存在 extras 中方便排查固定时间偏移。
     """
     ref_unique = _unique_timestamp_trajectory(reference)
-    duplicate_timestamp_count = int(len(reference.stamps) - len(ref_unique.stamps))
     shifted_est_stamps = estimate.stamps + FIXED_TIME_OFFSET_S
     finite_est = np.isfinite(shifted_est_stamps)
     before_range = finite_est & (shifted_est_stamps < ref_unique.stamps[0])
@@ -113,9 +112,6 @@ def interpolate_reference_to_estimate(
     left_indices = bracket_info["left_index"][valid]
     right_indices = bracket_info["right_index"][valid]
     alphas = bracket_info["alpha"][valid]
-    left_offsets = bracket_info["left_offset_s"][valid]
-    right_offsets = bracket_info["right_offset_s"][valid]
-    nearest_side_offsets = bracket_info["nearest_side_offset_s"][valid]
 
     dropped_invalid_timestamp = int(np.count_nonzero(~finite_est) + np.count_nonzero(in_range) - np.count_nonzero(candidate_valid_timestamp))
     dropped_before = int(np.count_nonzero(before_range))
@@ -125,10 +121,8 @@ def interpolate_reference_to_estimate(
     ref_positions = interpolate_positions_from_brackets(ref_unique.positions, left_indices, right_indices, alphas)
     if ref_unique.rotations is not None:
         ref_rotations = interpolate_rotations_from_brackets(ref_unique.rotations, left_indices, right_indices, alphas)
-        rotation_method_report = "slerp"
     else:
         ref_rotations = None
-        rotation_method_report = "skipped_no_reference_rotation"
 
     est_matched = subset_trajectory(estimate, est_indices, stamps_override=common_stamps)
     est_matched.extras["source_index"] = est_indices
@@ -151,52 +145,21 @@ def interpolate_reference_to_estimate(
         source_format=f"{reference.source_format}+interpolated",
     )
     info = {
-        "method": "interpolate_gt",
-        "mode": "interpolate_gt",
-        "target": "estimate_timestamps",
-        "interpolated": True,
-        "position_method": "linear",
-        "rotation_method": rotation_method_report,
-        "time_offset_s": float(FIXED_TIME_OFFSET_S),
-        "max_interpolation_gap_s": max_interpolation_gap_s,
-        "max_interpolation_gap_s_allowed": max_interpolation_gap_s,
-        "max_interpolation_gap_config_s": max_interpolation_gap_s,
-        "allow_extrapolation": False,
-        "estimate_count_input": int(len(estimate.stamps)),
-        "reference_count_input": int(len(reference.stamps)),
-        "estimate_pose_count": int(len(estimate.positions)),
-        "reference_pose_count": int(len(reference.positions)),
-        "reference_duplicate_timestamp_count": duplicate_timestamp_count,
-        "matched_count": int(len(est_indices)),
         "matches": int(len(est_indices)),
-        "dropped_count": int(len(estimate.stamps) - len(est_indices)),
         "dropped": int(len(estimate.stamps) - len(est_indices)),
-        "coverage_estimate_ratio": float(len(est_indices) / max(1, len(estimate.stamps))),
-        "est_pose_coverage_ratio": float(len(est_indices) / max(1, len(estimate.positions))),
-        "candidate_pose_count_inside_gt_range": int(len(candidate_est_indices)),
+        "coverage_ratio": float(len(est_indices) / max(1, len(estimate.stamps))),
+        "max_used_gt_gap_s": float(np.max(bracket_gaps)) if len(bracket_gaps) else 0.0,
+        "mean_used_gt_gap_s": float(np.mean(bracket_gaps)) if len(bracket_gaps) else 0.0,
         "dropped_before_reference_range": dropped_before,
         "dropped_after_reference_range": dropped_after,
         "dropped_gt_gap_too_large": dropped_gap,
         "dropped_invalid_timestamp": dropped_invalid_timestamp,
-        "outside_gt_range_count": int(dropped_before + dropped_after),
-        "large_interpolation_gap_count": dropped_gap,
-        "dropped_est_outside_gt_range": int(dropped_before + dropped_after),
-        "dropped_est_large_gt_gap": dropped_gap,
-        "max_used_gt_gap_s": float(np.max(bracket_gaps)) if len(bracket_gaps) else 0.0,
-        "mean_used_gt_gap_s": float(np.mean(bracket_gaps)) if len(bracket_gaps) else 0.0,
-        "median_used_gt_gap_s": float(np.median(bracket_gaps)) if len(bracket_gaps) else 0.0,
-        "p95_used_gt_gap_s": float(np.percentile(bracket_gaps, 95)) if len(bracket_gaps) else 0.0,
-        "max_interpolation_gap_used_s": float(np.max(bracket_gaps)) if len(bracket_gaps) else 0.0,
-        "mean_interpolation_gap_s": float(np.mean(bracket_gaps)) if len(bracket_gaps) else 0.0,
-        "median_interpolation_gap_s": float(np.median(bracket_gaps)) if len(bracket_gaps) else 0.0,
-        "p95_interpolation_gap_s": float(np.percentile(bracket_gaps, 95)) if len(bracket_gaps) else 0.0,
-        "max_abs_time_offset_to_left_sample_s": float(np.max(left_offsets)) if len(left_offsets) else 0.0,
-        "max_abs_time_offset_to_right_sample_s": float(np.max(right_offsets)) if len(right_offsets) else 0.0,
-        "mean_abs_time_offset_to_left_or_right_s": float(np.mean(nearest_side_offsets)) if len(nearest_side_offsets) else 0.0,
+        # pipeline.py debug log 需要的字段
+        "estimate_count_input": int(len(estimate.stamps)),
+        "max_interpolation_gap_s": max_interpolation_gap_s,
+        "time_offset_s": float(FIXED_TIME_OFFSET_S),
     }
-    if ref_unique.rotations is None:
-        info["rotation_interpolation_note"] = "rotation interpolation skipped: no reference rotation"
-    if info["coverage_estimate_ratio"] < 0.8:
+    if info["coverage_ratio"] < 0.8:
         info["warning"] = "low interpolate_gt coverage; check timestamp units, GT/estimate time ranges, time_offset_s, and max_interpolation_gap_s"
     if not len(est_indices):
         info["warning"] = "no estimate timestamp remains after interpolation filtering"
