@@ -5,7 +5,7 @@ export const state = {
   serverReady: false,
   report: null,
   loadingStep: "",
-  reportSource: "server_bundle",
+  reportSource: "local_paths",
   chartRenderToken: 0,
   activePointSelectionChartId: null,
   focusedPointSelectionId: null,

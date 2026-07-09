@@ -13,14 +13,12 @@ from .reports import _default_html_output_path, _format_cli_number, _preview_htm
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="voeval {sf_vo,sf_vloc}",
+        prog="voeval",
         description="Trajectory VO/VLOC evaluation CLI.",
     )
-    parser.add_argument("mode_arg", nargs="?", choices=["sf_vo", "sf_vloc"], help="Evaluation workflow")
-    parser.add_argument("path_args", nargs="*", help="DATA_DIR LOG_DIR; paths split by shell spaces are reconstructed when directories exist")
-    parser.add_argument("--mode", dest="mode_option", choices=["sf_vo", "sf_vloc"], help=argparse.SUPPRESS)
-    parser.add_argument("--data_dir", dest="data_dir_option", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--log_dir", dest="log_dir_option", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("mode", choices=["sf_vo", "sf_vloc"], help="Evaluation workflow")
+    parser.add_argument("data_dir", type=Path, help="Directory containing imu.txt")
+    parser.add_argument("log_dir", type=Path, help="Directory containing vo.txt/vloc.txt and calibration files")
     parser.add_argument("--vo_filename", type=str, default="vo.txt", help="Vo trajectory filename(default: vo.txt)")
     parser.add_argument("-d", "--delta", type=float, default=100.0, help="RPE delta value (default: 100)")
     parser.add_argument("-u", "--unit", default="m", choices=["m", "f"], help="RPE delta unit: m=meters, f=frames (default: m)")
@@ -34,7 +32,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--logfile", type=Path, default=None, help="Write DEBUG logs to this file")
 
     args = parser.parse_args(argv)
-    _resolve_eval_arguments(parser, args)
     if args.html_output and not args.save_html:
         parser.error("--html-output requires -s/--save-html")
     logger = configure_logging(verbose=args.verbose, silent=args.silent, debug=args.debug, logfile=args.logfile)
@@ -86,88 +83,6 @@ def main(argv: list[str] | None = None) -> int:
         else:
             logger.error("[voeval] error: %s", exc)
         return 1
-
-
-def _resolve_eval_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    """Normalize new positional CLI arguments and legacy flag arguments."""
-
-    if args.mode_arg and args.mode_option:
-        parser.error("use either positional mode or --mode, not both")
-    if args.path_args and (args.data_dir_option or args.log_dir_option):
-        parser.error("use either positional DATA_DIR LOG_DIR or --data_dir/--log_dir, not both")
-
-    args.mode = args.mode_arg or args.mode_option
-    if args.data_dir_option or args.log_dir_option:
-        args.data_dir = args.data_dir_option
-        args.log_dir = args.log_dir_option
-    else:
-        args.data_dir, args.log_dir = _resolve_positional_directories(parser, args.mode, args.path_args)
-    missing = []
-    if args.mode is None:
-        missing.append("mode")
-    if args.data_dir is None:
-        missing.append("data_dir")
-    if args.log_dir is None:
-        missing.append("log_dir")
-    if missing:
-        parser.error(
-            "missing required arguments: "
-            + ", ".join(missing)
-            + "; use: voeval sf_vloc DATA_DIR LOG_DIR"
-        )
-
-
-def _resolve_positional_directories(parser: argparse.ArgumentParser, mode: str | None, path_args: list[str]) -> tuple[Path | None, Path | None]:
-    """Resolve positional DATA_DIR and LOG_DIR, including shell-split paths.
-
-    Shells split unquoted paths that contain spaces before Python receives argv.
-    For example, `/Volumes/Extreme SSD/a /Volumes/Extreme SSD/a` arrives as
-    four tokens. If more than two path fragments are present, try every split
-    point and join fragments back into two real directories.
-    """
-
-    if not path_args:
-        return None, None
-    if len(path_args) == 2:
-        return Path(path_args[0]), Path(path_args[1])
-    if len(path_args) < 2:
-        parser.error("missing required arguments: data_dir, log_dir; use: voeval sf_vloc DATA_DIR LOG_DIR")
-
-    candidates: list[tuple[int, Path, Path]] = []
-    for split_index in range(1, len(path_args)):
-        data_dir = Path(" ".join(path_args[:split_index]))
-        log_dir = Path(" ".join(path_args[split_index:]))
-        if data_dir.is_dir() and log_dir.is_dir():
-            candidates.append((_directory_match_score(mode, data_dir, log_dir), data_dir, log_dir))
-
-    if not candidates:
-        parser.error(
-            "could not reconstruct DATA_DIR and LOG_DIR from unquoted path fragments; "
-            "make sure both directories exist, or quote paths that contain spaces"
-        )
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    _, data_dir, log_dir = candidates[0]
-    return data_dir, log_dir
-
-
-def _directory_match_score(mode: str | None, data_dir: Path, log_dir: Path) -> int:
-    """Prefer the split that looks like the requested SF input layout."""
-
-    score = 0
-    if (data_dir / "imu.txt").exists():
-        score += 3
-    if (log_dir / "calib_raw.yaml").exists():
-        score += 1
-    if mode == "sf_vo":
-        if (log_dir / "vo.txt").exists():
-            score += 3
-    elif mode == "sf_vloc":
-        if (log_dir / "vloc.txt").exists():
-            score += 3
-        if (log_dir / "home_point.txt").exists():
-            score += 1
-    return score
 
 
 def _log_vo_result_summary(logger, report: dict[str, object], args: argparse.Namespace) -> None:

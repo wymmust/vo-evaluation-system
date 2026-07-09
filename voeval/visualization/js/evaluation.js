@@ -1,11 +1,9 @@
 // evaluation.js — 评估调度 + config 构建
-// runEvaluation、buildConfig、本地路径评估、文件 bundle 评估
+// runEvaluation、buildConfig、本地路径评估
 
 import { state } from "./state.js";
 import { els } from "./dom-refs.js";
 import { valueOf } from "./utils.js";
-import { buildBundlePayload, hasLocalPathInputs, missingBundleFiles } from "./file-bundle.js";
-import { reportEntryMode } from "./entry-mode.js";
 import { LABELS } from "./labels.js";
 
 export async function runEvaluation() {
@@ -14,9 +12,7 @@ export async function runEvaluation() {
   try {
     const entryMode = valueOf("entryMode");
     const config = buildConfig();
-    const reportJson = hasLocalPathInputs()
-      ? await evaluateLocalPathBundle(entryMode, config)
-      : await evaluateSelectedFileBundle(entryMode, config);
+    const reportJson = await evaluateLocalPathBundle(entryMode, config);
     state.report = JSON.parse(String(reportJson));
     renderReport(state.report);
     enableDownloads(true);
@@ -39,39 +35,6 @@ export function buildConfig() {
     scale_delta_value: numberOf("scaleDeltaValue"),
     scale_delta_unit: valueOf("scaleDeltaUnit"),
   };
-}
-
-async function evaluateSelectedFileBundle(entryMode, config) {
-  const payload = await buildBundlePayload(entryMode);
-  const response = await fetch("/api/evaluate-bundle", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      entryMode,
-      imuText: payload.imuText,
-      estimateText: payload.estimateText,
-      homePointText: payload.homePointText,
-      calibRawText: payload.calibRawText,
-      configJson: JSON.stringify(config),
-      imuName: payload.imuName,
-      estimateName: payload.estimateName,
-      homePointName: payload.homePointName,
-      calibRawName: payload.calibRawName,
-      dataDirName: payload.dataDirName,
-      logDirName: payload.logDirName,
-    }),
-  });
-  let result = null;
-  try {
-    result = await response.json();
-  } catch {
-    result = null;
-  }
-  if (!response.ok || result?.ok === false) {
-    throw new Error(result?.error || `HTTP ${response.status}`);
-  }
-  state.reportSource = "server_bundle";
-  return JSON.stringify(result.report || result);
 }
 
 async function evaluateLocalPathBundle(entryMode, config) {
@@ -106,7 +69,7 @@ function localPathServerErrorMessage(response, payload) {
   return payload?.error || `HTTP ${response.status}`;
 }
 
-export { evaluateSelectedFileBundle, evaluateLocalPathBundle };
+export { evaluateLocalPathBundle };
 
 // --- UI helpers used by evaluation flow ---
 import { numberOf } from "./utils.js";

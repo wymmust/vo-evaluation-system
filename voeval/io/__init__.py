@@ -1,6 +1,6 @@
 """Input formats, trajectory models, and bundle loaders."""
 
-from .bundle import SfVlocBundle, SfVoBundle, load_vloc_evaluation_bundle, load_vloc_evaluation_bundle_from_text, load_vo_evaluation_bundle, load_vo_evaluation_bundle_from_text
+from .bundle import SfVlocBundle, SfVoBundle, load_vloc_evaluation_bundle, load_vo_evaluation_bundle
 from .calibration import Calibration, HomePoint
 from .formats import (
     EVALUATION_FORMAT_SPECS,
@@ -51,9 +51,7 @@ __all__ = [
     "load_trajectory",
     "load_trajectory_from_text",
     "load_vloc_evaluation_bundle",
-    "load_vloc_evaluation_bundle_from_text",
     "load_vo_evaluation_bundle",
-    "load_vo_evaluation_bundle_from_text",
     "normalize_evaluation_format",
     "parse_calib_raw_fixed",
     "parse_home_point_fixed",

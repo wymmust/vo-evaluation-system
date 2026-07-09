@@ -2,7 +2,7 @@
 
 Run from the repository root:
 
-    python -m voeval server
+    voeval server
 
 The plain static page cannot read absolute local paths because browsers block
 that access. This server keeps the same browser UI, but reads the fixed input
@@ -19,27 +19,23 @@ import webbrowser
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = PACKAGE_ROOT / "visualization"
 
 from .core import EvaluationConfig
-from .io import load_vloc_evaluation_bundle, load_vloc_evaluation_bundle_from_text, load_vo_evaluation_bundle, load_vo_evaluation_bundle_from_text
+from .io import load_vloc_evaluation_bundle, load_vo_evaluation_bundle
 from .reports import evaluate_vloc_bundle, evaluate_vo_bundle
-from .reports.export import _jsonable_report, report_to_json
+from .reports.export import _jsonable_report
 
 LAST_REPORT: dict | None = None  # stored as _jsonable_report dict (JSON-safe)
 VO_CONFIG_INPUT_KEYS = {"rpe_delta_value", "rpe_delta_unit", "scale_delta_value", "scale_delta_unit"}
 
 
-def required_local_files(entry_mode: str) -> dict[str, tuple[str, ...]]:
-    """Return the fixed file contract for direct local path evaluation."""
-
-    if entry_mode == "vo":
-        return {"data": ("imu.txt",), "log": ("vo.txt", "calib_raw.yaml")}
-    if entry_mode == "vloc":
-        return {"data": ("imu.txt",), "log": ("vloc.txt", "home_point.txt", "calib_raw.yaml")}
+def _validate_entry_mode(entry_mode: str) -> None:
+    if entry_mode in {"vo", "vloc"}:
+        return
     raise ValueError(f"unsupported entry mode: {entry_mode}")
 
 
@@ -53,7 +49,7 @@ def evaluate_paths_payload(payload: dict) -> dict:
     config_data = payload.get("config") or {}
     if not entry_mode:
         raise ValueError("entryMode is required")
-    required_local_files(entry_mode)
+    _validate_entry_mode(entry_mode)
     if not data_dir.is_dir():
         raise FileNotFoundError(f"data_dir not found: {data_dir}")
     if not log_dir.is_dir():
@@ -65,43 +61,6 @@ def evaluate_paths_payload(payload: dict) -> dict:
         report = evaluate_vo_bundle(bundle, config)
     else:
         bundle = load_vloc_evaluation_bundle(data_dir, log_dir)
-        report = evaluate_vloc_bundle(bundle, config)
-    LAST_REPORT = _jsonable_report(report)
-    return _light_report(report)
-
-
-def evaluate_bundle_payload(payload: dict) -> dict:
-    """Evaluate file-content upload request and return the light report."""
-
-    global LAST_REPORT
-    entry_mode = str(payload.get("entryMode") or payload.get("entry_mode") or "").strip()
-    if not entry_mode:
-        raise ValueError("entryMode is required")
-
-    config_data = json.loads(payload.get("configJson") or "{}") if isinstance(payload.get("configJson"), str) else (payload.get("config") or payload.get("configJson") or {})
-    config = _evaluation_config_from_payload(entry_mode, config_data)
-
-    if entry_mode == "vo":
-        bundle = load_vo_evaluation_bundle_from_text(
-            imu_text=payload.get("imuText") or "",
-            vo_text=payload.get("estimateText") or "",
-            calib_raw_text=payload.get("calibRawText") or "",
-            imu_name=payload.get("imuName") or "imu.txt",
-            vo_name=payload.get("estimateName") or "vo.txt",
-            calib_raw_name=payload.get("calibRawName") or "calib_raw.yaml",
-        )
-        report = evaluate_vo_bundle(bundle, config)
-    else:
-        bundle = load_vloc_evaluation_bundle_from_text(
-            imu_text=payload.get("imuText") or "",
-            vloc_text=payload.get("estimateText") or "",
-            home_point_text=payload.get("homePointText") or "",
-            calib_raw_text=payload.get("calibRawText") or "",
-            imu_name=payload.get("imuName") or "imu.txt",
-            vloc_name=payload.get("estimateName") or "vloc.txt",
-            home_point_name=payload.get("homePointName") or "home_point.txt",
-            calib_raw_name=payload.get("calibRawName") or "calib_raw.yaml",
-        )
         report = evaluate_vloc_bundle(bundle, config)
     LAST_REPORT = _jsonable_report(report)
     return _light_report(report)
@@ -120,14 +79,10 @@ def _evaluation_config_from_payload(entry_mode: str, config_data: object) -> Eva
     return EvaluationConfig(**{key: config_data[key] for key in VO_CONFIG_INPUT_KEYS if key in config_data})
 
 
-def get_report_slice(slice_name: str) -> object:
-    """Return a full report slice after a local-path evaluation."""
-
+def get_report_json() -> object:
     if LAST_REPORT is None:
         raise RuntimeError("No report has been evaluated yet")
-    if slice_name == "full_report":
-        return LAST_REPORT
-    raise ValueError(f"Unknown report slice: {slice_name}")
+    return LAST_REPORT
 
 
 def _light_report(report: dict) -> dict:
@@ -143,7 +98,7 @@ def _light_report(report: dict) -> dict:
         light.setdefault("trajectory_exports", {})["rpe_per_frame"] = rpe_per_frame
     if entry_mode == "vo" and scale_per_frame is not None:
         light.setdefault("trajectory_exports", {})["scale_per_frame"] = scale_per_frame
-    return json.loads(report_to_json(light))
+    return _jsonable_report(light)
 
 
 class LocalEvaluationHandler(SimpleHTTPRequestHandler):
@@ -162,14 +117,6 @@ class LocalEvaluationHandler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, "report": report})
             except Exception as exc:  # pragma: no cover - exercised through browser/manual server use
                 self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-        elif parsed == "/api/evaluate-bundle":
-            try:
-                length = int(self.headers.get("Content-Length") or "0")
-                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-                report = evaluate_bundle_payload(payload)
-                self._send_json({"ok": True, "report": report})
-            except Exception as exc:  # pragma: no cover - exercised through browser/manual server use
-                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -182,10 +129,9 @@ class LocalEvaluationHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/health":
             self._send_json({"ok": True})
             return
-        if parsed.path == "/api/report-slice":
+        if parsed.path == "/api/report-json":
             try:
-                slice_name = (parse_qs(parsed.query).get("slice") or ["full_report"])[0]
-                self._send_json({"ok": True, "data": get_report_slice(slice_name)})
+                self._send_json({"ok": True, "data": get_report_json()})
             except Exception as exc:  # pragma: no cover - exercised through browser/manual server use
                 self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -202,7 +148,7 @@ class LocalEvaluationHandler(SimpleHTTPRequestHandler):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m voeval server",
+        prog="voeval server",
         description="Serve web UI with local data_dir/log_dir path evaluation.",
     )
     parser.add_argument("--host", default="127.0.0.1")
@@ -216,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
             next_port = args.port + 1
             print(f"端口 {args.port} 已被占用，通常是上一次 server 还在运行。", file=sys.stderr)
             print("解决方法：换一个端口重新启动，例如：", file=sys.stderr)
-            print(f"  python -m voeval server --port {next_port}", file=sys.stderr)
+            print(f"  voeval server --port {next_port}", file=sys.stderr)
             return 1
         raise
     url = f"http://{args.host}:{args.port}/"

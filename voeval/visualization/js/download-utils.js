@@ -6,8 +6,6 @@ import { sanitizeFilenamePart } from "./utils.js";
 import { reportEntryMode } from "./entry-mode.js";
 import { showMessage } from "./report-render.js";
 import { LABELS } from "./labels.js";
-import { directoryNameFromFiles, selectedFiles } from "./file-bundle.js";
-import { els } from "./dom-refs.js";
 
 export function downloadText(filename, text, mime) {
   const blob = new Blob([text], { type: `${mime};charset=utf-8` });
@@ -23,7 +21,7 @@ export function downloadText(filename, text, mime) {
 
 export async function downloadReportJson() {
   try {
-    const text = JSON.stringify(await fetchReportSlice("full_report"), null, 2);
+    const text = JSON.stringify(await fetchReportJson(), null, 2);
     downloadText("vo_evaluation_metrics.json", text, "application/json");
   } catch (error) {
     showMessage(`${LABELS.error_export_json_prefix}${error.message}`, "error");
@@ -39,8 +37,8 @@ function evaluationExportFilename(kind, extension, report = state.report) {
 
 function exportDatasetName(report = state.report) {
   const inputs = report?.inputs || {};
-  const dataName = meaningfulDirectoryName(inputs.data_dir_name || directoryNameFromFiles(selectedFiles(els.dataDirFiles)));
-  const logName = meaningfulDirectoryName(inputs.log_dir_name || directoryNameFromFiles(selectedFiles(els.logDirFiles)));
+  const dataName = meaningfulDirectoryName(inputs.data_dir_name);
+  const logName = meaningfulDirectoryName(inputs.log_dir_name);
   if (dataName && logName && dataName !== logName) {
     return `${dataName}__${logName}`;
   }
@@ -56,8 +54,8 @@ function meaningfulDirectoryName(value) {
   return name;
 }
 
-async function fetchReportSlice(sliceName) {
-  const response = await fetch(`/api/report-slice?slice=${encodeURIComponent(sliceName)}`, { cache: "no-store" });
+async function fetchReportJson() {
+  const response = await fetch("/api/report-json", { cache: "no-store" });
   const payload = await response.json();
   if (!response.ok || payload?.ok === false) {
     throw new Error(payload?.error || `HTTP ${response.status}`);
@@ -65,4 +63,4 @@ async function fetchReportSlice(sliceName) {
   return payload.data;
 }
 
-export { evaluationExportFilename, fetchReportSlice };
+export { evaluationExportFilename, fetchReportJson };

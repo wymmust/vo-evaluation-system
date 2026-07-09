@@ -4,21 +4,8 @@ import errno
 from test_evaluator import sample_calib_text
 
 
-def test_local_path_server_uses_entry_specific_required_files():
-    from voeval.server import required_local_files
-
-    assert required_local_files("vo") == {
-        "data": ("imu.txt",),
-        "log": ("vo.txt", "calib_raw.yaml"),
-    }
-    assert required_local_files("vloc") == {
-        "data": ("imu.txt",),
-        "log": ("vloc.txt", "home_point.txt", "calib_raw.yaml"),
-    }
-
-
 def test_local_path_server_evaluates_vo_without_home_point(tmp_path):
-    from voeval.server import evaluate_paths_payload, get_report_slice
+    from voeval.server import evaluate_paths_payload, get_report_json
 
     data_dir = tmp_path / "data_dir"
     log_dir = tmp_path / "log_dir"
@@ -51,7 +38,7 @@ def test_local_path_server_evaluates_vo_without_home_point(tmp_path):
 
     assert light_report["inputs"]["entry_mode"] == "vo"
     assert light_report["summary"]["matched_poses"] == 201
-    full_report = get_report_slice("full_report")
+    full_report = get_report_json()
     assert full_report["inputs"]["entry_mode"] == "vo"
 
 
@@ -93,5 +80,5 @@ def test_server_main_reports_port_in_use_with_fix_hint(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "端口 8766 已被占用" in captured.err
-    assert "python -m voeval server --port 8767" in captured.err
+    assert "voeval server --port 8767" in captured.err
     assert "Traceback" not in captured.err

@@ -22,7 +22,7 @@ voeval --help
 从仓库根目录启动本地评估服务器：
 
 ```bash
-python -m voeval server
+voeval server
 ```
 
 运行后会自动打开浏览器进入本地可视化页面。默认地址是 `http://127.0.0.1:8766/`；如果端口被占用，可以加 `--port 8767`。
@@ -33,13 +33,13 @@ python -m voeval server
 VO：
 
 ```bash
-python -m voeval sf_vo /path/to/data_dir /path/to/log_dir
+voeval sf_vo /path/to/data_dir /path/to/log_dir
 ```
 
 VLOC：
 
 ```bash
-python -m voeval sf_vloc /path/to/data_dir /path/to/log_dir
+voeval sf_vloc /path/to/data_dir /path/to/log_dir
 ```
 
 参数：
@@ -54,7 +54,7 @@ python -m voeval sf_vloc /path/to/data_dir /path/to/log_dir
 示例：
 
 ```bash
-python -m voeval sf_vo /dataset/01_Normal/03_综合/5066/1509 /dataset/01_Normal/03_综合/5066/1509 -d 100 -u m -p
+voeval sf_vo /dataset/01_Normal/03_综合/5066/1509 /dataset/01_Normal/03_综合/5066/1509 -d 100 -u m -p
 ```
 
 ## 固定输入格式
