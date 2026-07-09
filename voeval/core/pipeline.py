@@ -22,7 +22,7 @@ from ..io import (
     VO_MIN_VALID_SEGMENT_DURATION_S,
     VO_MIN_VALID_SEGMENT_FRAMES,
 )
-from .alignment import aggregate_alignment, alignment_export_columns, apply_alignment, apply_rotation_alignment, identity_alignment, sim3_alignment
+from .alignment import apply_alignment, sim3_alignment
 from .config import EvaluationConfig
 from .geometry import euler_yaw_pitch_roll_from_matrix, sf_nav_to_body_ned_trajectory, sf_nav_to_camera_trajectory, sf_vloc_to_body_ned_trajectory, wrap_pi
 from .interpolation import prepare_evaluation_trajectories, subset_trajectory
@@ -268,7 +268,6 @@ def evaluate_trajectory_result(
     used_gt_indices: list[np.ndarray] = []
     used_est_indices: list[np.ndarray] = []
     used_match_indices: list[np.ndarray] = []
-    alignments: list[dict[str, Any]] = []
     aligned_segments: list[AlignedSegmentResult] = []
     rpe_frame_export_frames: list[pd.DataFrame] = []
     scale_frame_export_frames: list[pd.DataFrame] = []
@@ -296,33 +295,23 @@ def evaluate_trajectory_result(
         stamps = gt.stamps[cur_gt_idx]
 
         # 5. 对齐 estimate 到 GT 坐标系。
-        #    sf_vloc 固定 alignment=none，位置误差就是 nav-vloc 原始坐标差；
+        #    sf_vloc 跳过对齐，位置误差就是 nav-vloc 原始坐标差；
         #    sf_vo 固定 alignment=sim3，位置误差基于每段 Sim3 后的 aligned VO。
-        alignment = sim3_alignment(gt_pos, est_pos) if is_vo_workflow else identity_alignment()
-        alignment["segment_id"] = int(seg_id)
-        alignment["start_match_index"] = start
-        alignment["end_match_index"] = end
-        alignments.append(alignment)
-        logger.debug(
-            "Segment alignment: segment_id=%d start=%d end=%d count=%d mode=%s scale=%.12g",
-            int(seg_id),
-            start,
-            end,
-            len(cur_gt_idx),
-            alignment.get("mode"),
-            float(alignment["scale"]),
-        )
-
-        est_pos_aligned = apply_alignment(est_pos, alignment)
-        est_rot_aligned = apply_rotation_alignment(est_rot, alignment) if est_rot is not None else None
-
         if is_vo_workflow:
+            alignment = sim3_alignment(gt_pos, est_pos)
+            est_pos_aligned, est_rot_aligned = apply_alignment(est_pos, est_rot, alignment)
+            alignment["segment_id"] = int(seg_id)
+            alignment["start_match_index"] = start
+            alignment["end_match_index"] = end
+            logger.debug(
+                "Segment alignment: segment_id=%d start=%d end=%d count=%d scale=%.12g",
+                int(seg_id),
+                start,
+                end,
+                len(cur_gt_idx),
+                float(alignment["scale"]),
+            )
             # VO 导出固定保留一份 Sim3 中间轨迹；VLOC 有真实尺度，不生成 Sim3 sheet。
-            sim3_extra = {
-                "segment_id": np.full(len(stamps), int(seg_id), dtype=int),
-                "match_index": np.arange(start, end, dtype=int),
-            }
-            sim3_extra.update(alignment_export_columns(alignment, len(stamps), "sim3"))
             aligned_segments.append(
                 AlignedSegmentResult(
                     stamps=stamps,
@@ -330,9 +319,16 @@ def evaluate_trajectory_result(
                     gt_rotations=gt_rot,
                     est_positions=est_pos_aligned,
                     est_rotations=est_rot_aligned,
-                    extras=sim3_extra,
+                    extras={
+                        "segment_id": np.full(len(stamps), int(seg_id), dtype=int),
+                        "match_index": np.arange(start, end, dtype=int),
+                        "sim3_scale": np.full(len(stamps), float(alignment["scale"]), dtype=float),
+                    },
                 )
             )
+        else:
+            est_pos_aligned = est_pos
+            est_rot_aligned = est_rot
 
         # 6. ATE 逐帧误差：
         #    error_m -> ate_position_m，horizontal_error_m -> ate_horizontal_m，
@@ -491,7 +487,7 @@ def evaluate_trajectory_result(
         per_pose["visual_segment_id"] = visual_segment_ids[used_match_idx]
     else:
         per_pose["visual_segment_id"] = per_pose["segment_id"].to_numpy(dtype=int)
-    alignment = aggregate_alignment(alignments, alignment_mode)
+
     ate_report = {
         "primary_label": f"{alignment_mode.upper()} ATE",
         "primary_position_m": describe(pos_error_m),
@@ -571,7 +567,6 @@ def evaluate_trajectory_result(
             "all_matches": discontinuities_all,
             "selected_segment": selected_segment,
         },
-        "alignment": alignment,
         "summary": summary,
         "ate": ate_report,
         "ate_position_m": describe(pos_error_m),
