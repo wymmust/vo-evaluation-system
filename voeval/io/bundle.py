@@ -133,12 +133,12 @@ def load_vloc_evaluation_bundle_from_text(
     _log_loaded_trajectory(bundle.vloc, vloc_name)
     logger.debug("--------------------------------------------------------------------------------")
     return bundle
-def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVoBundle:
+def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path, vo_filename: str) -> SfVoBundle:
     """读取 VO 评估目录。
 
     固定目录契约：
     - data_dir/imu.txt
-    - log_dir/vo.txt
+    - log_dir/vo_filename
     - log_dir/calib_raw.yaml
 
     这个入口不接受 vloc.txt，也不会调用旧的自动表头识别 parser。
@@ -147,7 +147,7 @@ def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVo
     data_path = _require_directory(data_dir, "data_dir")
     log_path = _require_directory(log_dir, "log_dir")
     imu_path = _required_bundle_file(data_path, "imu.txt", "data_dir/imu.txt")
-    vo_path = _required_bundle_file(log_path, "vo.txt", "log_dir/vo.txt")
+    vo_path = _required_bundle_file(log_path, vo_filename, "log_dir/"+vo_filename)
     calib_path = _required_bundle_file(log_path, "calib_raw.yaml", "log_dir/calib_raw.yaml")
 
     bundle = SfVoBundle(

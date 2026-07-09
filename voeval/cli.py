@@ -21,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", dest="mode_option", choices=["sf_vo", "sf_vloc"], help=argparse.SUPPRESS)
     parser.add_argument("--data_dir", dest="data_dir_option", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--log_dir", dest="log_dir_option", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--vo_filename", type=str, default="vo.txt", help="Vo trajectory filename(default: vo.txt)")
     parser.add_argument("-d", "--delta", type=float, default=100.0, help="RPE delta value (default: 100)")
     parser.add_argument("-u", "--unit", default="m", choices=["m", "f"], help="RPE delta unit: m=meters, f=frames (default: m)")
     parser.add_argument("-o", "--output", type=Path, default=None, help="Output JSON path (optional)")
@@ -52,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.mode == "sf_vo":
-            bundle = load_vo_evaluation_bundle(args.data_dir, args.log_dir)
+            bundle = load_vo_evaluation_bundle(args.data_dir, args.log_dir, args.vo_filename)
             report = evaluate_vo_bundle(bundle, config)
         else:
             bundle = load_vloc_evaluation_bundle(args.data_dir, args.log_dir)
