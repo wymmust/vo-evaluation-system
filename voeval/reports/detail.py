@@ -33,8 +33,6 @@ def evaluate_vloc_bundle(bundle: SfVlocBundle, config: EvaluationConfig | None =
         nav_eval=result.reference_eval,
         vloc_eval=result.estimate_eval,
     )
-    for sheet_name in ("sim3_gt_tum", "sim3_vo_tum"):
-        report["trajectory_exports"].pop(sheet_name, None)
     return report
 def evaluate_vo_bundle(bundle: SfVoBundle, config: EvaluationConfig | None = None) -> dict[str, Any]:
     """Run the VO workflow and attach report-layer details and exports."""

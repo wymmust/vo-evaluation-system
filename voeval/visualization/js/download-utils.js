@@ -1,5 +1,5 @@
 // download-utils.js — 下载辅助
-// downloadText、downloadBytes、downloadReportJson
+// downloadText、downloadReportJson
 
 import { state } from "./state.js";
 import { sanitizeFilenamePart } from "./utils.js";
@@ -11,18 +11,6 @@ import { els } from "./dom-refs.js";
 
 export function downloadText(filename, text, mime) {
   const blob = new Blob([text], { type: `${mime};charset=utf-8` });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-export function downloadBytes(filename, bytes, mime) {
-  const blob = new Blob([bytes], { type: mime });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;

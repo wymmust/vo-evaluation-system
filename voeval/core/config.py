@@ -19,30 +19,16 @@ class EvaluationConfig:
     - scale_delta_value/scale_delta_unit: 控制 VO 页面局部尺度图按帧数或按 GT 距离取窗口，对应 report["scale_frame_delta"] 和 scale_per_frame。
     """
 
-    rpe_delta_frames: int = 1
-    rpe_delta_value: float | None = None
+    rpe_delta_value: float = 1.0
     rpe_delta_unit: str = "frames"
-    rpe_distance_tolerance_ratio: float = 0.05
-    scale_delta_value: float | None = None
+    scale_delta_value: float = 1.0
     scale_delta_unit: str = "frames"
-    scale_distance_tolerance_ratio: float = 0.05
 
     def __post_init__(self) -> None:
         self.rpe_delta_unit = _normalize_delta_unit(self.rpe_delta_unit, "rpe_delta_unit")
         self.scale_delta_unit = _normalize_delta_unit(self.scale_delta_unit, "scale_delta_unit")
-        self.rpe_delta_frames = _positive_int(self.rpe_delta_frames, "rpe_delta_frames")
-        if self.rpe_delta_value is not None:
-            self.rpe_delta_value = _positive_finite_float(self.rpe_delta_value, "rpe_delta_value")
-        if self.scale_delta_value is not None:
-            self.scale_delta_value = _positive_finite_float(self.scale_delta_value, "scale_delta_value")
-        self.rpe_distance_tolerance_ratio = _nonnegative_finite_float(
-            self.rpe_distance_tolerance_ratio,
-            "rpe_distance_tolerance_ratio",
-        )
-        self.scale_distance_tolerance_ratio = _nonnegative_finite_float(
-            self.scale_distance_tolerance_ratio,
-            "scale_distance_tolerance_ratio",
-        )
+        self.rpe_delta_value = _positive_finite_float(self.rpe_delta_value, "rpe_delta_value")
+        self.scale_delta_value = _positive_finite_float(self.scale_delta_value, "scale_delta_value")
 def _normalize_delta_unit(value: str, name: str) -> str:
     token = str(value or "frames").strip().lower()
     if token in {"f", "frame", "frames"}:
@@ -50,21 +36,8 @@ def _normalize_delta_unit(value: str, name: str) -> str:
     if token in {"m", "meter", "meters", "metre", "metres"}:
         return "meters"
     raise ValueError(f"{name} must be 'frames' or 'meters'")
-def _positive_int(value: int, name: str) -> int:
-    try:
-        out = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-    if out < 1:
-        raise ValueError(f"{name} must be a positive integer")
-    return out
 def _positive_finite_float(value: float, name: str) -> float:
     out = float(value)
     if not math.isfinite(out) or out <= 0:
         raise ValueError(f"{name} must be a positive finite value")
-    return out
-def _nonnegative_finite_float(value: float, name: str) -> float:
-    out = float(value)
-    if not math.isfinite(out) or out < 0:
-        raise ValueError(f"{name} must be a non-negative finite value")
     return out

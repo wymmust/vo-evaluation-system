@@ -11,6 +11,8 @@ import pandas as pd
 from .config import EvaluationConfig
 from .errors import relative_error
 
+FIXED_DISTANCE_TOLERANCE_RATIO = 0.05
+
 def path_distance(positions: np.ndarray) -> np.ndarray:
     """累计路程 D_i。
 
@@ -61,12 +63,11 @@ def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
     - frames: 按 evo consecutive-pairs 取 0->N、N->2N 这类非重叠 pair。
     - meters: 按对齐后的 estimate 累计路程每达到目标距离记录锚点，相邻锚点组成 pair。
 
-    rpe_delta_value 是新参数；如果为空则退回旧的 rpe_delta_frames，保证旧配置还能复现。
+    rpe_delta_value 是唯一的间隔数值入口；单位由 rpe_delta_unit 决定。
     """
     unit_raw = str(cfg.rpe_delta_unit or "frames").strip().lower()
     if unit_raw == "frames":
-        value = cfg.rpe_delta_value if cfg.rpe_delta_value is not None else cfg.rpe_delta_frames
-        frames = max(1, int(round(float(value))))
+        frames = max(1, int(round(float(cfg.rpe_delta_value))))
         return {
             "delta_unit": "frames",
             "delta_value": float(frames),
@@ -76,18 +77,16 @@ def normalize_rpe_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
             "distance_tolerance_percent": None,
         }
     if unit_raw == "meters":
-        value = cfg.rpe_delta_value if cfg.rpe_delta_value is not None else cfg.rpe_delta_frames
-        distance_m = float(value)
+        distance_m = float(cfg.rpe_delta_value)
         if distance_m <= 0:
             raise ValueError("RPE distance delta must be positive")
-        tolerance_ratio = max(0.0, float(cfg.rpe_distance_tolerance_ratio))
         return {
             "delta_unit": "meters",
             "delta_value": distance_m,
             "delta_frames": None,
             "delta_distance_m": distance_m,
-            "distance_tolerance_ratio": tolerance_ratio,
-            "distance_tolerance_percent": 100.0 * tolerance_ratio,
+            "distance_tolerance_ratio": FIXED_DISTANCE_TOLERANCE_RATIO,
+            "distance_tolerance_percent": 100.0 * FIXED_DISTANCE_TOLERANCE_RATIO,
         }
     raise ValueError(f"Unknown rpe_delta_unit: {cfg.rpe_delta_unit}")
 def normalize_scale_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
@@ -102,8 +101,7 @@ def normalize_scale_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
     """
     unit_raw = str(cfg.scale_delta_unit or "frames").strip().lower()
     if unit_raw == "frames":
-        value = cfg.scale_delta_value if cfg.scale_delta_value is not None else cfg.rpe_delta_frames
-        frames = max(1, int(round(float(value))))
+        frames = max(1, int(round(float(cfg.scale_delta_value))))
         return {
             "delta_unit": "frames",
             "delta_value": float(frames),
@@ -113,18 +111,16 @@ def normalize_scale_delta_config(cfg: EvaluationConfig) -> dict[str, Any]:
             "distance_tolerance_percent": None,
         }
     if unit_raw == "meters":
-        value = cfg.scale_delta_value if cfg.scale_delta_value is not None else cfg.rpe_delta_frames
-        distance_m = float(value)
+        distance_m = float(cfg.scale_delta_value)
         if distance_m <= 0:
             raise ValueError("Scale distance delta must be positive")
-        tolerance_ratio = max(0.0, float(cfg.scale_distance_tolerance_ratio))
         return {
             "delta_unit": "meters",
             "delta_value": distance_m,
             "delta_frames": None,
             "delta_distance_m": distance_m,
-            "distance_tolerance_ratio": tolerance_ratio,
-            "distance_tolerance_percent": 100.0 * tolerance_ratio,
+            "distance_tolerance_ratio": FIXED_DISTANCE_TOLERANCE_RATIO,
+            "distance_tolerance_percent": 100.0 * FIXED_DISTANCE_TOLERANCE_RATIO,
         }
     raise ValueError(f"Unknown scale_delta_unit: {cfg.scale_delta_unit}")
 def rpe_frame_dataframe(
@@ -136,10 +132,8 @@ def rpe_frame_dataframe(
     *,
     segment_id: int,
     match_indices: np.ndarray,
-    delta: int,
-    delta_value: float | None = None,
+    delta_value: float,
     delta_unit: str = "frames",
-    distance_tolerance_ratio: float = 0.05,
 ) -> pd.DataFrame:
     """生成每个时间戳一行的 RPE 明细 sheet。
 
@@ -164,11 +158,11 @@ def rpe_frame_dataframe(
         unit = "meters"
     else:
         raise ValueError(f"Unknown rpe_delta_unit: {delta_unit}")
-    delta_frames = max(1, int(round(float(delta_value)))) if unit == "frames" and delta_value is not None else max(1, int(delta))
-    target_distance_m = float(delta_value) if unit == "meters" and delta_value is not None else float(delta)
+    delta_frames = max(1, int(round(float(delta_value)))) if unit == "frames" else 1
+    target_distance_m = float(delta_value) if unit == "meters" else math.nan
     if unit == "meters" and target_distance_m <= 0:
         raise ValueError("RPE distance delta must be positive")
-    tolerance_ratio = max(0.0, float(distance_tolerance_ratio))
+    tolerance_ratio = FIXED_DISTANCE_TOLERANCE_RATIO
     min_distance_m = target_distance_m * (1.0 - tolerance_ratio) if unit == "meters" else math.nan
     max_distance_m = target_distance_m * (1.0 + tolerance_ratio) if unit == "meters" else math.nan
     gt_distance = path_distance(gt_pos)
@@ -273,10 +267,8 @@ def scale_frame_dataframe(
     *,
     segment_id: int,
     match_indices: np.ndarray,
-    delta: int,
-    delta_value: float | None = None,
+    delta_value: float,
     delta_unit: str = "frames",
-    distance_tolerance_ratio: float = 0.05,
 ) -> pd.DataFrame:
     """生成每个起点时间戳对应的局部尺度明细。
 
@@ -298,11 +290,11 @@ def scale_frame_dataframe(
         unit = "meters"
     else:
         raise ValueError(f"Unknown scale_delta_unit: {delta_unit}")
-    delta_frames = max(1, int(round(float(delta_value)))) if unit == "frames" and delta_value is not None else max(1, int(delta))
-    target_distance_m = float(delta_value) if unit == "meters" and delta_value is not None else float(delta)
+    delta_frames = max(1, int(round(float(delta_value)))) if unit == "frames" else 1
+    target_distance_m = float(delta_value) if unit == "meters" else math.nan
     if unit == "meters" and target_distance_m <= 0:
         raise ValueError("Scale distance delta must be positive")
-    tolerance_ratio = max(0.0, float(distance_tolerance_ratio))
+    tolerance_ratio = FIXED_DISTANCE_TOLERANCE_RATIO
     min_distance_m = target_distance_m * (1.0 - tolerance_ratio) if unit == "meters" else math.nan
     max_distance_m = target_distance_m * (1.0 + tolerance_ratio) if unit == "meters" else math.nan
     gt_distance = path_distance(gt_pos)

@@ -46,7 +46,6 @@ def main(argv: list[str] | None = None) -> int:
     config = EvaluationConfig(
         rpe_delta_value=args.delta,
         rpe_delta_unit=unit,
-        rpe_delta_frames=max(1, int(round(args.delta))) if unit == "frames" else 1,
         scale_delta_value=args.delta,
         scale_delta_unit=unit,
     )

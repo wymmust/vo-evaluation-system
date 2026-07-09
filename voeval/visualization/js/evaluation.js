@@ -30,19 +30,14 @@ export async function runEvaluation() {
 
 export function buildConfig() {
   const entryMode = valueOf("entryMode");
-  const isVloc = entryMode === "vloc";
-  const rpeDeltaValue = isVloc ? 1.0 : numberOf("rpeDeltaValue");
-  const rpeDeltaUnit = isVloc ? "frames" : valueOf("rpeDeltaUnit");
-  const scaleDeltaValue = isVloc ? 1.0 : numberOf("scaleDeltaValue");
-  const scaleDeltaUnit = isVloc ? "frames" : valueOf("scaleDeltaUnit");
+  if (entryMode === "vloc") {
+    return {};
+  }
   return {
-    rpe_delta_frames: rpeDeltaUnit === "frames" ? Math.max(1, Math.round(rpeDeltaValue)) : 1,
-    rpe_delta_value: rpeDeltaValue,
-    rpe_delta_unit: rpeDeltaUnit,
-    rpe_distance_tolerance_ratio: 0.05,
-    scale_delta_value: scaleDeltaValue,
-    scale_delta_unit: scaleDeltaUnit,
-    scale_distance_tolerance_ratio: 0.05,
+    rpe_delta_value: numberOf("rpeDeltaValue"),
+    rpe_delta_unit: valueOf("rpeDeltaUnit"),
+    scale_delta_value: numberOf("scaleDeltaValue"),
+    scale_delta_unit: valueOf("scaleDeltaUnit"),
   };
 }
 
@@ -111,16 +106,7 @@ function localPathServerErrorMessage(response, payload) {
   return payload?.error || `HTTP ${response.status}`;
 }
 
-async function fetchReportSlice(sliceName) {
-  const response = await fetch(`/api/report-slice?slice=${encodeURIComponent(sliceName)}`, { cache: "no-store" });
-  const payload = await response.json();
-  if (!response.ok || payload?.ok === false) {
-    throw new Error(payload?.error || `HTTP ${response.status}`);
-  }
-  return payload.data;
-}
-
-export { fetchReportSlice, evaluateSelectedFileBundle, evaluateLocalPathBundle };
+export { evaluateSelectedFileBundle, evaluateLocalPathBundle };
 
 // --- UI helpers used by evaluation flow ---
 import { numberOf } from "./utils.js";

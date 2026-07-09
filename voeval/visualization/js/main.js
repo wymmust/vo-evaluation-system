@@ -3,15 +3,13 @@
 
 import { state } from "./state.js";
 import { els } from "./dom-refs.js";
-import { runEvaluation, buildConfig, evaluateLocalPathBundle, evaluateSelectedFileBundle, fetchReportSlice } from "./evaluation.js";
-import { updateRunButton, handleEntryModeChange, updateEntryModeUi, resetRenderedReport, renderVlocChartDirectory, renderVoChartDirectory, handleVlocChartDirectoryChange, handleVoChartDirectoryChange, selectAllVlocChartDirectory, clearVlocChartDirectory, selectAllVoChartDirectory, clearVoChartDirectory, reportEntryMode } from "./entry-mode.js";
+import { runEvaluation } from "./evaluation.js";
+import { updateRunButton, handleEntryModeChange, updateEntryModeUi, renderVlocChartDirectory, renderVoChartDirectory, handleVlocChartDirectoryChange, handleVoChartDirectoryChange, selectAllVlocChartDirectory, clearVlocChartDirectory, selectAllVoChartDirectory, clearVoChartDirectory } from "./entry-mode.js";
 import { updateDirectoryStatus } from "./file-bundle.js";
 import { clearAllPointSelections, handlePointSelectionKeydown } from "./point-selection.js";
 import { downloadReportJson } from "./download-utils.js";
-import { downloadTrajectoryExcel } from "./excel-export.js";
 import { downloadHtmlReport } from "./html-export.js";
 import { showMessage } from "./report-render.js";
-import { valueOf } from "./utils.js";
 import { LABELS } from "./labels.js";
 import { VLOC_VISIBLE_CHART_IDS, VO_VISIBLE_CHART_IDS } from "./constants.js";
 
@@ -62,12 +60,6 @@ function wireEvents() {
   document.addEventListener("keydown", handlePointSelectionKeydown);
   els.runButton.addEventListener("click", runEvaluation);
   els.downloadJson.addEventListener("click", downloadReportJson);
-  els.downloadConfigJson.addEventListener("click", () => {
-    import("./download-utils.js").then(({ downloadText }) => {
-      downloadText("vo_evaluation_config.json", JSON.stringify(state.report?.config || {}, null, 2), "application/json");
-    });
-  });
-  els.downloadTrajectoryExcel.addEventListener("click", downloadTrajectoryExcel);
   els.downloadHtml.addEventListener("click", downloadHtmlReport);
   updateEntryModeUi();
   renderVlocChartDirectory();

@@ -1,6 +1,5 @@
 import json
 import math
-import io
 import tomllib
 from pathlib import Path
 
@@ -31,7 +30,7 @@ from voeval.io import (
 from voeval.core import EvaluationConfig
 from voeval.cli import main as cli_main
 from voeval.debug import configure_logging
-from voeval.reports import evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle, report_to_excel, report_to_json
+from voeval.reports import evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle, report_to_json
 from voeval.core import (
     euler_yaw_pitch_roll_to_matrix,
     interpolate_reference_to_estimate,
@@ -432,8 +431,6 @@ def test_evaluation_config_normalizes_units_and_rejects_invalid_values():
         EvaluationConfig(rpe_delta_value=0)
     with pytest.raises(ValueError, match="rpe_delta_unit"):
         EvaluationConfig(rpe_delta_unit="seconds")
-    with pytest.raises(ValueError, match="rpe_distance_tolerance_ratio"):
-        EvaluationConfig(rpe_distance_tolerance_ratio=-1)
 
 
 def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
@@ -452,7 +449,7 @@ def test_vo_evaluation_bundle_loads_vo_directory_contract_without_using_vloc(tmp
     data_dir, log_dir = write_sf_dirs(tmp_path)
     (log_dir / "home_point.txt").unlink()
 
-    bundle = load_vo_evaluation_bundle(data_dir, log_dir)
+    bundle = load_vo_evaluation_bundle(data_dir, log_dir, "vo.txt")
 
     assert bundle.nav.source_format == "sf_imu"
     assert bundle.vo.source_format == "sf_vo"
@@ -483,12 +480,11 @@ def test_vloc_bundle_uses_fixed_interpolation_defaults_and_drops_invalid_frames(
     report = evaluate_vloc_bundle(bundle, EvaluationConfig())
 
     assert report["inputs"]["entry_mode"] == "vloc"
-    assert report["inputs"]["fixed_rules"]["alignment"] == "none"
-    assert report["inputs"]["fixed_rules"]["association_mode"] == "interpolate_gt"
-    assert report["inputs"]["fixed_rules"]["max_interpolation_gap_s"] == 1.0
-    assert report["inputs"]["fixed_rules"]["time_offset_s"] == 0.0
-    assert "alignment" not in report["config"]
-    assert "association_mode" not in report["config"]
+    assert "fixed_rules" not in report["inputs"]
+    assert "config" not in report
+    assert "method" not in report["association"]
+    assert "max_interpolation_gap_s" not in report["association"]
+    assert "time_offset_s" not in report["association"]
     assert report["summary"]["matched_poses"] == 3
     assert report["association"]["dropped_est_large_gt_gap"] == 1
     assert report["association"]["dropped_est_invalid_mode"] == 1
@@ -519,29 +515,15 @@ def test_vloc_report_contains_nav_vloc_specific_detail_tables():
     assert np.allclose(comparison["position_error_e_m"].to_numpy(), 0.0, atol=1e-6)
 
 
-def test_vloc_excel_export_omits_sim3_sheets_because_vloc_has_metric_scale():
+def test_vloc_trajectory_exports_omit_sim3_sheets_because_vloc_has_metric_scale():
     bundle = sample_vloc_bundle_with_large_nav_gap()
     report = evaluate_vloc_bundle(bundle, EvaluationConfig())
 
-    sheets = report["trajectory_exports"]
-    assert "sim3_gt_tum" not in sheets
-    assert "sim3_vo_tum" not in sheets
+    exports = report["trajectory_exports"]
+    assert "sim3_gt_tum" not in exports
+    assert "sim3_vo_tum" not in exports
     assert "scale_frame_delta" not in report
-    assert "scale_per_frame" not in sheets
-
-    workbook = report_to_excel(report)
-    xlsx = pd.ExcelFile(io.BytesIO(workbook))
-    assert "sim3_gt_tum" not in xlsx.sheet_names
-    assert "sim3_vo_tum" not in xlsx.sheet_names
-    assert "scale_per_frame" not in xlsx.sheet_names
-    assert {
-        "input_gt_tum",
-        "input_vo_tum",
-        "filtered_vo_tum",
-        "interpolated_gt_tum",
-        "ate_per_frame",
-        "rpe_per_frame",
-    }.issubset(set(xlsx.sheet_names))
+    assert set(exports) == {"rpe_per_frame"}
 
 
 def test_package_all_exports_vo_bundle_entrypoint():
@@ -701,7 +683,7 @@ def test_cli_vloc_outputs_common_summary_and_vloc_specific_metrics(tmp_path, mon
 
 
 def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vo_bundle",
         lambda bundle, config: {
@@ -741,7 +723,7 @@ def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, 
 
 
 def test_cli_silent_suppresses_success_summary(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vo_bundle",
         lambda bundle, config: {
@@ -762,7 +744,7 @@ def test_cli_silent_suppresses_success_summary(tmp_path, monkeypatch, capsys):
 
 def test_cli_logfile_writes_debug_log(tmp_path, monkeypatch, capsys):
     log_path = tmp_path / "voeval_debug.log"
-    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vo_bundle",
         lambda bundle, config: {
@@ -830,7 +812,7 @@ def test_debug_log_uses_evo_like_alignment_and_rpe_messages(tmp_path):
 
     report = evaluate_vo_bundle(
         sample_vo_bundle_with_reset_segments(),
-        EvaluationConfig(rpe_delta_value=100, rpe_delta_unit="frames", rpe_delta_frames=100),
+        EvaluationConfig(rpe_delta_value=100, rpe_delta_unit="frames"),
     )
 
     assert report["rpe_frame_delta"]["count"] > 0
@@ -954,13 +936,11 @@ def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
 
     assert report["inputs"]["entry_mode"] == "vo"
     assert report["inputs"]["workflow"] == "sf_vo"
-    assert report["inputs"]["fixed_rules"]["alignment"] == "sim3"
-    assert report["inputs"]["fixed_rules"]["association_mode"] == "interpolate_gt"
-    assert report["inputs"]["fixed_rules"]["max_interpolation_gap_s"] == 1.0
-    assert report["inputs"]["fixed_rules"]["time_offset_s"] == 0.0
-    assert report["inputs"]["fixed_rules"]["continuous_segment_policy"] == "segments"
-    assert "alignment" not in report["config"]
-    assert "continuous_segment_policy" not in report["config"]
+    assert "fixed_rules" not in report["inputs"]
+    assert "config" not in report
+    assert "method" not in report["association"]
+    assert "max_interpolation_gap_s" not in report["association"]
+    assert "time_offset_s" not in report["association"]
 
     assert report["association"]["dropped_est_invalid_segment"] == 50
     assert report["association"]["valid_est_after_segment_filter"] == 402
@@ -1042,8 +1022,8 @@ def test_gt_is_interpolated_to_vo_timestamps_by_default():
     gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
     est = load_trajectory_from_text(est_text, fmt="tum", name="est")
     report = evaluate_trajectories(gt, est, EvaluationConfig())
-    assert report["association"]["method"] == "interpolate_gt"
-    assert report["association"]["target"] == "estimate_timestamps"
+    assert "method" not in report["association"]
+    assert "target" not in report["association"]
     assert report["summary"]["matched_poses"] == 3
     assert report["ate_position_m"]["rmse"] < 1e-12
 
@@ -1103,13 +1083,13 @@ def test_rpe_distance_mode_uses_evo_consecutive_estimate_path_pairs():
         EvaluationConfig(
             rpe_delta_value=100.0,
             rpe_delta_unit="meters",
-            rpe_distance_tolerance_ratio=0.05,
         ),
     )
 
     rpe = report["rpe_frame_delta"]
     assert rpe["delta_unit"] == "meters"
     assert rpe["delta_distance_m"] == 100.0
+    assert rpe["distance_tolerance_percent"] == 5.0
     assert rpe["distance_tolerance_ratio"] == 0.05
     assert rpe["count"] == 1
 
@@ -1179,13 +1159,13 @@ def test_scale_distance_mode_uses_gt_distance_window_closest_to_target():
         EvaluationConfig(
             scale_delta_value=100.0,
             scale_delta_unit="meters",
-            scale_distance_tolerance_ratio=0.05,
         ),
     )
 
     scale_info = report["scale_frame_delta"]
     assert scale_info["delta_unit"] == "meters"
     assert scale_info["delta_distance_m"] == 100.0
+    assert scale_info["distance_tolerance_percent"] == 5.0
     assert scale_info["distance_tolerance_ratio"] == 0.05
 
     sheet = report["trajectory_exports"]["scale_per_frame"]
@@ -1296,7 +1276,7 @@ def test_report_json_replaces_non_finite_values_with_null():
     assert parsed == {"values": [1.0, None, None, None, None]}
 
 
-def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
+def test_trajectory_exports_only_keep_visualization_data_tables():
     gt_text = "\n".join(
         f"{i * 0.1:.1f} {i:.3f} {np.sin(i):.6f} 1.000 0 0 0 1"
         for i in range(6)
@@ -1318,54 +1298,10 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
         EvaluationConfig(),
     )
 
-    sheets = report["trajectory_exports"]
-    assert list(sheets) == [
-        "input_gt_tum",
-        "input_vo_tum",
-        "filtered_vo_tum",
-        "interpolated_gt_tum",
-        "sim3_gt_tum",
-        "sim3_vo_tum",
-        "ate_per_frame",
-        "rpe_per_frame",
-        "scale_per_frame",
-    ]
-    for frame in [sheets[name] for name in list(sheets)[:6]]:
-        assert list(frame.columns[:8]) == ["timestamp", "tx", "ty", "tz", "qx", "qy", "qz", "qw"]
+    exports = report["trajectory_exports"]
+    assert set(exports) == {"rpe_per_frame", "scale_per_frame"}
 
-    assert sheets["input_vo_tum"]["tum_file"].tolist() == [
-        "vo_tum_01",
-        "vo_tum_01",
-        "vo_tum_02",
-        "vo_tum_02",
-        "vo_tum_03",
-        "vo_tum_03",
-    ]
-    sim3_columns = [
-        "sim3_scale",
-        "sim3_rotation_r00",
-        "sim3_rotation_r01",
-        "sim3_rotation_r02",
-        "sim3_rotation_r10",
-        "sim3_rotation_r11",
-        "sim3_rotation_r12",
-        "sim3_rotation_r20",
-        "sim3_rotation_r21",
-        "sim3_rotation_r22",
-        "sim3_translation_x",
-        "sim3_translation_y",
-        "sim3_translation_z",
-    ]
-    for sheet_name in ["sim3_gt_tum", "sim3_vo_tum"]:
-        for column in sim3_columns:
-            assert column in sheets[sheet_name].columns
-        assert np.isfinite(sheets[sheet_name][sim3_columns].to_numpy(dtype=float)).all()
-    ate_sheet = sheets["ate_per_frame"]
-    assert {"timestamp", "segment_id", "ate_position_m", "ate_horizontal_m", "ate_vertical_abs_m"}.issubset(ate_sheet.columns)
-    assert len(ate_sheet) == report["summary"]["matched_poses"]
-    assert np.allclose(ate_sheet["ate_position_m"].to_numpy(), report["per_pose"]["error_m"].to_numpy())
-
-    rpe_sheet = sheets["rpe_per_frame"]
+    rpe_sheet = exports["rpe_per_frame"]
     assert {
         "timestamp",
         "segment_id",
@@ -1378,17 +1314,8 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
     assert len(rpe_sheet) == report["summary"]["matched_poses"]
     assert rpe_sheet["rpe_available"].tolist()[:-1] == [True] * (len(rpe_sheet) - 1)
     assert rpe_sheet["rpe_available"].tolist()[-1] is False
-
-    workbook = report_to_excel(report)
-    xlsx = pd.ExcelFile(io.BytesIO(workbook))
-    assert xlsx.sheet_names == list(sheets)
-    sim3_vo_from_workbook = pd.read_excel(xlsx, sheet_name="sim3_vo_tum")
-    for column in sim3_columns:
-        assert column in sim3_vo_from_workbook.columns
-    ate_from_workbook = pd.read_excel(xlsx, sheet_name="ate_per_frame")
-    rpe_from_workbook = pd.read_excel(xlsx, sheet_name="rpe_per_frame")
-    assert "ate_position_m" in ate_from_workbook.columns
-    assert "rpe_translation_m" in rpe_from_workbook.columns
+    assert "rpe_translation_m" in rpe_sheet.columns
+    assert "local_sim3_scale" in exports["scale_per_frame"].columns
 
 
 def test_orientation_correction_is_not_applied_in_fixed_evaluator():

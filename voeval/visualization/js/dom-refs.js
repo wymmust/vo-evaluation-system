@@ -32,7 +32,5 @@ export const els = {
   pointSelectionOutput: document.getElementById("pointSelectionOutput"),
   clearAllPointSelections: document.getElementById("clearAllPointSelections"),
   downloadJson: document.getElementById("downloadJson"),
-  downloadConfigJson: document.getElementById("downloadConfigJson"),
-  downloadTrajectoryExcel: document.getElementById("downloadTrajectoryExcel"),
   downloadHtml: document.getElementById("downloadHtml"),
 };

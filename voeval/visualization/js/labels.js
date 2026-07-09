@@ -24,7 +24,6 @@ export const LABELS = {
   error_local_path_evaluation_failed_prefix: "本地路径评估失败：",
   error_local_path_no_server: "当前页面不是通过 voeval server 启动，不能直接读取本地路径。请在仓库根目录运行 python -m voeval server，或者改用目录选择按钮导入文件。",
   error_export_json_prefix: "导出 JSON 失败：",
-  error_export_excel_prefix: "导出 Excel 失败：",
   error_export_html_prefix: "导出 HTML 失败：",
   error_cannot_fetch_prefix: "无法读取本地资源",
 
@@ -71,7 +70,6 @@ export const LABELS = {
   discontinuity_vo_timestamps_suffix: "；当前仍按全部 VO 时间戳统一评估，不会因此丢弃匹配点。",
   discontinuity_policy_suffix: "；当前策略",
   interpolation_dropped_prefix: "当前将 GT 插值到 VO 时间戳；因超出 GT 时间范围或插值间隔过大丢弃了部分 VO 点",
-  interpolation_max_gap_suffix: "最大 GT 插值间隔",
 
   // HTML 导出报告
   html_report_title_vloc: "VLOC 评估结果",

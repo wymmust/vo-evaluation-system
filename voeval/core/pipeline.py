@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -104,13 +104,6 @@ def evaluate_vloc_bundle_core(bundle: SfVlocBundle, config: EvaluationConfig | N
     report["inputs"]["workflow"] = "sf_vloc"
     report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
     report["inputs"]["log_dir_name"] = bundle.log_dir.name or "log_dir"
-    report["inputs"]["fixed_rules"] = {
-        "alignment": "none",
-        "association_mode": "interpolate_gt",
-        "max_interpolation_gap_s": float(VLOC_FIXED_MAX_INTERPOLATION_GAP_S),
-        "allow_extrapolation": False,
-        "time_offset_s": float(FIXED_TIME_OFFSET_S),
-    }
     report["association"]["dropped_est_invalid_mode"] = dropped_invalid_mode
     report["association"]["valid_est_after_mode_filter"] = int(len(vloc_valid.positions))
     report["summary"]["raw_est_poses"] = int(len(bundle.vloc.positions))
@@ -159,16 +152,6 @@ def evaluate_vo_bundle_core(bundle: SfVoBundle, config: EvaluationConfig | None 
     report["inputs"]["workflow"] = "sf_vo"
     report["inputs"]["data_dir_name"] = bundle.data_dir.name or "data_dir"
     report["inputs"]["log_dir_name"] = bundle.log_dir.name or "log_dir"
-    report["inputs"]["fixed_rules"] = {
-        "alignment": "sim3",
-        "association_mode": "interpolate_gt",
-        "max_interpolation_gap_s": float(VO_FIXED_MAX_INTERPOLATION_GAP_S),
-        "allow_extrapolation": False,
-        "time_offset_s": float(FIXED_TIME_OFFSET_S),
-        "continuous_segment_policy": "segments",
-        "min_valid_segment_duration_s": float(VO_MIN_VALID_SEGMENT_DURATION_S),
-        "min_valid_segment_frames": int(VO_MIN_VALID_SEGMENT_FRAMES),
-    }
     report["summary"]["raw_est_poses"] = int(len(bundle.vo.positions))
     return BundleEvaluationResult(
         report=report,
@@ -420,10 +403,8 @@ def evaluate_trajectory_result(
             stamps,
             segment_id=int(seg_id),
             match_indices=np.arange(start, end, dtype=int),
-            delta=max(1, int(cfg.rpe_delta_frames)),
             delta_value=cfg.rpe_delta_value,
             delta_unit=cfg.rpe_delta_unit,
-            distance_tolerance_ratio=cfg.rpe_distance_tolerance_ratio,
         )
         rpe_frame_export_frames.append(rpe_frame)
         rpe_valid = rpe_frame["rpe_available"].to_numpy(dtype=bool) if "rpe_available" in rpe_frame else np.asarray([], dtype=bool)
@@ -439,10 +420,8 @@ def evaluate_trajectory_result(
                 stamps,
                 segment_id=int(seg_id),
                 match_indices=np.arange(start, end, dtype=int),
-                delta=max(1, int(cfg.rpe_delta_frames)),
                 delta_value=cfg.scale_delta_value,
                 delta_unit=cfg.scale_delta_unit,
-                distance_tolerance_ratio=cfg.scale_distance_tolerance_ratio,
             )
             scale_frame_export_frames.append(scale_frame)
 
@@ -597,14 +576,13 @@ def evaluate_trajectory_result(
         "raw_path_scale_ratio_est_over_gt": float(total_raw_est_path_m / total_gt_path_m) if total_gt_path_m > 0 else math.nan,
     }
 
-    # 15. core 只返回评估指标和中间结果；导出 sheet 和页面明细由 reports 层补充。
+    # 15. core 只返回评估指标和中间结果；固定流程参数不写入 report，避免 JSON 指标重复输出默认规则。
     report = {
         "inputs": {
             "ground_truth": {"name": original_gt.name, "format": original_gt.source_format},
             "estimate": {"name": original_est.name, "format": original_est.source_format},
         },
-        "config": asdict(cfg),
-        "association": assoc,
+        "association": report_association_fields(assoc),
         "discontinuities": {
             "all_matches": discontinuities_all,
             "selected_segment": selected_segment,
@@ -643,6 +621,36 @@ def evaluate_trajectory_result(
         scale_per_frame=scale_per_frame,
         aligned_segments=tuple(aligned_segments),
     )
+
+
+def report_association_fields(assoc: dict[str, Any]) -> dict[str, Any]:
+    """Keep only data-dependent association diagnostics in the public report.
+
+    The interpolation method, max gap, time offset, and extrapolation policy are
+    fixed by the SF VO/VLOC workflows. They remain in the interpolation helper
+    for logging/debugging, but are not repeated in downloaded JSON metrics.
+    """
+
+    hidden_default_keys = {
+        "method",
+        "mode",
+        "target",
+        "interpolated",
+        "position_method",
+        "rotation_method",
+        "time_offset_s",
+        "max_interpolation_gap_s",
+        "max_interpolation_gap_s_allowed",
+        "max_interpolation_gap_config_s",
+        "allow_extrapolation",
+        "estimate_count_input",
+        "reference_count_input",
+        "estimate_pose_count",
+        "reference_pose_count",
+        "reference_duplicate_timestamp_count",
+        "rotation_interpolation_note",
+    }
+    return {key: value for key, value in assoc.items() if key not in hidden_default_keys}
 
 
 def _format_debug_delta(value: Any, unit_label: str) -> str:

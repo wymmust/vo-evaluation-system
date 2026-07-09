@@ -1,13 +1,9 @@
-import base64
-import io
 import importlib.util
 import json
 import pytest
 import subprocess
 import textwrap
 from pathlib import Path
-
-from openpyxl import load_workbook
 
 
 def test_static_browser_evaluator_exports_new_vloc_summary_metrics():
@@ -126,13 +122,16 @@ def test_static_scale_interval_controls_are_wired_into_config():
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     config = json.loads(result.stdout)
-    assert config["scale_delta_value"] == 100
-    assert config["scale_delta_unit"] == "meters"
-    assert config["scale_distance_tolerance_ratio"] == 0.05
+    assert config == {
+        "rpe_delta_value": 1,
+        "rpe_delta_unit": "frames",
+        "scale_delta_value": 100,
+        "scale_delta_unit": "meters",
+    }
 
 
 @pytest.mark.skip("ES Module refactor: need bundler or vm-modules to load split JS files")
-def test_static_html_export_keeps_light_chart_exports_and_xlsx_has_sheets():
+def test_static_html_export_keeps_light_chart_exports():
     script = textwrap.dedent(
         r"""
         const fs = require("fs");
@@ -194,11 +193,9 @@ def test_static_html_export_keeps_light_chart_exports_and_xlsx_has_sheets():
             scale_per_frame: [{ timestamp: 1, local_sim3_scale: 2, scale_available: true }],
           },
         });
-            const workbook = context.buildTrajectoryWorkbook(report.trajectory_exports);
             process.stdout.write(JSON.stringify({
               sanitized,
           vlocSanitized,
-              workbookBase64: Buffer.from(workbook).toString("base64"),
             }));
         """
     )
@@ -216,88 +213,6 @@ def test_static_html_export_keeps_light_chart_exports_and_xlsx_has_sheets():
     assert "per_pose" not in payload["sanitized"]
     assert "segment_records" not in payload["sanitized"]
     assert payload["sanitized"]["summary"]["matched_poses"] == 2
-
-    workbook_bytes = base64.b64decode(payload["workbookBase64"])
-    workbook = load_workbook(io.BytesIO(workbook_bytes), read_only=True)
-    assert workbook.sheetnames == [
-        "input_gt_tum",
-        "input_vo_tum",
-        "filtered_vo_tum",
-        "interpolated_gt_tum",
-        "sim3_gt_tum",
-        "sim3_vo_tum",
-        "ate_per_frame",
-        "rpe_per_frame",
-        "scale_per_frame",
-    ]
-    assert workbook["input_gt_tum"]["A1"].value == "timestamp"
-    assert workbook["input_gt_tum"]["A2"].value == 1
-    assert workbook["ate_per_frame"]["B1"].value == "ate_position_m"
-    assert workbook["rpe_per_frame"]["B1"].value == "rpe_translation_m"
-    assert workbook["scale_per_frame"]["B1"].value == "local_sim3_scale"
-
-
-@pytest.mark.skip("ES Module refactor: need bundler or vm-modules to load split JS files")
-def test_static_trajectory_workbook_omits_missing_vloc_sim3_sheets():
-    script = textwrap.dedent(
-        r"""
-        const fs = require("fs");
-        const vm = require("vm");
-        const element = {
-          addEventListener() {},
-          classList: { add() {}, remove() {} },
-          style: {},
-          files: [],
-          value: "",
-          disabled: false,
-          hidden: false,
-          textContent: "",
-        };
-        const document = {
-          body: { appendChild() {} },
-          getElementById() { return element; },
-          createElement() { return { ...element, click() {}, remove() {} }; },
-        };
-        const context = {
-          console,
-          document,
-          window: { location: { protocol: "http:" } },
-          TextEncoder,
-          Uint8Array,
-          DataView,
-          Blob: function Blob() {},
-          URL: { createObjectURL() { return ""; }, revokeObjectURL() {} },
-        };
-        context.globalThis = context;
-        const templateCode = fs.readFileSync("voeval/visualization/visualization/report_templates.js", "utf8");
-        vm.runInNewContext(templateCode, context);
-        const figureCode = fs.readFileSync("voeval/visualization/visualization/figure_specs.js", "utf8");
-        vm.runInNewContext(figureCode, context);
-        const code = fs.readFileSync("voeval/visualization/js/main.js", "utf8").replace(/\ninit\(\);\n/, "\n");
-        vm.runInNewContext(code, context);
-
-        const workbook = context.buildTrajectoryWorkbook({
-          input_gt_tum: [{ timestamp: 1, tx: 0 }],
-          input_vo_tum: [{ timestamp: 1, tx: 1 }],
-          filtered_vo_tum: [{ timestamp: 1, tx: 1 }],
-          interpolated_gt_tum: [{ timestamp: 1, tx: 0 }],
-          ate_per_frame: [{ timestamp: 1, ate_position_m: 0.1 }],
-          rpe_per_frame: [{ timestamp: 1, rpe_translation_m: 0.2 }],
-        });
-        process.stdout.write(Buffer.from(workbook).toString("base64"));
-        """
-    )
-    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
-    workbook = load_workbook(io.BytesIO(base64.b64decode(result.stdout)), read_only=True)
-    assert workbook.sheetnames == [
-        "input_gt_tum",
-        "input_vo_tum",
-        "filtered_vo_tum",
-        "interpolated_gt_tum",
-        "ate_per_frame",
-        "rpe_per_frame",
-    ]
-
 
 @pytest.mark.skip("ES Module refactor: need bundler or vm-modules to load split JS files")
 def test_static_export_filenames_include_directory_name_and_entry_mode():
@@ -346,7 +261,6 @@ def test_static_export_filenames_include_directory_name_and_entry_mode():
           },
         };
         const vlocHtml = context.evaluationExportFilename("evaluation_report", "html", vlocReport);
-        const vlocXlsx = context.evaluationExportFilename("trajectory_exports", "xlsx", vlocReport);
         const voReport = {
           inputs: {
             entry_mode: "vo",
@@ -363,13 +277,12 @@ def test_static_export_filenames_include_directory_name_and_entry_mode():
           },
         };
         const defaultDirHtml = context.evaluationExportFilename("evaluation_report", "html", defaultDirReport);
-        process.stdout.write(JSON.stringify({ vlocHtml, vlocXlsx, voHtml, defaultDirHtml }));
+        process.stdout.write(JSON.stringify({ vlocHtml, voHtml, defaultDirHtml }));
         """
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     payload = json.loads(result.stdout)
     assert payload["vlocHtml"] == "2839_traj_vloc_evaluation_report.html"
-    assert payload["vlocXlsx"] == "2839_traj_vloc_trajectory_exports.xlsx"
     assert payload["voHtml"] == "flight_data__log_vo_run_vo_evaluation_report.html"
     assert payload["defaultDirHtml"] == "vloc_evaluation_report.html"
 
@@ -1229,8 +1142,6 @@ def test_static_entry_mode_switches_between_vloc_and_vo_result_pages():
           dataDirStatus: makeElement(),
           logDirStatus: makeElement(),
           downloadJson: makeElement(),
-          downloadConfigJson: makeElement(),
-          downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
           trajectory3d: makeElement(),
           trajectoryXY: makeElement(),
@@ -1347,8 +1258,6 @@ def test_static_vloc_chart_directory_controls_only_vloc_charts():
           vlocChartSelectAll: makeElement(),
           vlocChartClear: makeElement(),
           downloadJson: makeElement(),
-          downloadConfigJson: makeElement(),
-          downloadTrajectoryExcel: makeElement(),
           downloadHtml: makeElement(),
           metrics: makeElement(),
           summaryKicker: makeElement(),

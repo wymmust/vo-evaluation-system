@@ -41,12 +41,8 @@ export function renderMessages(report) {
       messages.push(`${LABELS.discontinuity_detected_prefix} ${allDisc.break_count} ${LABELS.discontinuity_detected_break_suffix}${LABELS.discontinuity_policy_suffix} ${selected.policy}，评估匹配点 ${summary.matched_poses}/${summary.original_matched_poses}。`);
     }
   }
-  if (
-    report.association?.mode === "interpolate_gt" &&
-    ((report.association.dropped_est_outside_gt_range || 0) > 0 || (report.association.dropped_est_large_gt_gap || 0) > 0)
-  ) {
-    const maxGap = report.association.max_interpolation_gap_s;
-    messages.push(`${LABELS.interpolation_dropped_prefix}，${LABELS.interpolation_max_gap_suffix} ${formatNumber(maxGap)} s。`);
+  if ((report.association?.dropped_est_outside_gt_range || 0) > 0 || (report.association?.dropped_est_large_gt_gap || 0) > 0) {
+    messages.push(`${LABELS.interpolation_dropped_prefix}。`);
   }
   if (messages.length) {
     showMessage(messages.join(" "), "warning");
@@ -77,7 +73,7 @@ export function setBusy(isBusy) {
 }
 
 export function enableDownloads(enabled) {
-  [els.downloadJson, els.downloadConfigJson, els.downloadTrajectoryExcel, els.downloadHtml].forEach((button) => {
+  [els.downloadJson, els.downloadHtml].forEach((button) => {
     button.disabled = !enabled;
   });
 }

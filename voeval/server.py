@@ -30,6 +30,7 @@ from .reports import evaluate_vloc_bundle, evaluate_vo_bundle
 from .reports.export import _jsonable_report, report_to_json
 
 LAST_REPORT: dict | None = None  # stored as _jsonable_report dict (JSON-safe)
+VO_CONFIG_INPUT_KEYS = {"rpe_delta_value", "rpe_delta_unit", "scale_delta_value", "scale_delta_unit"}
 
 
 def required_local_files(entry_mode: str) -> dict[str, tuple[str, ...]]:
@@ -58,9 +59,9 @@ def evaluate_paths_payload(payload: dict) -> dict:
     if not log_dir.is_dir():
         raise FileNotFoundError(f"log_dir not found: {log_dir}")
 
-    config = EvaluationConfig(**{key: value for key, value in config_data.items() if key in EvaluationConfig.__dataclass_fields__})
+    config = _evaluation_config_from_payload(entry_mode, config_data)
     if entry_mode == "vo":
-        bundle = load_vo_evaluation_bundle(data_dir, log_dir)
+        bundle = load_vo_evaluation_bundle(data_dir, log_dir, "vo.txt")
         report = evaluate_vo_bundle(bundle, config)
     else:
         bundle = load_vloc_evaluation_bundle(data_dir, log_dir)
@@ -78,7 +79,7 @@ def evaluate_bundle_payload(payload: dict) -> dict:
         raise ValueError("entryMode is required")
 
     config_data = json.loads(payload.get("configJson") or "{}") if isinstance(payload.get("configJson"), str) else (payload.get("config") or payload.get("configJson") or {})
-    config = EvaluationConfig(**{key: value for key, value in config_data.items() if key in EvaluationConfig.__dataclass_fields__})
+    config = _evaluation_config_from_payload(entry_mode, config_data)
 
     if entry_mode == "vo":
         bundle = load_vo_evaluation_bundle_from_text(
@@ -106,6 +107,19 @@ def evaluate_bundle_payload(payload: dict) -> dict:
     return _light_report(report)
 
 
+def _evaluation_config_from_payload(entry_mode: str, config_data: object) -> EvaluationConfig:
+    """Build config only from user-visible inputs.
+
+    VLOC has no user-configurable evaluation parameters in the UI. VO only
+    exposes RPE interval and scale-plot interval, so hidden/default workflow
+    rules from older payloads are ignored at the server boundary.
+    """
+
+    if entry_mode != "vo" or not isinstance(config_data, dict):
+        return EvaluationConfig()
+    return EvaluationConfig(**{key: config_data[key] for key in VO_CONFIG_INPUT_KEYS if key in config_data})
+
+
 def get_report_slice(slice_name: str) -> object:
     """Return a full report slice after a local-path evaluation."""
 
@@ -113,10 +127,6 @@ def get_report_slice(slice_name: str) -> object:
         raise RuntimeError("No report has been evaluated yet")
     if slice_name == "full_report":
         return LAST_REPORT
-    if slice_name == "trajectory_exports":
-        return LAST_REPORT.get("trajectory_exports") or {}
-    if slice_name in {"per_pose", "config"}:
-        return LAST_REPORT.get(slice_name, [] if slice_name != "config" else {})
     raise ValueError(f"Unknown report slice: {slice_name}")
 
 
@@ -133,16 +143,6 @@ def _light_report(report: dict) -> dict:
         light.setdefault("trajectory_exports", {})["rpe_per_frame"] = rpe_per_frame
     if entry_mode == "vo" and scale_per_frame is not None:
         light.setdefault("trajectory_exports", {})["scale_per_frame"] = scale_per_frame
-    light["report_layers"] = {
-        "initial_payload": "light",
-        "omitted": sorted(skip_keys),
-        "download_slices_available": [
-            "full_report",
-            "per_pose",
-            "config",
-            "trajectory_exports",
-        ],
-    }
     return json.loads(report_to_json(light))
 
 
