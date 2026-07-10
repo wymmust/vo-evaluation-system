@@ -46,6 +46,7 @@ python -m voeval sf_vloc /path/to/data_dir /path/to/log_dir
 
 - `-d / --delta`：RPE 统计间隔，默认 `100`。
 - `-u / --unit`：`m` 表示米，`f` 表示帧，默认 `m`。
+- `--dataset`：硬件数据集，默认 `rk3399`；可选 `rk3588`。`rk3399` 读取 `calib_raw.yaml`，`rk3588` 读取 `bottom_calib_raw.yaml`。
 - `-o / --output`：保存 JSON 报告。
 - `-p`：生成临时 HTML 并打开浏览器预览，不保存到当前目录。
 - `-s / --save-html`：保存 HTML 报告。
@@ -57,6 +58,12 @@ python -m voeval sf_vloc /path/to/data_dir /path/to/log_dir
 python -m voeval sf_vo /dataset/01_Normal/03_综合/5066/1509 /dataset/01_Normal/03_综合/5066/1509 -d 100 -u m -p
 ```
 
+rk3588 示例：
+
+```bash
+python -m voeval sf_vo /path/to/data_dir /path/to/log_dir --dataset rk3588
+```
+
 ## 固定输入格式
 
 ### VLOC 评估
@@ -66,7 +73,8 @@ python -m voeval sf_vo /dataset/01_Normal/03_综合/5066/1509 /dataset/01_Normal
 - `data_dir/imu.txt`
 - `log_dir/vloc.txt`
 - `log_dir/home_point.txt`
-- `log_dir/calib_raw.yaml`
+- `log_dir/calib_raw.yaml`（`--dataset rk3399`，默认）
+- `log_dir/bottom_calib_raw.yaml`（`--dataset rk3588`）
 
 `vloc.txt` 固定格式：
 
@@ -82,7 +90,8 @@ VLOC 固定不做 Sim3，对比方式为 `nav_data.ned - vloc_data.ned`。
 
 - `data_dir/imu.txt`
 - `log_dir/vo.txt`
-- `log_dir/calib_raw.yaml`
+- `log_dir/calib_raw.yaml`（`--dataset rk3399`，默认）
+- `log_dir/bottom_calib_raw.yaml`（`--dataset rk3588`）
 
 `vo.txt` 主线固定格式：
 

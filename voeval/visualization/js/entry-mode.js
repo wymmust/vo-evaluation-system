@@ -65,10 +65,12 @@ export { chartTitleById };
 
 function updateEntryModeHint() {
   const entryMode = valueOf("entryMode");
+  const dataset = valueOf("dataset") || "rk3399";
+  const calibrationName = dataset === "rk3588" ? "bottom_calib_raw.yaml" : "calib_raw.yaml";
   const estimateName = entryMode === "vloc" ? "vloc.txt" : "vo.txt";
   const logFiles = entryMode === "vloc"
-    ? `<code>log_dir/${estimateName}</code>、<code>home_point.txt</code> 和 <code>calib_raw.yaml</code>`
-    : `<code>log_dir/${estimateName}</code> 和 <code>calib_raw.yaml</code>`;
+    ? `<code>log_dir/${estimateName}</code>、<code>home_point.txt</code> 和 <code>${calibrationName}</code>`
+    : `<code>log_dir/${estimateName}</code> 和 <code>${calibrationName}</code>`;
   els.entryModeHint.innerHTML = `${LABELS.entry_hint_vloc} ${logFiles}。`;
 }
 
@@ -206,6 +208,14 @@ function handleEntryModeChange() {
   }
 }
 
+function handleDatasetChange() {
+  updateEntryModeHint();
+  if (state.report) {
+    resetRenderedReport();
+  }
+  updateRunButton();
+}
+
 function updateEntryModeUi() {
   const entryMode = valueOf("entryMode");
   document.querySelectorAll("[data-entry-hide]").forEach((node) => {
@@ -249,7 +259,7 @@ function resetRenderedReport() {
   enableDownloads(false);
 }
 
-export { handleEntryModeChange, updateEntryModeUi, resetRenderedReport, updateRunButton };
+export { handleDatasetChange, handleEntryModeChange, updateEntryModeUi, resetRenderedReport, updateRunButton };
 
 // --- imports needed by this module's internal logic ---
 import { resetPointSelectionState } from "./point-selection.js";

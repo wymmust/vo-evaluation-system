@@ -4,7 +4,7 @@
 import { state } from "./state.js";
 import { els } from "./dom-refs.js";
 import { runEvaluation } from "./evaluation.js";
-import { updateRunButton, handleEntryModeChange, updateEntryModeUi, renderVlocChartDirectory, renderVoChartDirectory, handleVlocChartDirectoryChange, handleVoChartDirectoryChange, selectAllVlocChartDirectory, clearVlocChartDirectory, selectAllVoChartDirectory, clearVoChartDirectory } from "./entry-mode.js";
+import { updateRunButton, handleDatasetChange, handleEntryModeChange, updateEntryModeUi, renderVlocChartDirectory, renderVoChartDirectory, handleVlocChartDirectoryChange, handleVoChartDirectoryChange, selectAllVlocChartDirectory, clearVlocChartDirectory, selectAllVoChartDirectory, clearVoChartDirectory } from "./entry-mode.js";
 import { clearAllPointSelections, handlePointSelectionKeydown } from "./point-selection.js";
 import { downloadReportJson } from "./download-utils.js";
 import { downloadHtmlReport } from "./html-export.js";
@@ -41,6 +41,7 @@ async function checkServerHealth() {
 
 function wireEvents() {
   els.entryMode.addEventListener("change", updateRunButton);
+  els.dataset?.addEventListener("change", handleDatasetChange);
   [els.dataDirPath, els.logDirPath].forEach((input) => input?.addEventListener("input", updateRunButton));
   els.entryMode.addEventListener("change", handleEntryModeChange);
   els.vlocChartList?.addEventListener("change", handleVlocChartDirectoryChange);

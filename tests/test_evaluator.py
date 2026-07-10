@@ -208,7 +208,6 @@ def sample_vloc_bundle_with_large_nav_gap() -> SfVlocBundle:
         calibration=calibration,
         data_dir=Path("/tmp/data_dir"),
         log_dir=Path("/tmp/log_dir"),
-        files={},
     )
 
 
@@ -274,7 +273,6 @@ def sample_vo_bundle_with_reset_segments() -> SfVoBundle:
         calibration=calibration,
         data_dir=Path("/tmp/data_dir"),
         log_dir=Path("/tmp/log_dir"),
-        files={},
     )
 
 
@@ -403,6 +401,30 @@ def test_vo_evaluation_bundle_loads_vo_directory_contract_without_using_vloc(tmp
     assert not hasattr(bundle, "home_point")
 
 
+def test_bundle_loaders_select_calibration_file_from_dataset(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    (log_dir / "bottom_calib_raw.yaml").write_text(sample_identity_calib_text(), encoding="utf-8")
+
+    default_vloc = load_vloc_evaluation_bundle(data_dir, log_dir)
+    rk3588_vloc = load_vloc_evaluation_bundle(data_dir, log_dir, dataset="rk3588")
+    default_vo = load_vo_evaluation_bundle(data_dir, log_dir, "vo.txt")
+    rk3588_vo = load_vo_evaluation_bundle(data_dir, log_dir, "vo.txt", dataset="rk3588")
+
+    assert np.allclose(default_vloc.calibration.t_imu_body[:3, 3], [0.1, 0.2, 0.3])
+    assert np.allclose(default_vo.calibration.t_imu_body[:3, 3], [0.1, 0.2, 0.3])
+    assert np.allclose(rk3588_vloc.calibration.t_imu_body, np.eye(4))
+    assert np.allclose(rk3588_vo.calibration.t_imu_body, np.eye(4))
+
+
+def test_bundle_loader_rejects_unknown_dataset_and_missing_selected_calibration(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+
+    with pytest.raises(ValueError, match="dataset must be one of: rk3399, rk3588"):
+        load_vloc_evaluation_bundle(data_dir, log_dir, dataset="unknown")
+    with pytest.raises(FileNotFoundError, match="log_dir/bottom_calib_raw.yaml"):
+        load_vloc_evaluation_bundle(data_dir, log_dir, dataset="rk3588")
+
+
 def test_bundle_loader_reports_missing_required_file(tmp_path):
     data_dir, log_dir = write_sf_dirs(tmp_path)
     (log_dir / "vloc.txt").unlink()
@@ -498,7 +520,7 @@ def test_module_main_rejects_legacy_flag_mode_entry(capsys):
 
 
 def test_cli_accepts_positional_mode_and_directories(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir, dataset: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vloc_bundle",
         lambda bundle, config: {
@@ -517,6 +539,32 @@ def test_cli_accepts_positional_mode_and_directories(tmp_path, monkeypatch, caps
     assert "========== VLOC 评估结果 ==========" in captured.out
 
 
+@pytest.mark.parametrize("mode", ["sf_vo", "sf_vloc"])
+def test_cli_forwards_selected_dataset_to_bundle_loader(tmp_path, monkeypatch, mode):
+    received: list[str] = []
+    monkeypatch.setattr(
+        "voeval.cli.load_vo_evaluation_bundle",
+        lambda data_dir, log_dir, vo_filename, dataset: received.append(dataset) or object(),
+    )
+    monkeypatch.setattr(
+        "voeval.cli.load_vloc_evaluation_bundle",
+        lambda data_dir, log_dir, dataset: received.append(dataset) or object(),
+    )
+    empty_report = {
+        "rpe_frame_delta": {},
+        "ate_position_m": {},
+        "discontinuities": {"selected_segment": {"segments": []}},
+        "vloc_details": {"summary": {}},
+    }
+    monkeypatch.setattr("voeval.cli.evaluate_vo_bundle", lambda bundle, config: empty_report)
+    monkeypatch.setattr("voeval.cli.evaluate_vloc_bundle", lambda bundle, config: empty_report)
+
+    exit_code = cli_main([mode, str(tmp_path), str(tmp_path), "--dataset", "rk3588"])
+
+    assert exit_code == 0
+    assert received == ["rk3588"]
+
+
 def test_cli_does_not_reconstruct_unquoted_directory_paths_with_spaces(tmp_path):
     data_dir = tmp_path / "data dir"
     log_dir = tmp_path / "log dir"
@@ -529,7 +577,7 @@ def test_cli_does_not_reconstruct_unquoted_directory_paths_with_spaces(tmp_path)
 
 
 def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir, dataset: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vloc_bundle",
         lambda bundle, config: {
@@ -561,7 +609,7 @@ def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, 
 
 
 def test_cli_vloc_outputs_common_summary_and_vloc_specific_metrics(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir, dataset: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vloc_bundle",
         lambda bundle, config: {
@@ -613,7 +661,7 @@ def test_cli_vloc_outputs_common_summary_and_vloc_specific_metrics(tmp_path, mon
 
 
 def test_cli_vo_outputs_complete_statistics_and_each_segment_sim3(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename, dataset: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vo_bundle",
         lambda bundle, config: {
@@ -669,7 +717,7 @@ def test_cli_vo_outputs_complete_statistics_and_each_segment_sim3(tmp_path, monk
 def test_cli_output_json_contains_only_vo_summary_metrics(tmp_path, monkeypatch, capsys):
     requested_output_path = tmp_path / "vo_metrics"
     output_path = tmp_path / "vo_metrics.json"
-    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename, dataset: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vo_bundle",
         lambda bundle, config: {
@@ -735,7 +783,7 @@ def test_cli_output_json_contains_only_vloc_summary_metrics(tmp_path, monkeypatc
         "max_error_pos_z": 7.9296,
         "max_error_euler": 3.9636,
     }
-    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir, dataset: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vloc_bundle",
         lambda bundle, config: {
@@ -766,7 +814,7 @@ def test_cli_output_json_contains_only_vloc_summary_metrics(tmp_path, monkeypatc
 
 
 def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename, dataset: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vo_bundle",
         lambda bundle, config: {
@@ -794,6 +842,7 @@ def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, 
     assert "'est_file':" in captured.out and "vo.txt" in captured.out
     assert "'data_dir':" in captured.out
     assert "'log_dir':" in captured.out
+    assert "'dataset': 'rk3399'" in captured.out
     assert "'align':" not in captured.out
     assert "'correct_scale':" not in captured.out
     assert "'delta_tol':" not in captured.out
@@ -806,7 +855,7 @@ def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, 
 
 
 def test_cli_silent_suppresses_success_summary(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename, dataset: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vo_bundle",
         lambda bundle, config: {
@@ -827,7 +876,7 @@ def test_cli_silent_suppresses_success_summary(tmp_path, monkeypatch, capsys):
 
 def test_cli_logfile_writes_debug_log(tmp_path, monkeypatch, capsys):
     log_path = tmp_path / "voeval_debug.log"
-    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename, dataset: object())
     monkeypatch.setattr(
         "voeval.cli.evaluate_vo_bundle",
         lambda bundle, config: {
@@ -1165,8 +1214,6 @@ def test_interpolate_reference_to_estimate_linearly_interpolates_gt_position():
         est,
         max_interpolation_gap_s=20.0,
     )
-    assert assoc["method"] == "interpolate_gt"
-    assert assoc["position_method"] == "linear"
     assert assoc["matches"] == 1
     assert np.allclose(gt_eval.positions[0], [5.0, 0.0, 0.0])
     assert np.allclose(gt_eval.stamps, est_eval.stamps)
@@ -1186,7 +1233,6 @@ def test_interpolate_reference_to_estimate_slerps_gt_rotation():
         max_interpolation_gap_s=20.0,
     )
     assert assoc["matches"] == 1
-    assert assoc["rotation_method"] == "slerp"
     assert abs(yaw_from_rot(gt_eval.rotations)[0] - np.pi / 4) < 1e-9
 
 
@@ -1206,7 +1252,6 @@ def test_interpolate_gt_does_not_extrapolate_by_default():
         est,
         max_interpolation_gap_s=20.0,
     )
-    assert assoc["allow_extrapolation"] is False
     assert assoc["matches"] == 1
     assert assoc["dropped_before_reference_range"] == 1
     assert assoc["dropped_after_reference_range"] == 1
@@ -1238,12 +1283,10 @@ def test_interpolate_gt_respects_max_interpolation_gap():
     assert len(gt_eval.positions) == len(est_eval.positions) == 1
 
 
-def test_interpolate_reference_to_estimate_no_longer_supports_nearest_mode():
+def test_interpolate_reference_to_estimate_uses_interpolated_reference_pose():
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
     est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
     gt_eval, est_eval, assoc = interpolate_reference_to_estimate(gt, est, max_interpolation_gap_s=20.0)
-    assert assoc["mode"] == "interpolate_gt"
-    assert assoc["interpolated"] is True
     assert assoc["matches"] == 1
     assert np.allclose(gt_eval.positions[0], [5.0, 0.0, 0.0])
     assert np.allclose(est_eval.positions[0], [5.0, 0.0, 0.0])

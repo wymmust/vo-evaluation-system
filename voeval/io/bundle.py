@@ -12,6 +12,13 @@ from .trajectory import Trajectory
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_DATASET = "rk3399"
+SUPPORTED_DATASETS = ("rk3399", "rk3588")
+CALIBRATION_FILENAME_BY_DATASET = {
+    "rk3399": "calib_raw.yaml",
+    "rk3588": "bottom_calib_raw.yaml",
+}
+
 
 @dataclass(frozen=True)
 class SfVlocBundle:
@@ -42,14 +49,19 @@ class SfVoBundle:
     calibration: Calibration
     data_dir: Path
     log_dir: Path
-def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> SfVlocBundle:
+def load_vloc_evaluation_bundle(
+    data_dir: str | Path,
+    log_dir: str | Path,
+    dataset: str = DEFAULT_DATASET,
+) -> SfVlocBundle:
     """读取 VLOC 评估目录。
 
     固定目录契约：
     - data_dir/imu.txt
     - log_dir/vloc.txt
     - log_dir/home_point.txt
-    - log_dir/calib_raw.yaml
+    - rk3399: log_dir/calib_raw.yaml
+    - rk3588: log_dir/bottom_calib_raw.yaml
 
     这个入口不接受 vo.txt，也不会调用旧的自动表头识别 parser。
     """
@@ -59,7 +71,8 @@ def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> Sf
     imu_path = _required_bundle_file(data_path, "imu.txt", "data_dir/imu.txt")
     vloc_path = _required_bundle_file(log_path, "vloc.txt", "log_dir/vloc.txt")
     home_path = _required_bundle_file(log_path, "home_point.txt", "log_dir/home_point.txt")
-    calib_path = _required_bundle_file(log_path, "calib_raw.yaml", "log_dir/calib_raw.yaml")
+    calib_filename = calibration_filename_for_dataset(dataset)
+    calib_path = _required_bundle_file(log_path, calib_filename, f"log_dir/{calib_filename}")
 
     bundle = SfVlocBundle(
         nav=parse_imu_fixed(imu_path.read_text(encoding="utf-8", errors="replace"), name=str(imu_path)),
@@ -73,13 +86,19 @@ def load_vloc_evaluation_bundle(data_dir: str | Path, log_dir: str | Path) -> Sf
     _log_loaded_trajectory(bundle.vloc, vloc_path)
     logger.debug("--------------------------------------------------------------------------------")
     return bundle
-def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path, vo_filename: str) -> SfVoBundle:
+def load_vo_evaluation_bundle(
+    data_dir: str | Path,
+    log_dir: str | Path,
+    vo_filename: str,
+    dataset: str = DEFAULT_DATASET,
+) -> SfVoBundle:
     """读取 VO 评估目录。
 
     固定目录契约：
     - data_dir/imu.txt
     - log_dir/vo_filename
-    - log_dir/calib_raw.yaml
+    - rk3399: log_dir/calib_raw.yaml
+    - rk3588: log_dir/bottom_calib_raw.yaml
 
     这个入口不接受 vloc.txt，也不会调用旧的自动表头识别 parser。
     """
@@ -88,7 +107,8 @@ def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path, vo_file
     log_path = _require_directory(log_dir, "log_dir")
     imu_path = _required_bundle_file(data_path, "imu.txt", "data_dir/imu.txt")
     vo_path = _required_bundle_file(log_path, vo_filename, "log_dir/"+vo_filename)
-    calib_path = _required_bundle_file(log_path, "calib_raw.yaml", "log_dir/calib_raw.yaml")
+    calib_filename = calibration_filename_for_dataset(dataset)
+    calib_path = _required_bundle_file(log_path, calib_filename, f"log_dir/{calib_filename}")
 
     bundle = SfVoBundle(
         nav=parse_imu_fixed(imu_path.read_text(encoding="utf-8", errors="replace"), name=str(imu_path)),
@@ -101,6 +121,19 @@ def load_vo_evaluation_bundle(data_dir: str | Path, log_dir: str | Path, vo_file
     _log_loaded_trajectory(bundle.vo, vo_path)
     logger.debug("--------------------------------------------------------------------------------")
     return bundle
+
+
+def calibration_filename_for_dataset(dataset: str) -> str:
+    """Return the fixed calibration filename for a supported hardware dataset."""
+
+    normalized = str(dataset).strip().lower()
+    try:
+        return CALIBRATION_FILENAME_BY_DATASET[normalized]
+    except KeyError as exc:
+        choices = ", ".join(SUPPORTED_DATASETS)
+        raise ValueError(f"dataset must be one of: {choices}; got {dataset!r}") from exc
+
+
 def _require_directory(path: str | Path, label: str) -> Path:
     resolved = Path(path).expanduser()
     if not resolved.is_dir():

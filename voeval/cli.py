@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .core import EvaluationConfig
 from .debug import configure_logging
-from .io import load_vloc_evaluation_bundle, load_vo_evaluation_bundle
+from .io import DEFAULT_DATASET, SUPPORTED_DATASETS, load_vloc_evaluation_bundle, load_vo_evaluation_bundle
 from .reports import _default_html_output_path, _format_cli_number, _preview_html_report, _temporary_html_output_path, _write_html_report, evaluate_vloc_bundle, evaluate_vo_bundle, report_to_json
 
 def main(argv: list[str] | None = None) -> int:
@@ -19,6 +19,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("mode", choices=["sf_vo", "sf_vloc"], help="Evaluation workflow")
     parser.add_argument("data_dir", type=Path, help="Directory containing imu.txt")
     parser.add_argument("log_dir", type=Path, help="Directory containing vo.txt/vloc.txt and calibration files")
+    parser.add_argument(
+        "--dataset",
+        choices=SUPPORTED_DATASETS,
+        default=DEFAULT_DATASET,
+        help="Hardware dataset selecting calibration file: rk3399=calib_raw.yaml, rk3588=bottom_calib_raw.yaml",
+    )
     parser.add_argument("--vo_filename", type=str, default="vo.txt", help="Vo trajectory filename(default: vo.txt)")
     parser.add_argument("-d", "--delta", type=float, default=100.0, help="RPE delta value (default: 100)")
     parser.add_argument("-u", "--unit", default="m", choices=["m", "f"], help="RPE delta unit: m=meters, f=frames (default: m)")
@@ -47,10 +53,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.mode == "sf_vo":
-            bundle = load_vo_evaluation_bundle(args.data_dir, args.log_dir, args.vo_filename)
+            bundle = load_vo_evaluation_bundle(args.data_dir, args.log_dir, args.vo_filename, dataset=args.dataset)
             report = evaluate_vo_bundle(bundle, config)
         else:
-            bundle = load_vloc_evaluation_bundle(args.data_dir, args.log_dir)
+            bundle = load_vloc_evaluation_bundle(args.data_dir, args.log_dir, dataset=args.dataset)
             report = evaluate_vloc_bundle(bundle, config)
 
         if args.mode == "sf_vo":
@@ -292,6 +298,7 @@ def _debug_args_dict(args: argparse.Namespace) -> dict[str, object]:
         "mode": args.mode,
         "data_dir": str(data_dir),
         "log_dir": str(log_dir),
+        "dataset": args.dataset,
         "ref_file": str(data_dir / "imu.txt"),
         "est_file": str(log_dir / estimate_name),
         "delta": float(args.delta),

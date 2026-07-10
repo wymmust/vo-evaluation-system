@@ -25,7 +25,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = PACKAGE_ROOT / "visualization"
 
 from .core import EvaluationConfig
-from .io import load_vloc_evaluation_bundle, load_vo_evaluation_bundle
+from .io import DEFAULT_DATASET, load_vloc_evaluation_bundle, load_vo_evaluation_bundle
 from .reports import evaluate_vloc_bundle, evaluate_vo_bundle
 from .reports.export import _jsonable_report, report_to_json
 
@@ -40,9 +40,10 @@ def evaluate_paths_payload(payload: dict) -> dict:
     entry_mode = str(payload.get("entryMode") or payload.get("entry_mode") or "").strip()
     data_dir = Path(str(payload.get("dataDirPath") or payload.get("data_dir") or "")).expanduser()
     log_dir = Path(str(payload.get("logDirPath") or payload.get("log_dir") or "")).expanduser()
+    dataset = str(payload.get("dataset") or DEFAULT_DATASET).strip().lower()
     config_data = payload.get("config") or {}
-    if not entry_mode:
-        raise ValueError("entryMode is required")
+    if entry_mode not in {"vo", "vloc"}:
+        raise ValueError("entryMode must be 'vo' or 'vloc'")
     if not data_dir.is_dir():
         raise FileNotFoundError(f"data_dir not found: {data_dir}")
     if not log_dir.is_dir():
@@ -50,10 +51,10 @@ def evaluate_paths_payload(payload: dict) -> dict:
 
     config = _evaluation_config_from_payload(entry_mode, config_data)
     if entry_mode == "vo":
-        bundle = load_vo_evaluation_bundle(data_dir, log_dir, "vo.txt")
+        bundle = load_vo_evaluation_bundle(data_dir, log_dir, "vo.txt", dataset=dataset)
         report = evaluate_vo_bundle(bundle, config)
     else:
-        bundle = load_vloc_evaluation_bundle(data_dir, log_dir)
+        bundle = load_vloc_evaluation_bundle(data_dir, log_dir, dataset=dataset)
         report = evaluate_vloc_bundle(bundle, config)
     LAST_REPORT = _jsonable_report(report)
     return _light_report(report)

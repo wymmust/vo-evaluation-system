@@ -107,6 +107,20 @@ def test_static_browser_evaluator_exports_new_vloc_summary_metrics():
     assert "max_error_euler" in source
 
 
+def test_server_ui_dataset_selector_is_wired_to_backend_payload_and_calibration_hint():
+    html = Path("voeval/visualization/index.html").read_text(encoding="utf-8")
+    evaluation_source = Path("voeval/visualization/js/evaluation.js").read_text(encoding="utf-8")
+    entry_mode_source = Path("voeval/visualization/js/entry-mode.js").read_text(encoding="utf-8")
+    main_source = Path("voeval/visualization/js/main.js").read_text(encoding="utf-8")
+
+    assert 'id="dataset"' in html
+    assert '<option value="rk3399" selected>rk3399</option>' in html
+    assert '<option value="rk3588">rk3588</option>' in html
+    assert 'dataset: valueOf("dataset") || "rk3399"' in evaluation_source
+    assert 'dataset === "rk3588" ? "bottom_calib_raw.yaml" : "calib_raw.yaml"' in entry_mode_source
+    assert 'els.dataset?.addEventListener("change", handleDatasetChange)' in main_source
+
+
 def test_static_dead_report_and_time_series_helpers_are_removed():
     source = Path("voeval/visualization/js/main.js").read_text()
     removed_names = [

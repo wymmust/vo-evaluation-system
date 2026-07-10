@@ -41,6 +41,7 @@ async function evaluateLocalPathBundle(entryMode, config) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       entryMode,
+      dataset: valueOf("dataset") || "rk3399",
       dataDirPath: (els.dataDirPath?.value || "").trim(),
       logDirPath: (els.logDirPath?.value || "").trim(),
       config,

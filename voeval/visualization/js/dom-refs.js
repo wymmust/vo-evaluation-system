@@ -7,6 +7,7 @@ export const els = {
   runButton: document.getElementById("runButton"),
   metrics: document.getElementById("metrics"),
   entryMode: document.getElementById("entryMode"),
+  dataset: document.getElementById("dataset"),
   entryModeHint: document.getElementById("entryModeHint"),
   summaryKicker: document.getElementById("summaryKicker"),
   summaryTitle: document.getElementById("summaryTitle"),

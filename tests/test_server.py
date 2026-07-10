@@ -1,5 +1,7 @@
 import errno
 
+import pytest
+
 from test_evaluator import sample_calib_text
 
 
@@ -39,6 +41,55 @@ def test_local_path_server_evaluates_vo_without_home_point(tmp_path):
     assert light_report["summary"]["matched_poses"] == 201
     full_report = get_report_slice("full_report")
     assert full_report["inputs"]["entry_mode"] == "vo"
+
+
+@pytest.mark.parametrize("entry_mode", ["vo", "vloc"])
+def test_local_path_server_forwards_selected_dataset(tmp_path, monkeypatch, entry_mode):
+    from voeval import server
+
+    data_dir = tmp_path / "data_dir"
+    log_dir = tmp_path / "log_dir"
+    data_dir.mkdir()
+    log_dir.mkdir()
+    received: list[str] = []
+
+    monkeypatch.setattr(
+        server,
+        "load_vo_evaluation_bundle",
+        lambda data_dir, log_dir, vo_filename, dataset: received.append(dataset) or object(),
+    )
+    monkeypatch.setattr(
+        server,
+        "load_vloc_evaluation_bundle",
+        lambda data_dir, log_dir, dataset: received.append(dataset) or object(),
+    )
+    monkeypatch.setattr(server, "evaluate_vo_bundle", lambda bundle, config: {"inputs": {"entry_mode": "vo"}})
+    monkeypatch.setattr(server, "evaluate_vloc_bundle", lambda bundle, config: {"inputs": {"entry_mode": "vloc"}})
+
+    report = server.evaluate_paths_payload(
+        {
+            "entryMode": entry_mode,
+            "dataset": "rk3588",
+            "dataDirPath": str(data_dir),
+            "logDirPath": str(log_dir),
+        }
+    )
+
+    assert report["inputs"]["entry_mode"] == entry_mode
+    assert received == ["rk3588"]
+
+
+def test_local_path_server_rejects_unknown_entry_mode(tmp_path):
+    from voeval.server import evaluate_paths_payload
+
+    with pytest.raises(ValueError, match="entryMode must be 'vo' or 'vloc'"):
+        evaluate_paths_payload(
+            {
+                "entryMode": "unknown",
+                "dataDirPath": str(tmp_path),
+                "logDirPath": str(tmp_path),
+            }
+        )
 
 
 def test_server_main_auto_opens_browser(monkeypatch):
