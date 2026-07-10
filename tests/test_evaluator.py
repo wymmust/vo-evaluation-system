@@ -666,6 +666,105 @@ def test_cli_vo_outputs_complete_statistics_and_each_segment_sim3(tmp_path, monk
     assert "Translation: [4.0000 5.0000 6.0000] m" in captured.out
 
 
+def test_cli_output_json_contains_only_vo_summary_metrics(tmp_path, monkeypatch, capsys):
+    requested_output_path = tmp_path / "vo_metrics"
+    output_path = tmp_path / "vo_metrics.json"
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vo_bundle",
+        lambda bundle, config: {
+            "rpe_frame_delta": {
+                "translation_m": {"rmse": 3.8, "mean": 3.5, "median": 3.4, "max": 7.8, "min": 0.3, "p99": 9.0},
+                "count": 55,
+            },
+            "ate_position_m": {"rmse": 19.2, "mean": 18.1, "median": 17.9, "max": 30.0, "min": 1.5, "p99": 35.0},
+            "discontinuities": {"selected_segment": {"segments": [{"count": 55}]}},
+            "alignment": {
+                "base_mode": "sim3",
+                "segment_count": 1,
+                "segments": [
+                    {
+                        "segment_id": 0,
+                        "scale": 3.0,
+                        "rotation": np.eye(3),
+                        "translation": np.array([1.0, 2.0, 3.0]),
+                        "count": 55,
+                        "start_match_index": 0,
+                        "end_match_index": 55,
+                    }
+                ],
+            },
+            "per_pose": pd.DataFrame({"timestamp": np.arange(1000), "error_m": np.arange(1000)}),
+            "trajectory_exports": {"rpe_per_frame": pd.DataFrame({"value": np.arange(1000)})},
+        },
+    )
+
+    exit_code = cli_main(["sf_vo", str(tmp_path), str(tmp_path), "-d", "100", "-u", "m", "-o", str(requested_output_path)])
+
+    assert exit_code == 0
+    assert not requested_output_path.exists()
+    assert output_path.exists()
+    assert f"[voeval] wrote {output_path.resolve()}" in capsys.readouterr().out
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert set(payload) == {"mode", "rpe_translation_m", "ate_position_m", "segment_count", "sim3"}
+    assert payload["rpe_translation_m"] == {
+        "delta_value": 100.0,
+        "delta_unit": "m",
+        "rmse": 3.8,
+        "mean": 3.5,
+        "median": 3.4,
+        "max": 7.8,
+        "min": 0.3,
+        "count": 55,
+    }
+    assert payload["ate_position_m"] == {"rmse": 19.2, "mean": 18.1, "median": 17.9, "max": 30.0, "min": 1.5}
+    assert payload["segment_count"] == 1
+    assert payload["sim3"]["segments"][0]["translation"] == [1.0, 2.0, 3.0]
+    assert "per_pose" not in payload
+    assert "trajectory_exports" not in payload
+
+
+def test_cli_output_json_contains_only_vloc_summary_metrics(tmp_path, monkeypatch):
+    output_path = tmp_path / "vloc_metrics.json"
+    vloc_summary = {
+        "trajectory_length_m": 5645.2915,
+        "mean_error_pos_xy": 4.72,
+        "mean_error_pos_z": 1.6399,
+        "mean_error_euler": 0.7077,
+        "max_error_pos_xy": 11.6413,
+        "max_error_pos_z": 7.9296,
+        "max_error_euler": 3.9636,
+    }
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vloc_bundle",
+        lambda bundle, config: {
+            "rpe_frame_delta": {
+                "translation_m": {"rmse": 2.5, "mean": 2.2, "median": 2.0, "max": 5.0, "min": 0.1},
+                "count": 54,
+            },
+            "ate_position_m": {"rmse": 6.0, "mean": 5.2, "median": 5.0, "max": 12.0, "min": 0.2},
+            "discontinuities": {"selected_segment": {"segments": [{"count": 54}]}},
+            "vloc_details": {
+                "summary": vloc_summary,
+                "comparison": pd.DataFrame({"timestamp": np.arange(1000)}),
+            },
+            "per_pose": pd.DataFrame({"timestamp": np.arange(1000)}),
+        },
+    )
+
+    exit_code = cli_main(["sf_vloc", str(tmp_path), str(tmp_path), "-o", str(output_path)])
+
+    assert exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert set(payload) == {"mode", "rpe_translation_m", "ate_position_m", "segment_count", "vloc_metrics"}
+    assert payload["mode"] == "sf_vloc"
+    assert payload["segment_count"] == 1
+    assert payload["vloc_metrics"] == vloc_summary
+    assert "per_pose" not in payload
+    assert "vloc_details" not in payload
+
+
 def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
     monkeypatch.setattr(

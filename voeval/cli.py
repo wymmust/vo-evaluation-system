@@ -22,7 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--vo_filename", type=str, default="vo.txt", help="Vo trajectory filename(default: vo.txt)")
     parser.add_argument("-d", "--delta", type=float, default=100.0, help="RPE delta value (default: 100)")
     parser.add_argument("-u", "--unit", default="m", choices=["m", "f"], help="RPE delta unit: m=meters, f=frames (default: m)")
-    parser.add_argument("-o", "--output", type=Path, default=None, help="Output JSON path (optional)")
+    parser.add_argument("-o", "--output", type=Path, default=None, help="Output metrics JSON path; .json is added automatically")
     parser.add_argument("-p", action="store_true", help="Preview standalone HTML report in browser")
     parser.add_argument("-s", "--save-html", action="store_true", help="Save standalone HTML report")
     parser.add_argument("--html-output", type=Path, default=None, help="HTML report path used with -s/--save-html")
@@ -60,10 +60,11 @@ def main(argv: list[str] | None = None) -> int:
 
         # JSON 输出到文件
         if args.output:
-            json_text = report_to_json(report)
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json_text, encoding="utf-8")
-            logger.info("[voeval] wrote %s", args.output)
+            output_path = _json_output_path(args.output)
+            json_text = report_to_json(_cli_metrics_report(report, args))
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json_text, encoding="utf-8")
+            logger.info("[voeval] wrote %s", output_path.resolve())
 
         if args.save_html or args.p:
             html_output = args.html_output or (_default_html_output_path(report) if args.save_html else _temporary_html_output_path(report))
@@ -187,6 +188,75 @@ def _format_cli_vector(values: object) -> str:
     except TypeError:
         return "N/A"
     return "[" + " ".join(_format_cli_number(item) for item in items) + "]"
+
+
+def _cli_metrics_report(report: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
+    """Build the compact metrics-only payload written by ``-o``."""
+
+    rpe = report.get("rpe_frame_delta") or {}
+    rpe_stats = rpe.get("translation_m") if isinstance(rpe, dict) else {}
+    ate_stats = report.get("ate_position_m") or {}
+    result: dict[str, object] = {
+        "mode": args.mode,
+        "rpe_translation_m": {
+            "delta_value": float(args.delta),
+            "delta_unit": args.unit,
+            **_selected_error_statistics(rpe_stats),
+            "count": rpe.get("count", rpe_stats.get("count")) if isinstance(rpe, dict) and isinstance(rpe_stats, dict) else None,
+        },
+        "ate_position_m": _selected_error_statistics(ate_stats),
+        "segment_count": _evaluated_segment_count(report),
+    }
+
+    if args.mode == "sf_vo":
+        alignment = report.get("alignment") or {}
+        if isinstance(alignment, dict):
+            segments = alignment.get("segments")
+            if not isinstance(segments, list) or not segments:
+                segments = [alignment]
+            result["sim3"] = {
+                "segment_count": alignment.get("segment_count", len(segments)),
+                "segments": [
+                    {
+                        "segment_id": segment.get("segment_id", index),
+                        "scale": segment.get("scale"),
+                        "rotation": segment.get("rotation"),
+                        "translation": segment.get("translation"),
+                    }
+                    for index, segment in enumerate(segments)
+                    if isinstance(segment, dict)
+                ],
+            }
+    else:
+        details = report.get("vloc_details") or {}
+        summary = details.get("summary") if isinstance(details, dict) else {}
+        if isinstance(summary, dict):
+            result["vloc_metrics"] = {
+                key: summary.get(key)
+                for key in (
+                    "trajectory_length_m",
+                    "mean_error_pos_xy",
+                    "mean_error_pos_z",
+                    "mean_error_euler",
+                    "max_error_pos_xy",
+                    "max_error_pos_z",
+                    "max_error_euler",
+                )
+            }
+    return result
+
+
+def _json_output_path(path: Path) -> Path:
+    """Return a metrics output path with a JSON file extension."""
+
+    return path if path.suffix.lower() == ".json" else path.with_suffix(".json")
+
+
+def _selected_error_statistics(value: object) -> dict[str, object]:
+    """Select exactly the error statistics displayed by the CLI summary."""
+
+    stats = value if isinstance(value, dict) else {}
+    return {key: stats.get(key) for key in ("rmse", "mean", "median", "max", "min")}
 
 
 def _log_vloc_specific_metrics(logger, report: dict[str, object]) -> None:
