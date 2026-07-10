@@ -6,6 +6,97 @@ import textwrap
 from pathlib import Path
 
 
+def test_live_point_selection_rows_are_grouped_then_sorted_by_ascending_timestamp():
+    script = textwrap.dedent(
+        """
+        globalThis.document = { getElementById() { return null; } };
+        const { groupedSelectionsByTimestamp } = await import("./voeval/visualization/js/point-selection.js");
+        const rows = groupedSelectionsByTimestamp([
+          { id: "navi-early", traceName: "navi_mode", timestamp: 258.407, order: 1 },
+          { id: "flight-late", traceName: "flight_mode", timestamp: 438.507, order: 2 },
+          { id: "navi-late", traceName: "navi_mode", timestamp: 371.307, order: 3 },
+          { id: "rtk", traceName: "rtk_alti", timestamp: 313.757, order: 4 },
+          { id: "flight-early", traceName: "flight_mode", timestamp: 311.807, order: 5 },
+          { id: "navi-missing", traceName: "navi_mode", timestamp: null, order: 6 },
+        ]);
+        process.stdout.write(JSON.stringify(rows.map((row) => row.id)));
+        """
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == [
+        "navi-early",
+        "navi-late",
+        "navi-missing",
+        "flight-early",
+        "flight-late",
+        "rtk",
+    ]
+
+
+def test_live_point_selection_events_can_rebind_after_chart_redraw():
+    script = textwrap.dedent(
+        """
+        const listeners = new Map();
+        const pickButton = { classList: { toggle() {} } };
+        const tools = { querySelector() { return null; } };
+        const chart = {
+          data: [],
+          classList: { toggle() {}, remove() {} },
+          querySelector(selector) {
+            if (selector === ".chart-point-tools") return tools;
+            if (selector === ".chart-point-tool.pick") return pickButton;
+            return null;
+          },
+          on(eventName, handler) {
+            if (!listeners.has(eventName)) listeners.set(eventName, new Set());
+            listeners.get(eventName).add(handler);
+          },
+          removeListener(eventName, handler) {
+            listeners.get(eventName)?.delete(handler);
+          },
+        };
+        globalThis.document = {
+          getElementById(id) { return id === "navStatusModes" ? chart : null; },
+        };
+        globalThis.Plotly = {};
+        const { state } = await import("./voeval/visualization/js/state.js");
+        state.report = { inputs: { entry_mode: "vloc" } };
+        const { detachPointSelectionEvents, ensurePointSelectionTools } = await import("./voeval/visualization/js/point-selection.js");
+        ensurePointSelectionTools("navStatusModes");
+        const firstBind = [listeners.get("plotly_click")?.size, listeners.get("plotly_hover")?.size];
+        detachPointSelectionEvents("navStatusModes");
+        const afterDetach = [listeners.get("plotly_click")?.size, listeners.get("plotly_hover")?.size];
+        ensurePointSelectionTools("navStatusModes");
+        const secondBind = [listeners.get("plotly_click")?.size, listeners.get("plotly_hover")?.size];
+        process.stdout.write(JSON.stringify({ firstBind, afterDetach, secondBind }));
+        """
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "firstBind": [1, 1],
+        "afterDetach": [0, 0],
+        "secondBind": [1, 1],
+    }
+
+
+def test_html_export_uses_live_point_selection_grouping_order():
+    source = Path("voeval/visualization/js/html-export.js").read_text()
+    assert "groupedSelectionsByTimestamp.toString()" in source
+    assert "groupedSelectionsByTimestamp(selections.filter" in source
+
+
 def test_static_browser_evaluator_exports_new_vloc_summary_metrics():
     source = Path("voeval/reports/detail.py").read_text()
     assert "mean_error_pos_xy" in source

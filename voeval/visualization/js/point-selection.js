@@ -79,16 +79,35 @@ export function ensurePointSelectionTools(chartId) {
       clearPointSelectionsForChart(chartId);
     });
   }
-  if (!chart._pointSelectionClickBound && typeof chart.on === "function") {
-    chart.on("plotly_click", (eventData) => handlePlotPointClick(chartId, eventData));
-    chart._pointSelectionClickBound = true;
+  if (!chart._pointSelectionClickHandler && typeof chart.on === "function") {
+    chart._pointSelectionClickHandler = (eventData) => handlePlotPointClick(chartId, eventData);
+    chart.on("plotly_click", chart._pointSelectionClickHandler);
   }
-  if (!chart._pointSelectionHoverBound && typeof chart.on === "function") {
-    chart.on("plotly_hover", (eventData) => handlePlotPointHover(chartId, eventData));
-    chart._pointSelectionHoverBound = true;
+  if (!chart._pointSelectionHoverHandler && typeof chart.on === "function") {
+    chart._pointSelectionHoverHandler = (eventData) => handlePlotPointHover(chartId, eventData);
+    chart.on("plotly_hover", chart._pointSelectionHoverHandler);
   }
   refreshPointSelectionToolState(chartId);
   refreshChartSelectionMarkers(chartId);
+}
+
+export function detachPointSelectionEvents(chartId) {
+  const chart = document.getElementById(chartId);
+  if (!chart) {
+    return;
+  }
+  if (typeof chart.removeListener === "function") {
+    if (chart._pointSelectionClickHandler) {
+      chart.removeListener("plotly_click", chart._pointSelectionClickHandler);
+    }
+    if (chart._pointSelectionHoverHandler) {
+      chart.removeListener("plotly_hover", chart._pointSelectionHoverHandler);
+    }
+  }
+  delete chart._pointSelectionClickHandler;
+  delete chart._pointSelectionHoverHandler;
+  delete chart._pointSelectionClickBound;
+  delete chart._pointSelectionHoverBound;
 }
 
 function removePointSelectionTools(chartId) {
@@ -426,7 +445,7 @@ export function handlePointSelectionKeydown(event) {
   }
 }
 
-function groupedSelectionsForChart(selections) {
+export function groupedSelectionsByTimestamp(selections) {
   const groupOrder = new Map();
   for (const selection of selections) {
     if (!groupOrder.has(selection.traceName)) {
@@ -435,7 +454,23 @@ function groupedSelectionsForChart(selections) {
   }
   return [...selections].sort((left, right) => {
     const groupDiff = groupOrder.get(left.traceName) - groupOrder.get(right.traceName);
-    return groupDiff || left.order - right.order;
+    if (groupDiff) {
+      return groupDiff;
+    }
+    const leftTimestamp = Number(left.timestamp);
+    const rightTimestamp = Number(right.timestamp);
+    const leftHasTimestamp = left.timestamp !== null && Number.isFinite(leftTimestamp);
+    const rightHasTimestamp = right.timestamp !== null && Number.isFinite(rightTimestamp);
+    if (leftHasTimestamp && rightHasTimestamp) {
+      return leftTimestamp - rightTimestamp || left.order - right.order;
+    }
+    if (leftHasTimestamp) {
+      return -1;
+    }
+    if (rightHasTimestamp) {
+      return 1;
+    }
+    return left.order - right.order;
   });
 }
 
@@ -458,7 +493,7 @@ function renderPointSelectionOutput() {
     }
   }
   els.pointSelectionOutput.innerHTML = chartOrder.map((chartId) => {
-    const chartSelections = groupedSelectionsForChart(selections.filter((selection) => selection.chartId === chartId));
+    const chartSelections = groupedSelectionsByTimestamp(selections.filter((selection) => selection.chartId === chartId));
     const title = chartSelections[0]?.chartTitle || chartTitleById(chartId);
     const rows = chartSelections.map((selection) => `
       <tr data-selection-id="${escapeHtml(selection.id)}">

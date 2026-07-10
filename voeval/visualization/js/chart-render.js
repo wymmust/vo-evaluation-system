@@ -4,7 +4,7 @@
 import { state } from "./state.js";
 import { chartIds } from "./constants.js";
 import { reportEntryMode, selectedChartIdsForEntryMode, visibleChartIdsForEntryMode, applyEntryModeChartVisibility } from "./entry-mode.js";
-import { ensurePointSelectionTools } from "./point-selection.js";
+import { detachPointSelectionEvents, ensurePointSelectionTools } from "./point-selection.js";
 import { attachCompositeOverlay } from "./composite-overlay.js";
 
 export function scheduleRenderCharts(report) {
@@ -78,6 +78,7 @@ function renderCharts(report, onlyChartId = null) {
 }
 
 function renderLiveFigure(figure) {
+  detachPointSelectionEvents(figure.id);
   Plotly.newPlot(figure.id, figure.data, figure.layout);
   if (figure.compositeRows && figure.compositeSpec) {
     attachCompositeOverlay(figure.id, figure.compositeRows, figure.compositeSpec);

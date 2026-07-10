@@ -6,7 +6,7 @@ import { state } from "./state.js";
 import { PLOTLY_SCRIPT_URL, VLOC_CHART_OPTIONS, VO_CHART_OPTIONS, POINT_SELECTION_COLORS } from "./constants.js";
 import { reportEntryMode } from "./entry-mode.js";
 import { metricItems } from "./metrics.js";
-import { ExportPointSelection } from "./point-selection.js";
+import { ExportPointSelection, groupedSelectionsByTimestamp } from "./point-selection.js";
 import { downloadText } from "./download-utils.js";
 import { evaluationExportFilename } from "./download-utils.js";
 import { escapeHtml, formatValue, safeJson } from "./utils.js";
@@ -51,6 +51,7 @@ export function buildHtmlReport(sourceReport = state.report || {}, options = {})
   // ── ExportPointSelection inline script ──
   // FR-005: 使用 ExportPointSelection 的函数定义而非复制重复代码
   const eps = ExportPointSelection;
+  const groupedSelectionsByTimestampSource = groupedSelectionsByTimestamp.toString();
   const exportScript = `
 window.__VO_EXPORT_REPORT__ = ${safeJson(report)};
 window.__VO_EXPORT_FIGURES__ = ${safeJson(figures)};
@@ -59,6 +60,7 @@ window.__VO_ACTIVE_CHART__ = null;
 window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = null;
 window.__VO_EXPORT_SELECTION_SEQUENCE__ = 0;
 const POINT_COLORS = ${safeJson(POINT_SELECTION_COLORS)};
+${groupedSelectionsByTimestampSource}
 function initExportPage() {
   renderAllCharts();
   document.querySelectorAll("#chartDirectory input").forEach((input) => {
@@ -219,7 +221,7 @@ function clearAllPointSelections() { window.__VO_EXPORT_SELECTIONS__ = []; windo
 function deleteFocusedExportPointSelection() { const target = window.__VO_EXPORT_SELECTIONS__.find((s) => s.id === window.__VO_EXPORT_FOCUSED_SELECTION_ID__); if (!target) return; window.__VO_EXPORT_SELECTIONS__ = window.__VO_EXPORT_SELECTIONS__.filter((s) => s.id !== target.id); window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = null; refreshExportChartSelectionMarkers(target.chartId); renderPointSelectionOutput(); }
 function isExportTextEditingTarget(target) { const tag = target?.tagName?.toLowerCase(); if (!tag) return false; if (target?.isContentEditable) return true; if (tag === "textarea" || tag === "select") return true; if (tag !== "input") return false; const type = String(target.type || "text").toLowerCase(); return !["button", "checkbox", "color", "file", "radio", "range", "reset", "submit"].includes(type); }
 function handleExportPointSelectionKeydown(event) { if (event.key !== "Delete" && event.key !== "Backspace") return; if (isExportTextEditingTarget(event.target)) return; if (window.__VO_EXPORT_FOCUSED_SELECTION_ID__) { event.preventDefault?.(); deleteFocusedExportPointSelection(); } }
-function renderPointSelectionOutput() { const section = document.getElementById("pointSelectionOutputSection"); const output = document.getElementById("pointSelectionOutput"); const selections = window.__VO_EXPORT_SELECTIONS__; section.hidden = selections.length === 0; if (!selections.length) { output.innerHTML = ""; return; } const chartIds = [...new Set(selections.map((s) => s.chartId))]; output.innerHTML = chartIds.map((chartId) => { const rows = selections.filter((s) => s.chartId === chartId); return '<div class="point-selection-card"><h3>' + escapeHtml(rows[0].chartTitle) + '</h3><table class="point-selection-table"><thead><tr><th>' + ${safeJson(LABELS.point_selection_table_header_trace)} + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_point)} + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_timestamp)} + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_value)} + '</th></tr></thead><tbody>' + rows.map((s) => '<tr><td>' + escapeHtml(s.traceName) + '</td><td><span class="selection-point-token" style="background:' + s.color + '">' + escapeHtml(s.markerText) + '</span></td><td>' + numberText(s.timestamp) + '</td><td>' + numberText(s.value) + '</td></tr>').join("") + '</tbody></table></div>'; }).join(""); }
+function renderPointSelectionOutput() { const section = document.getElementById("pointSelectionOutputSection"); const output = document.getElementById("pointSelectionOutput"); const selections = window.__VO_EXPORT_SELECTIONS__; section.hidden = selections.length === 0; if (!selections.length) { output.innerHTML = ""; return; } const chartIds = [...new Set(selections.map((s) => s.chartId))]; output.innerHTML = chartIds.map((chartId) => { const rows = groupedSelectionsByTimestamp(selections.filter((s) => s.chartId === chartId)); return '<div class="point-selection-card"><h3>' + escapeHtml(rows[0].chartTitle) + '</h3><table class="point-selection-table"><thead><tr><th>' + ${safeJson(LABELS.point_selection_table_header_trace)} + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_point)} + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_timestamp)} + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_value)} + '</th></tr></thead><tbody>' + rows.map((s) => '<tr><td>' + escapeHtml(s.traceName) + '</td><td><span class="selection-point-token" style="background:' + s.color + '">' + escapeHtml(s.markerText) + '</span></td><td>' + numberText(s.timestamp) + '</td><td>' + numberText(s.value) + '</td></tr>').join("") + '</tbody></table></div>'; }).join(""); }
 function numberText(value) { const number = Number(value); return Number.isFinite(number) ? number.toFixed(3) : escapeHtml(String(value ?? "N/A")); }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char])); }
 function cssEscape(value) { if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value); return String(value).replace(/'/g, "\\\\\\'"); }
