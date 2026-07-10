@@ -268,6 +268,7 @@ def evaluate_trajectory_result(
     used_gt_indices: list[np.ndarray] = []
     used_est_indices: list[np.ndarray] = []
     used_match_indices: list[np.ndarray] = []
+    alignments: list[dict[str, Any]] = []
     aligned_segments: list[AlignedSegmentResult] = []
     rpe_frame_export_frames: list[pd.DataFrame] = []
     scale_frame_export_frames: list[pd.DataFrame] = []
@@ -303,6 +304,8 @@ def evaluate_trajectory_result(
             alignment["segment_id"] = int(seg_id)
             alignment["start_match_index"] = start
             alignment["end_match_index"] = end
+            alignment["count"] = int(len(cur_gt_idx))
+            alignments.append(alignment)
             logger.debug(
                 "Segment alignment: segment_id=%d start=%d end=%d count=%d scale=%.12g",
                 int(seg_id),
@@ -539,6 +542,22 @@ def evaluate_trajectory_result(
         "dropped_matches": int(original_match_count - len(used_gt_idx)),
     }
 
+    alignment_report = None
+    if alignments:
+        scales = np.asarray([float(item["scale"]) for item in alignments], dtype=float)
+        alignment_report = {
+            "mode": "sim3" if len(alignments) == 1 else "per_segment",
+            "base_mode": "sim3",
+            "scale": float(np.mean(scales)),
+            "scale_min": float(np.min(scales)),
+            "scale_max": float(np.max(scales)),
+            "segment_count": int(len(alignments)),
+            "segments": alignments,
+        }
+        if len(alignments) == 1:
+            alignment_report["rotation"] = alignments[0]["rotation"]
+            alignment_report["translation"] = alignments[0]["translation"]
+
     # 14. summary 是页面第一屏指标卡的主要来源。
     #     coverage/path 是物流无人机长航程可用性扩展；
     #     这些扩展的动机来自 Schubert18 长序列 VIO 和 Delmerico18 飞行机器人 benchmark。
@@ -581,6 +600,8 @@ def evaluate_trajectory_result(
         "rpe_frame_delta": rpe,
         "per_pose": per_pose,
     }
+    if alignment_report is not None:
+        report["alignment"] = alignment_report
     if scale_frame_delta is not None:
         report["scale_frame_delta"] = scale_frame_delta
     logger.debug(

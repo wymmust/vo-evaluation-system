@@ -92,8 +92,7 @@ def _log_vo_result_summary(logger, report: dict[str, object], args: argparse.Nam
     alignment = report.get("alignment") or {}
     if isinstance(alignment, dict) and (alignment.get("base_mode") or alignment.get("mode")) == "sim3":
         logger.debug("Alignment summary: %s", alignment)
-        logger.info("\nSim3 对齐:")
-        logger.info(f"  Scale: {_format_cli_number(alignment.get('scale'))}")
+        _log_sim3_transforms(logger, alignment)
 
     logger.info("================================\n")
 
@@ -117,8 +116,10 @@ def _log_common_trajectory_summary(logger, report: dict[str, object], args: argp
         logger.info(f"RPE 平移误差 (delta={args.delta}{args.unit}):")
         logger.info(f"  RMSE: {_format_cli_number(rpe_trans.get('rmse'))} m")
         logger.info(f"  Mean: {_format_cli_number(rpe_trans.get('mean'))} m")
+        logger.info(f"  Median: {_format_cli_number(rpe_trans.get('median'))} m")
         logger.info(f"  Max:  {_format_cli_number(rpe_trans.get('max'))} m")
-        logger.info(f"  Count: {rpe.get('count', 'N/A')}")
+        logger.info(f"  Min:  {_format_cli_number(rpe_trans.get('min'))} m")
+        logger.info(f"  Count: {rpe.get('count', rpe_trans.get('count', 'N/A'))}")
 
     ate = report.get("ate_position_m") or {}
     if isinstance(ate, dict) and ate:
@@ -126,6 +127,66 @@ def _log_common_trajectory_summary(logger, report: dict[str, object], args: argp
         logger.info("\nATE 绝对轨迹误差:")
         logger.info(f"  RMSE: {_format_cli_number(ate.get('rmse'))} m")
         logger.info(f"  Mean: {_format_cli_number(ate.get('mean'))} m")
+        logger.info(f"  Median: {_format_cli_number(ate.get('median'))} m")
+        logger.info(f"  Max:  {_format_cli_number(ate.get('max'))} m")
+        logger.info(f"  Min:  {_format_cli_number(ate.get('min'))} m")
+
+    logger.info(f"\nSegment 数量: {_evaluated_segment_count(report)}")
+
+
+def _evaluated_segment_count(report: dict[str, object]) -> object:
+    """Return the number of continuous segments that actually entered evaluation."""
+
+    discontinuities = report.get("discontinuities") or {}
+    if isinstance(discontinuities, dict):
+        selected = discontinuities.get("selected_segment") or {}
+        if isinstance(selected, dict):
+            segments = selected.get("segments")
+            if isinstance(segments, list):
+                return len(segments)
+
+    alignment = report.get("alignment") or {}
+    if isinstance(alignment, dict) and alignment.get("segment_count") is not None:
+        return alignment["segment_count"]
+    return "N/A"
+
+
+def _log_sim3_transforms(logger, alignment: dict[str, object]) -> None:
+    """Print every evaluated VO segment's Sim3 scale, rotation, and translation."""
+
+    segments = alignment.get("segments")
+    if not isinstance(segments, list) or not segments:
+        segments = [alignment]
+
+    logger.info("\nSim3 变换:")
+    for index, segment in enumerate(segments):
+        if not isinstance(segment, dict):
+            continue
+        segment_id = segment.get("segment_id", index)
+        logger.info(f"  Segment {segment_id}:")
+        logger.info(f"    Scale: {_format_cli_number(segment.get('scale'))}")
+        logger.info("    Rotation:")
+        rotation = segment.get("rotation")
+        try:
+            rows = list(rotation)  # type: ignore[arg-type]
+        except TypeError:
+            rows = []
+        if rows:
+            for row in rows:
+                logger.info(f"      {_format_cli_vector(row)}")
+        else:
+            logger.info("      N/A")
+        logger.info(f"    Translation: {_format_cli_vector(segment.get('translation'))} m")
+
+
+def _format_cli_vector(values: object) -> str:
+    """Format a numeric vector or matrix row for compact CLI output."""
+
+    try:
+        items = list(values)  # type: ignore[arg-type]
+    except TypeError:
+        return "N/A"
+    return "[" + " ".join(_format_cli_number(item) for item in items) + "]"
 
 
 def _log_vloc_specific_metrics(logger, report: dict[str, object]) -> None:

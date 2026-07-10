@@ -566,9 +566,13 @@ def test_cli_vloc_outputs_common_summary_and_vloc_specific_metrics(tmp_path, mon
         "voeval.cli.evaluate_vloc_bundle",
         lambda bundle, config: {
             "inputs": {"entry_mode": "vloc"},
-            "rpe_frame_delta": {"translation_m": {"rmse": 0.75, "mean": 0.5, "max": 1.2}, "count": 9},
-            "ate_position_m": {"rmse": 1.25, "mean": 0.9},
+            "rpe_frame_delta": {
+                "translation_m": {"rmse": 0.75, "mean": 0.5, "median": 0.45, "max": 1.2, "min": 0.1},
+                "count": 9,
+            },
+            "ate_position_m": {"rmse": 1.25, "mean": 0.9, "median": 0.8, "max": 2.2, "min": 0.2},
             "alignment": {"base_mode": "none"},
+            "discontinuities": {"selected_segment": {"segments": [{"count": 5}, {"count": 4}]}},
             "vloc_details": {
                 "summary": {
                     "trajectory_length_m": 5645.292,
@@ -589,7 +593,14 @@ def test_cli_vloc_outputs_common_summary_and_vloc_specific_metrics(tmp_path, mon
     assert exit_code == 0
     assert "========== VLOC 评估结果 ==========" in captured.out
     assert "RPE 平移误差" in captured.out
+    assert "Median: 0.4500 m" in captured.out
+    assert "Min:  0.1000 m" in captured.out
+    assert "Count: 9" in captured.out
     assert "ATE 绝对轨迹误差" in captured.out
+    assert "Median: 0.8000 m" in captured.out
+    assert "Max:  2.2000 m" in captured.out
+    assert "Min:  0.2000 m" in captured.out
+    assert "Segment 数量: 2" in captured.out
     assert "VLOC 专项指标" in captured.out
     assert "trajectory_length_m: 5645.2920 m" in captured.out
     assert "mean_error_pos_xy: 4.7200 m" in captured.out
@@ -598,7 +609,61 @@ def test_cli_vloc_outputs_common_summary_and_vloc_specific_metrics(tmp_path, mon
     assert "max_error_pos_xy: 11.6413 m" in captured.out
     assert "max_error_pos_z: 7.9296 m" in captured.out
     assert "max_error_euler: 3.9636 deg" in captured.out
-    assert "Sim3 对齐" not in captured.out
+    assert "Sim3 变换" not in captured.out
+
+
+def test_cli_vo_outputs_complete_statistics_and_each_segment_sim3(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vo_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vo"},
+            "rpe_frame_delta": {
+                "translation_m": {"rmse": 3.8, "mean": 3.5, "median": 3.4, "max": 7.8, "min": 0.3},
+                "count": 55,
+            },
+            "ate_position_m": {"rmse": 19.2, "mean": 18.1, "median": 17.9, "max": 30.0, "min": 1.5},
+            "discontinuities": {"selected_segment": {"segments": [{"count": 30}, {"count": 25}]}},
+            "alignment": {
+                "base_mode": "sim3",
+                "segment_count": 2,
+                "segments": [
+                    {
+                        "segment_id": 0,
+                        "scale": 3.0,
+                        "rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        "translation": [1.0, 2.0, 3.0],
+                    },
+                    {
+                        "segment_id": 1,
+                        "scale": 4.0,
+                        "rotation": [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                        "translation": [4.0, 5.0, 6.0],
+                    },
+                ],
+            },
+        },
+    )
+
+    exit_code = cli_main(["sf_vo", str(tmp_path), str(tmp_path), "-d", "100", "-u", "m"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Median: 3.4000 m" in captured.out
+    assert "Min:  0.3000 m" in captured.out
+    assert "Count: 55" in captured.out
+    assert "Median: 17.9000 m" in captured.out
+    assert "Max:  30.0000 m" in captured.out
+    assert "Min:  1.5000 m" in captured.out
+    assert "Segment 数量: 2" in captured.out
+    assert "Sim3 变换:" in captured.out
+    assert "Segment 0:" in captured.out
+    assert "Scale: 3.0000" in captured.out
+    assert "[1.0000 0.0000 0.0000]" in captured.out
+    assert "Translation: [1.0000 2.0000 3.0000] m" in captured.out
+    assert "Segment 1:" in captured.out
+    assert "Scale: 4.0000" in captured.out
+    assert "Translation: [4.0000 5.0000 6.0000] m" in captured.out
 
 
 def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, capsys):
