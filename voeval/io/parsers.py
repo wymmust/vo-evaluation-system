@@ -11,15 +11,16 @@ from .formats import IMU_FIXED_COLUMNS, VLOC_FIXED_COLUMNS, VO_FIXED_COLUMNS
 from .trajectory import Trajectory
 
 def parse_imu_fixed(text: str, name: str = "imu.txt") -> Trajectory:
-    """按需求文档固定 21 列解析 IMU/nav GT。
+    """按需求文档读取 IMU/nav GT 的前 21 列。
 
     不根据表头猜列名；表头只会被当作非数字说明行跳过。
+    少于 21 列时拒绝，多余列允许存在但不参与评估。
     yaw/pitch/roll 固定为弧度。
     """
 
     from ..core.geometry import euler_yaw_pitch_roll_to_matrix
 
-    data = _read_fixed_numeric_table(text, len(IMU_FIXED_COLUMNS), name, "IMU")
+    data = _read_fixed_numeric_table(text, len(IMU_FIXED_COLUMNS), name, "IMU", allow_extra_columns=True)
     status = _require_integer_column(data[:, 2], name, "status")
     flight_mode = _require_integer_column(data[:, 3], name, "flight_mode")
     position_reset_count = _require_integer_column(data[:, 13], name, "position_reset_count")
@@ -54,14 +55,15 @@ def parse_imu_fixed(text: str, name: str = "imu.txt") -> Trajectory:
         source_format="sf_imu",
     )
 def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
-    """按需求文档固定 13 列解析 VLOC 输出。
+    """按需求文档读取 VLOC 输出的前 13 列。
 
-    不根据表头猜列名；yaw/pitch/roll 固定为角度。
+    不根据表头猜列名；少于 13 列时拒绝，多余列忽略。
+    yaw/pitch/roll 固定为角度。
     """
 
     from ..core.geometry import euler_yaw_pitch_roll_to_matrix
 
-    data = _read_fixed_numeric_table(text, len(VLOC_FIXED_COLUMNS), name, "VLOC")
+    data = _read_fixed_numeric_table(text, len(VLOC_FIXED_COLUMNS), name, "VLOC", allow_extra_columns=True)
     status = _require_integer_column(data[:, 1], name, "status")
     reset_count = _require_integer_column(data[:, 3], name, "reset_count")
     altitude_msl = np.abs(data[:, 6])
@@ -87,15 +89,15 @@ def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
         source_format="sf_vloc",
     )
 def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
-    """按需求文档固定 11 列解析 VO 输出。
+    """按需求文档读取 VO 输出的前 11 列。
 
     不根据表头猜列名；yaw/pitch/roll 固定为角度。
-    新版主线为 11 列；旧版 14 列会读取前 11 列，最后三列 depth 不参与评估。
+    少于 11 列时拒绝；11 列后的内容全部允许但不参与评估。
     """
 
     from ..core.geometry import euler_yaw_pitch_roll_to_matrix
 
-    data = _read_fixed_numeric_table(text, len(VO_FIXED_COLUMNS), name, "VO", legacy_column_counts={14: 11})
+    data = _read_fixed_numeric_table(text, len(VO_FIXED_COLUMNS), name, "VO", allow_extra_columns=True)
     is_keyframe = _require_integer_column(data[:, 8], name, "is_keyframe")
     reset_count = _require_integer_column(data[:, 10], name, "reset_count")
     extras = {
@@ -135,12 +137,12 @@ def _read_fixed_numeric_table(
     name: str,
     fmt_name: str,
     *,
-    legacy_column_counts: dict[int, int] | None = None,
+    allow_extra_columns: bool = False,
 ) -> np.ndarray:
     """读取固定列数字表。
 
     为了兼容文件首行写死的表头，非数字说明行只允许出现在第一条数据之前。
-    真正的数据行必须严格满足固定列数。
+    真正的数据行至少要包含所需列；允许扩展列时只读取前 expected_cols 列。
     """
 
     rows: list[list[float]] = []
@@ -149,19 +151,18 @@ def _read_fixed_numeric_table(
         if not line or line.startswith("#"):
             continue
         tokens = [token for token in re.split(r"[\s,;]+", line) if token]
+        parse_tokens = tokens[:expected_cols] if allow_extra_columns else tokens
         try:
-            values = [float(token) for token in tokens]
+            values = [float(token) for token in parse_tokens]
         except ValueError:
             if not rows:
                 continue
             raise ValueError(f"{name}: {fmt_name} line {line_no} contains non-numeric values after data started")
-        if legacy_column_counts and len(values) in legacy_column_counts:
-            values = values[: legacy_column_counts[len(values)]]
-        if len(values) != expected_cols:
-            legacy_note = ""
-            if legacy_column_counts:
-                legacy_note = " (or legacy " + ", ".join(str(item) for item in sorted(legacy_column_counts)) + ")"
-            raise ValueError(f"{name}: {fmt_name} format expects {expected_cols} columns{legacy_note}, got {len(values)} on line {line_no}")
+        if len(tokens) < expected_cols:
+            raise ValueError(f"{name}: {fmt_name} format expects at least {expected_cols} columns, got {len(tokens)} on line {line_no}")
+        if len(tokens) > expected_cols:
+            if not allow_extra_columns:
+                raise ValueError(f"{name}: {fmt_name} format expects {expected_cols} columns, got {len(tokens)} on line {line_no}")
         rows.append(values)
     if not rows:
         raise ValueError(f"{name}: {fmt_name} file contains no numeric data rows")

@@ -346,6 +346,32 @@ def test_vo_fixed_accepts_legacy_14_column_format_without_using_depth_columns():
     assert "raw_numeric_table" not in vo.extras
 
 
+def test_fixed_trajectory_parsers_accept_and_ignore_arbitrary_extra_columns():
+    def append_extra_columns(text: str) -> str:
+        lines = []
+        for line in text.splitlines():
+            tokens = line.split()
+            if not tokens:
+                lines.append(line)
+                continue
+            try:
+                [float(token) for token in tokens]
+            except ValueError:
+                lines.append(line)
+            else:
+                lines.append(f"{line} 901 ignored_text 903")
+        return "\n".join(lines) + "\n"
+
+    imu = parse_imu_fixed(append_extra_columns(sample_imu_text()), name="imu.txt")
+    vloc = parse_vloc_fixed(append_extra_columns(sample_vloc_text()), name="vloc.txt")
+    vo = parse_vo_fixed(append_extra_columns(sample_vo_text()), name="vo.txt")
+
+    assert np.allclose(imu.positions[0], [1, 2, 3])
+    assert np.allclose(vloc.positions[0], [11, 12, 13])
+    assert np.allclose(vo.positions[0], [21, 22, 23])
+    assert np.allclose(vo.extras["time_cost"], [12.5, 13.5])
+
+
 def test_fixed_parsers_do_not_keep_raw_numeric_tables_and_validate_integer_columns():
     imu = parse_imu_fixed(sample_imu_text(), name="imu.txt")
     vloc = parse_vloc_fixed(sample_vloc_text(), name="vloc.txt")
@@ -1074,10 +1100,17 @@ def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
     assert {"num_inliers", "is_keyframe", "time_cost", "reset_count"}.issubset(details["vo_status"].columns)
 
 
-def test_fixed_parser_rejects_wrong_column_count():
-    bad_vloc = "10.0 2 42 0 11 12 13 90 2 -1 31.1 121.2\n"
-    with pytest.raises(ValueError, match="13 columns"):
-        parse_vloc_fixed(bad_vloc, name="vloc.txt")
+@pytest.mark.parametrize(
+    ("parser", "text", "minimum"),
+    [
+        (parse_imu_fixed, "0 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18\n", 21),
+        (parse_vloc_fixed, "10 2 42 0 11 12 13 90 2 -1 31.1 121.2\n", 13),
+        (parse_vo_fixed, "10 42 21 22 23 90 2 -1 1 12.5\n", 11),
+    ],
+)
+def test_fixed_parser_rejects_fewer_than_required_columns(parser, text, minimum):
+    with pytest.raises(ValueError, match=rf"at least {minimum} columns"):
+        parser(text)
 
 
 def test_rpe_distance_mode_uses_evo_consecutive_estimate_path_pairs():
