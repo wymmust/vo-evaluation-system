@@ -39,6 +39,63 @@ def test_live_point_selection_rows_are_grouped_then_sorted_by_ascending_timestam
     ]
 
 
+def test_distance_based_figures_keep_timestamp_with_distance_fallback_metadata():
+    script = textwrap.dedent(
+        """
+        globalThis.document = { getElementById() { return null; } };
+        const { buildVisualizationFigureSpecs } = await import("./voeval/visualization/visualization/figure_specs.js");
+        const { ExportPointSelection } = await import("./voeval/visualization/js/point-selection.js");
+
+        const vlocRows = [
+          { timestamp: 10, distance_m: 0, visual_segment_id: 0, nav_n_m: 1, nav_e_m: 2, nav_d_m: 3, vloc_n_m: 1.1, vloc_e_m: 2.1, vloc_d_m: 3.1, position_error_3d_m: 0.2, horizontal_position_error_m: 0.1, vertical_position_error_abs_m: 0.1 },
+          { timestamp: null, distance_m: 5, visual_segment_id: 0, nav_n_m: 4, nav_e_m: 5, nav_d_m: 6, vloc_n_m: 4.1, vloc_e_m: 5.1, vloc_d_m: 6.1, position_error_3d_m: 0.3, horizontal_position_error_m: 0.2, vertical_position_error_abs_m: 0.1 },
+        ];
+        const voRows = [
+          { timestamp: 20, distance_m: 8, visual_segment_id: 0, nav_x_m: 1, nav_y_m: 2, nav_z_m: 3, vo_x_aligned_m: 1.1, vo_y_aligned_m: 2.1, vo_z_aligned_m: 3.1, position_error_3d_m: 0.2, horizontal_position_error_m: 0.1 },
+        ];
+        const vlocFigures = buildVisualizationFigureSpecs({ inputs: { entry_mode: "vloc" }, vloc_details: { comparison: vlocRows, nav_status: [], vloc_status: [] } });
+        const voFigures = buildVisualizationFigureSpecs({ inputs: { entry_mode: "vo" }, vo_details: { comparison: voRows, nav_status: [], vo_status: [] }, trajectory_exports: {} });
+        const trajectoryMeta = vlocFigures.find((figure) => figure.id === "trajectoryXY").data[0].customdata;
+        const vlocErrorMeta = vlocFigures.find((figure) => figure.id === "errorDistance").data[0].customdata;
+        const voErrorMeta = voFigures.find((figure) => figure.id === "errorDistance").data[0].customdata;
+        const fallbackPoint = { data: { customdata: [{ timestamp: null, distance: 5 }] }, pointNumber: 0, x: 999 };
+        process.stdout.write(JSON.stringify({
+          trajectoryMeta,
+          vlocErrorMeta,
+          voErrorMeta,
+          fallbackTimestamp: ExportPointSelection.exportPointTimestamp(fallbackPoint),
+          fallbackDistance: ExportPointSelection.exportPointDistance(fallbackPoint),
+        }));
+        """
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["trajectoryMeta"] == [
+        {"timestamp": 10, "distance": 0},
+        {"timestamp": None, "distance": 5},
+    ]
+    assert payload["vlocErrorMeta"] == payload["trajectoryMeta"]
+    assert payload["voErrorMeta"] == [{"timestamp": 20, "distance": 8}]
+    assert payload["fallbackTimestamp"] is None
+    assert payload["fallbackDistance"] == 5
+
+
+def test_export_hover_uses_trace_metadata_instead_of_axis_x_as_timestamp():
+    source = Path("voeval/visualization/js/html-export.js").read_text()
+
+    assert "const timestamp = point?.x" not in source
+    assert "timestamp: exportPointTimestamp(point)" in source
+    assert "distance: exportPointDistance(point)" in source
+    assert "nearestExportTracePoint(trace, coordinate)" in source
+    assert "exportTraceCoordinate(trace, index, coordinate.kind)" in source
+
+
 def test_live_point_selection_events_can_rebind_after_chart_redraw():
     script = textwrap.dedent(
         """

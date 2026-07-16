@@ -52,9 +52,11 @@ export const LABELS = {
   point_selection_table_header_trace: "线",
   point_selection_table_header_point: "点",
   point_selection_table_header_timestamp: "时间戳",
+  point_selection_table_header_distance: "距离",
+  point_selection_table_header_coordinate: "时间戳 / 距离",
   point_selection_table_header_value: "值",
   point_selection_output_title: "输出对比",
-  point_selection_output_hint: "选取图中点后，这里按图表和曲线汇总；曲线按首次选取顺序排列，同一曲线内按时间戳升序显示。",
+  point_selection_output_hint: "选取图中点后，这里按图表和曲线汇总；曲线按首次选取顺序排列，同一曲线内优先按时间戳、无法映射时按距离升序显示。",
   point_selection_clear_all: "清除所有点",
 
   // 消息
@@ -75,7 +77,7 @@ export const LABELS = {
   html_report_chart_directory_title: "图表目录",
   html_report_chart_directory_hint: "选择右侧展示的图表；导出的报告默认全开。",
   html_report_point_output_title: "输出对比",
-  html_report_point_output_hint: "选取图中点后，这里按图表和曲线汇总；曲线按首次选取顺序排列，同一曲线内按时间戳升序显示。",
+  html_report_point_output_hint: "选取图中点后，这里按图表和曲线汇总；曲线按首次选取顺序排列，同一曲线内优先按时间戳、无法映射时按距离升序显示。",
   html_report_select_all: "全选",
   html_report_clear_charts: "清除",
   html_report_select_point: "选点",
@@ -84,6 +86,7 @@ export const LABELS = {
   html_report_selectable_label: "Selectable chart",
   html_report_chart_label: "Chart",
   html_report_composite_timestamp_prefix: "当前时间戳",
+  html_report_composite_distance_prefix: "当前距离",
   html_report_composite_range_prefix: "选区",
   html_report_no_data: "没有可用数据",
 

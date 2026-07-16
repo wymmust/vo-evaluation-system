@@ -96,6 +96,21 @@ export function segmentedValues(rows, columns, segmentField = null) {
   return outputs;
 }
 
+export function timestampDistanceMetadata(timestamps, distances) {
+  return timestamps.map((timestamp, index) => ({
+    timestamp: finiteMetadataNumber(timestamp),
+    distance: finiteMetadataNumber(distances?.[index]),
+  }));
+}
+
+function finiteMetadataNumber(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 export function unwrapDegrees(values) {
   const out = [];
   let previousRaw = null;
@@ -188,11 +203,11 @@ function buildVlocVisualizationFigureSpecs(report, options = {}) {
     }),
   ], layout("3D 轨迹", { height: figureHeight(options, 380, 640), scene: { xaxis: { title: "north m" }, yaxis: { title: "east m" }, zaxis: { title: "down m" } } }), { pickable: false }));
 
-  const [navN, navE, navTime] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "timestamp"]);
-  const [vlocN, vlocE, vlocTime] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "timestamp"]);
+  const [navN, navE, navTime, navDistance] = segmentedValues(rows, ["nav_n_m", "nav_e_m", "timestamp", "distance_m"]);
+  const [vlocN, vlocE, vlocTime, vlocDistance] = segmentedValues(rows, ["vloc_n_m", "vloc_e_m", "timestamp", "distance_m"]);
   figures.push(visualizationFigureSpec("trajectoryXY", "俯视 NE 轨迹", [
-    { x: navN, y: navE, customdata: navTime, mode: "lines", type: "scatter", name: "nav" },
-    { x: vlocN, y: vlocE, customdata: vlocTime, mode: "lines", type: "scatter", name: "vloc" },
+    { x: navN, y: navE, customdata: timestampDistanceMetadata(navTime, navDistance), mode: "lines", type: "scatter", name: "nav" },
+    { x: vlocN, y: vlocE, customdata: timestampDistanceMetadata(vlocTime, vlocDistance), mode: "lines", type: "scatter", name: "vloc" },
   ], layout("俯视 NE 轨迹", { height: figureHeight(options, 380, 560), xaxis: { title: "north m" }, yaxis: { title: "east m", scaleanchor: "x" } })));
 
   figures.push(multiFieldTimeFigure("errorDistance", "误差随路程变化", rows, [
@@ -304,8 +319,8 @@ function buildVoVisualizationFigureSpecs(report, options = {}) {
   const [dist3d, err3d, errT] = segmentedValues(rows, ["distance_m", positionErrorNormField, "timestamp"]);
   const [distH, errH, errHT] = segmentedValues(rows, ["distance_m", horizontalErrorField, "timestamp"]);
   figures.push(visualizationFigureSpec("errorDistance", "ATE 绝对位姿误差", [
-    { x: dist3d, y: err3d, customdata: errT, mode: "lines", type: "scatter", name: "3D error" },
-    { x: distH, y: errH, customdata: errHT, mode: "lines", type: "scatter", name: "horizontal" },
+    { x: dist3d, y: err3d, customdata: timestampDistanceMetadata(errT, dist3d), mode: "lines", type: "scatter", name: "3D error" },
+    { x: distH, y: errH, customdata: timestampDistanceMetadata(errHT, distH), mode: "lines", type: "scatter", name: "horizontal" },
   ], layout("ATE 绝对位姿误差", { height: figureHeight(options, 380, 560), xaxis: { title: "distance m" }, yaxis: { title: "error m" } })));
   figures.push(multiFieldTimeFigure("navStatusModes", "导航状态信息", navStatus, [
     { field: "flight_mode", name: "flight_mode" },
@@ -391,7 +406,10 @@ function multiFieldTimeFigure(id, title, rows, specs, options = {}) {
   const traces = specs.map((spec) => {
     const [xValues, yValues, timestamps] = segmentedValues(rows, [xField, spec.field, "timestamp"]);
     const displayY = spec.unwrap ? unwrapDegrees(yValues) : yValues;
-    return { x: xValues, y: displayY, customdata: timestamps, mode: "lines", type: "scatter", name: spec.name || spec.field };
+    const customdata = xField === "distance_m"
+      ? timestampDistanceMetadata(timestamps, xValues)
+      : timestamps;
+    return { x: xValues, y: displayY, customdata, mode: "lines", type: "scatter", name: spec.name || spec.field };
   });
   return visualizationFigureSpec(id, title, traces, layout(title, {
     height: figureHeight(options, 380, 560),
@@ -544,5 +562,4 @@ function singleCompositeFigure(id, label, rows, spec, options = {}) {
     compositeSpec: isExportFigure(options) ? undefined : spec,
   });
 }
-
 

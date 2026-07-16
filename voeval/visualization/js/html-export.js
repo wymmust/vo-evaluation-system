@@ -124,14 +124,24 @@ function renderExportCompositeHoverOverlay(chartId, eventData) {
   const overlay = ensureExportCompositeOverlay(chartId);
   if (!overlay) return;
   const point = eventData?.points?.[0];
+  const coordinate = exportSelectionCoordinate({
+    timestamp: exportPointTimestamp(point),
+    distance: exportPointDistance(point),
+  });
+  if (!coordinate) {
+    hideExportCompositeOverlay(chartId);
+    return;
+  }
   const mouse = exportMousePosition(eventData, overlay.plot);
   const x = exportCrosshairX(point, mouse.x);
-  const timestamp = point?.x;
   overlay.crosshair.style.left = Math.round(x) + "px";
   overlay.crosshair.style.top = "0px";
   overlay.crosshair.style.bottom = "0px";
   overlay.crosshair.style.display = "block";
-  overlay.tooltip.innerHTML = "<strong>" + ${safeJson(LABELS.html_report_composite_timestamp_prefix)} + " " + numberText(timestamp) + " s</strong><div>" + exportAllHoverChips(chartId, timestamp) + "</div>";
+  const coordinatePrefix = coordinate.kind === "timestamp"
+    ? ${safeJson(LABELS.html_report_composite_timestamp_prefix)}
+    : ${safeJson(LABELS.html_report_composite_distance_prefix)};
+  overlay.tooltip.innerHTML = "<strong>" + coordinatePrefix + " " + numberText(coordinate.value) + " " + coordinate.unit + "</strong><div>" + exportAllHoverChips(chartId, coordinate) + "</div>";
   positionExportTooltip(overlay.tooltip, overlay.plot, mouse);
   overlay.tooltip.style.display = "block";
 }
@@ -145,24 +155,37 @@ function exportCrosshairX(point, mouseX) {
   if (axis && typeof axis.l2p === "function") { const axisOffset = Number(axis._offset || 0); const axisPixel = Number(axis.l2p(point.x)); if (Number.isFinite(axisPixel)) { return axisOffset + axisPixel; } }
   return Number.isFinite(Number(mouseX)) ? Number(mouseX) : 0;
 }
-function exportAllHoverChips(chartId, timestamp) {
+function exportAllHoverChips(chartId, coordinate) {
   const figure = window.__VO_EXPORT_FIGURES__.find((item) => item.id === chartId);
-  const target = Number(timestamp);
-  if (!figure || !Number.isFinite(target)) return ${safeJson(LABELS.html_report_no_data)};
+  if (!figure || !coordinate || !Number.isFinite(Number(coordinate.value))) return ${safeJson(LABELS.html_report_no_data)};
   const chips = [];
   for (const trace of figure.data || []) {
     if (trace?.type === "scatter3d" || trace?.meta?.pointSelectionMarker || trace?.meta?.pointSelectionHitTarget) continue;
-    const point = nearestExportTracePoint(trace, target);
+    const point = nearestExportTracePoint(trace, coordinate);
     if (!point) continue;
     chips.push('<span class="metric-chip"><strong>' + escapeHtml(trace.name || "trace") + '</strong><span class="metric-chip-value">' + numberText(point.y) + '</span></span>');
   }
   return chips.join("") || ${safeJson(LABELS.html_report_no_data)};
 }
-function nearestExportTracePoint(trace, target) {
+function exportTraceCoordinate(trace, index, kind) {
+  const custom = Array.isArray(trace?.customdata) ? trace.customdata[index] : undefined;
+  if (custom !== undefined) {
+    const value = typeof custom === "object" && custom !== null
+      ? custom[kind]
+      : kind === "timestamp"
+        ? custom
+        : undefined;
+    return finiteExportCoordinate(value);
+  }
+  return finiteExportCoordinate(trace?.x?.[index]);
+}
+function nearestExportTracePoint(trace, coordinate) {
   const xs = Array.isArray(trace?.x) ? trace.x : [];
   const ys = Array.isArray(trace?.y) ? trace.y : [];
+  const target = Number(coordinate?.value);
+  if (!Number.isFinite(target)) return null;
   let bestIndex = -1; let bestDiff = Infinity;
-  for (let index = 0; index < xs.length; index += 1) { const x = Number(xs[index]); const y = Number(ys[index]); if (!Number.isFinite(x) || !Number.isFinite(y)) continue; const diff = Math.abs(x - target); if (diff < bestDiff) { bestDiff = diff; bestIndex = index; } }
+  for (let index = 0; index < xs.length; index += 1) { const x = Number(xs[index]); const y = Number(ys[index]); const value = exportTraceCoordinate(trace, index, coordinate.kind); if (!Number.isFinite(x) || !Number.isFinite(y) || value === null) continue; const diff = Math.abs(value - target); if (diff < bestDiff) { bestDiff = diff; bestIndex = index; } }
   if (bestIndex < 0) return null;
   return { x: Number(xs[bestIndex]), y: Number(ys[bestIndex]), index: bestIndex };
 }
@@ -191,7 +214,7 @@ function recordPointSelection(figure, eventData) {
   const colorSlot = nextExportPointColorSlot();
   const colorMeta = exportPointColorMeta(colorSlot);
   const traceName = point.data?.name || "trace " + (Number(point.curveNumber) + 1);
-  const selection = { id: "p" + Date.now() + "_" + order, order, colorSlot, chartId: figure.id, chartTitle: figure.label, traceName, timestamp: exportPointTimestamp(point), value: exportPointValueText(figure.id, point), color: colorMeta.color, markerText: colorMeta.text, x: Number(point.x), y: Number(point.y), xaxis: point.data?.xaxis || "x", yaxis: point.data?.yaxis || "y" };
+  const selection = { id: "p" + Date.now() + "_" + order, order, colorSlot, chartId: figure.id, chartTitle: figure.label, traceName, timestamp: exportPointTimestamp(point), distance: exportPointDistance(point), value: exportPointValueText(figure.id, point), color: colorMeta.color, markerText: colorMeta.text, x: Number(point.x), y: Number(point.y), xaxis: point.data?.xaxis || "x", yaxis: point.data?.yaxis || "y" };
   window.__VO_EXPORT_SELECTIONS__.push(selection);
   window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = selection.id;
   refreshExportChartSelectionMarkers(figure.id);
@@ -201,13 +224,19 @@ function exportPointColorMeta(slot) { const zeroIndex = Math.max(0, slot - 1); c
 function nextExportPointColorSlot() { const used = new Set(window.__VO_EXPORT_SELECTIONS__.map((s) => s.colorSlot).filter((slot) => Number.isFinite(Number(slot)))); let slot = 1; while (used.has(slot)) { slot += 1; } return slot; }
 function refreshExportPointModeState(chartId) { const card = document.querySelector(".chart-card[data-chart-id='" + cssEscape(chartId) + "']"); if (card) { card.classList.toggle("point-selection-active", card.dataset.chartId === window.__VO_ACTIVE_CHART__); } }
 function refreshAllExportPointModeStates() { document.querySelectorAll(".chart-card").forEach((card) => { card.classList.toggle("point-selection-active", card.dataset.chartId === window.__VO_ACTIVE_CHART__); }); }
-function exportSelectionMarkerTrace(selection) { return { x: [selection.x], y: [selection.y], mode: selection.markerText ? "markers+text" : "markers", type: "scatter", name: "选点 " + selection.order, text: selection.markerText ? [selection.markerText] : [""], textposition: "middle center", textfont: { color: "#ffffff", size: 9, family: "Arial, sans-serif" }, marker: { color: selection.color, size: 9, symbol: "circle", line: { width: 0 } }, customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }], meta: { pointSelectionMarker: true, selectionId: selection.id }, xaxis: selection.xaxis, yaxis: selection.yaxis, showlegend: false, hovertemplate: escapeHtml(selection.traceName) + "<br>timestamp=%{customdata.timestamp:.3f}<br>value=" + escapeHtml(String(selection.value)) + "<extra></extra>" }; }
-function exportSelectionHitTargetTrace(selection) { return { x: [selection.x], y: [selection.y], mode: "markers", type: "scatter", name: "选点命中 " + selection.order, marker: { color: selection.color, size: 24, opacity: 0.04, symbol: "circle", line: { width: 0 } }, customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }], meta: { pointSelectionHitTarget: true, selectionId: selection.id }, xaxis: selection.xaxis, yaxis: selection.yaxis, showlegend: false, hoverinfo: "none" }; }
+function exportSelectionMarkerTrace(selection) { return { x: [selection.x], y: [selection.y], mode: selection.markerText ? "markers+text" : "markers", type: "scatter", name: "选点 " + selection.order, text: selection.markerText ? [selection.markerText] : [""], textposition: "middle center", textfont: { color: "#ffffff", size: 9, family: "Arial, sans-serif" }, marker: { color: selection.color, size: 9, symbol: "circle", line: { width: 0 } }, customdata: [{ selectionId: selection.id }], meta: { pointSelectionMarker: true, selectionId: selection.id }, xaxis: selection.xaxis, yaxis: selection.yaxis, showlegend: false, hovertemplate: escapeHtml(selection.traceName) + exportSelectionCoordinateHover(selection) + "<br>value=" + escapeHtml(String(selection.value)) + "<extra></extra>" }; }
+function exportSelectionHitTargetTrace(selection) { return { x: [selection.x], y: [selection.y], mode: "markers", type: "scatter", name: "选点命中 " + selection.order, marker: { color: selection.color, size: 24, opacity: 0.04, symbol: "circle", line: { width: 0 } }, customdata: [{ selectionId: selection.id }], meta: { pointSelectionHitTarget: true, selectionId: selection.id }, xaxis: selection.xaxis, yaxis: selection.yaxis, showlegend: false, hoverinfo: "none" }; }
 function isExportSelectionTrace(trace) { return Boolean(trace?.meta?.pointSelectionMarker || trace?.meta?.pointSelectionHitTarget); }
 function exportSelectionFromMarkerPoint(point) { if (!isExportSelectionTrace(point?.data)) return null; const markerData = Array.isArray(point.data.customdata) ? point.data.customdata[point.pointNumber] : null; const selectionId = markerData?.selectionId || point.data?.meta?.selectionId; return window.__VO_EXPORT_SELECTIONS__.find((s) => s.id === selectionId) || null; }
-function exportPointTimestamp(point) { const custom = Array.isArray(point?.data?.customdata) ? point.data.customdata[point.pointNumber] : undefined; const customTimestamp = typeof custom === "object" && custom !== null ? custom.timestamp : custom; const timestamp = Number(customTimestamp); if (Number.isFinite(timestamp)) { return timestamp; } const x = Number(point?.x); return Number.isFinite(x) ? x : null; }
+function finiteExportCoordinate(value) { if (value === null || value === undefined || value === "") return null; const number = Number(value); return Number.isFinite(number) ? number : null; }
+function exportPointTimestamp(point) { const custom = Array.isArray(point?.data?.customdata) ? point.data.customdata[point.pointNumber] : undefined; const customTimestamp = typeof custom === "object" && custom !== null ? custom.timestamp : custom; return finiteExportCoordinate(customTimestamp); }
+function exportPointDistance(point) { const custom = Array.isArray(point?.data?.customdata) ? point.data.customdata[point.pointNumber] : undefined; const customDistance = typeof custom === "object" && custom !== null ? custom.distance : undefined; return finiteExportCoordinate(customDistance); }
+function exportSelectionCoordinate(selection) { const timestamp = finiteExportCoordinate(selection.timestamp); if (timestamp !== null) return { kind: "timestamp", value: timestamp, label: ${safeJson(LABELS.point_selection_table_header_timestamp)}, unit: "s" }; const distance = finiteExportCoordinate(selection.distance); if (distance !== null) return { kind: "distance", value: distance, label: ${safeJson(LABELS.point_selection_table_header_distance)}, unit: "m" }; return null; }
+function exportSelectionCoordinateHeader(selections) { const kinds = new Set(selections.map((selection) => exportSelectionCoordinate(selection)?.kind).filter(Boolean)); if (kinds.size === 1 && kinds.has("timestamp")) return ${safeJson(LABELS.point_selection_table_header_timestamp)}; if (kinds.size === 1 && kinds.has("distance")) return ${safeJson(LABELS.point_selection_table_header_distance)}; return ${safeJson(LABELS.point_selection_table_header_coordinate)}; }
+function exportSelectionCoordinateText(selection) { const coordinate = exportSelectionCoordinate(selection); return coordinate ? numberText(coordinate.value) + " " + coordinate.unit : "N/A"; }
+function exportSelectionCoordinateHover(selection) { const coordinate = exportSelectionCoordinate(selection); return coordinate ? "<br>" + escapeHtml(coordinate.label) + "=" + numberText(coordinate.value) + " " + coordinate.unit : ""; }
 function exportPointValueText(chartId, point) { const x = Number(point?.x); const y = Number(point?.y); if (chartId === "trajectoryXY") { return "north=" + numberText(x) + ", east=" + numberText(y); } return numberText(y); }
-function existingExportPointSelectionForPoint(chartId, point) { const traceName = point?.data?.name || "trace " + (Number(point?.curveNumber) + 1); const timestamp = exportPointTimestamp(point); const x = Number(point?.x); const y = Number(point?.y); return window.__VO_EXPORT_SELECTIONS__.find((s) => { if (s.chartId !== chartId || s.traceName !== traceName) return false; const sameVisiblePoint = numbersClose(s.x, x) && numbersClose(s.y, y); if (Number.isFinite(timestamp) && Number.isFinite(Number(s.timestamp))) { return numbersClose(s.timestamp, timestamp) && sameVisiblePoint; } return sameVisiblePoint; }) || null; }
+function existingExportPointSelectionForPoint(chartId, point) { const traceName = point?.data?.name || "trace " + (Number(point?.curveNumber) + 1); const timestamp = exportPointTimestamp(point); const distance = exportPointDistance(point); const x = Number(point?.x); const y = Number(point?.y); return window.__VO_EXPORT_SELECTIONS__.find((s) => { if (s.chartId !== chartId || s.traceName !== traceName) return false; const sameVisiblePoint = numbersClose(s.x, x) && numbersClose(s.y, y); if (Number.isFinite(timestamp) && Number.isFinite(Number(s.timestamp))) { return numbersClose(s.timestamp, timestamp) && sameVisiblePoint; } if (Number.isFinite(distance) && Number.isFinite(Number(s.distance))) { return numbersClose(s.distance, distance) && sameVisiblePoint; } return sameVisiblePoint; }) || null; }
 function focusExportPointSelectionFromEvent(chartId, eventData) { const points = exportEventPoints(eventData); for (const point of points) { const selection = exportSelectionFromMarkerPoint(point); if (selection) { window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = selection.id; return true; } } for (const point of points) { const selection = existingExportPointSelectionForPoint(chartId, point); if (selection) { window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = selection.id; return true; } } return false; }
 function exportEventPoints(eventData) { return Array.isArray(eventData?.points) ? eventData.points.filter(Boolean) : []; }
 function firstExportSelectablePlotPoint(eventData) { return exportEventPoints(eventData).find((point) => !isExportSelectionTrace(point.data)) || null; }
@@ -221,7 +250,7 @@ function clearAllPointSelections() { window.__VO_EXPORT_SELECTIONS__ = []; windo
 function deleteFocusedExportPointSelection() { const target = window.__VO_EXPORT_SELECTIONS__.find((s) => s.id === window.__VO_EXPORT_FOCUSED_SELECTION_ID__); if (!target) return; window.__VO_EXPORT_SELECTIONS__ = window.__VO_EXPORT_SELECTIONS__.filter((s) => s.id !== target.id); window.__VO_EXPORT_FOCUSED_SELECTION_ID__ = null; refreshExportChartSelectionMarkers(target.chartId); renderPointSelectionOutput(); }
 function isExportTextEditingTarget(target) { const tag = target?.tagName?.toLowerCase(); if (!tag) return false; if (target?.isContentEditable) return true; if (tag === "textarea" || tag === "select") return true; if (tag !== "input") return false; const type = String(target.type || "text").toLowerCase(); return !["button", "checkbox", "color", "file", "radio", "range", "reset", "submit"].includes(type); }
 function handleExportPointSelectionKeydown(event) { if (event.key !== "Delete" && event.key !== "Backspace") return; if (isExportTextEditingTarget(event.target)) return; if (window.__VO_EXPORT_FOCUSED_SELECTION_ID__) { event.preventDefault?.(); deleteFocusedExportPointSelection(); } }
-function renderPointSelectionOutput() { const section = document.getElementById("pointSelectionOutputSection"); const output = document.getElementById("pointSelectionOutput"); const selections = window.__VO_EXPORT_SELECTIONS__; section.hidden = selections.length === 0; if (!selections.length) { output.innerHTML = ""; return; } const chartIds = [...new Set(selections.map((s) => s.chartId))]; output.innerHTML = chartIds.map((chartId) => { const rows = groupedSelectionsByTimestamp(selections.filter((s) => s.chartId === chartId)); return '<div class="point-selection-card"><h3>' + escapeHtml(rows[0].chartTitle) + '</h3><table class="point-selection-table"><thead><tr><th>' + ${safeJson(LABELS.point_selection_table_header_trace)} + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_point)} + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_timestamp)} + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_value)} + '</th></tr></thead><tbody>' + rows.map((s) => '<tr><td>' + escapeHtml(s.traceName) + '</td><td><span class="selection-point-token" style="background:' + s.color + '">' + escapeHtml(s.markerText) + '</span></td><td>' + numberText(s.timestamp) + '</td><td>' + numberText(s.value) + '</td></tr>').join("") + '</tbody></table></div>'; }).join(""); }
+function renderPointSelectionOutput() { const section = document.getElementById("pointSelectionOutputSection"); const output = document.getElementById("pointSelectionOutput"); const selections = window.__VO_EXPORT_SELECTIONS__; section.hidden = selections.length === 0; if (!selections.length) { output.innerHTML = ""; return; } const chartIds = [...new Set(selections.map((s) => s.chartId))]; output.innerHTML = chartIds.map((chartId) => { const rows = groupedSelectionsByTimestamp(selections.filter((s) => s.chartId === chartId)); const coordinateHeader = exportSelectionCoordinateHeader(rows); return '<div class="point-selection-card"><h3>' + escapeHtml(rows[0].chartTitle) + '</h3><table class="point-selection-table"><thead><tr><th>' + ${safeJson(LABELS.point_selection_table_header_trace)} + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_point)} + '</th><th>' + coordinateHeader + '</th><th>' + ${safeJson(LABELS.point_selection_table_header_value)} + '</th></tr></thead><tbody>' + rows.map((s) => '<tr><td>' + escapeHtml(s.traceName) + '</td><td><span class="selection-point-token" style="background:' + s.color + '">' + escapeHtml(s.markerText) + '</span></td><td>' + exportSelectionCoordinateText(s) + '</td><td>' + numberText(s.value) + '</td></tr>').join("") + '</tbody></table></div>'; }).join(""); }
 function numberText(value) { const number = Number(value); return Number.isFinite(number) ? number.toFixed(3) : escapeHtml(String(value ?? "N/A")); }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char])); }
 function cssEscape(value) { if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value); return String(value).replace(/'/g, "\\\\\\'"); }

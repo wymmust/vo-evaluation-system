@@ -159,12 +159,57 @@ function isSelectionMarkerTrace(trace) {
 function pointTimestamp(point) {
   const custom = Array.isArray(point?.data?.customdata) ? point.data.customdata[point.pointNumber] : undefined;
   const customTimestamp = typeof custom === "object" && custom !== null ? custom.timestamp : custom;
-  const timestamp = Number(customTimestamp);
-  if (Number.isFinite(timestamp)) {
-    return timestamp;
+  return finiteSelectionNumber(customTimestamp);
+}
+
+function pointDistance(point) {
+  const custom = Array.isArray(point?.data?.customdata) ? point.data.customdata[point.pointNumber] : undefined;
+  const customDistance = typeof custom === "object" && custom !== null ? custom.distance : undefined;
+  return finiteSelectionNumber(customDistance);
+}
+
+function finiteSelectionNumber(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
   }
-  const x = Number(point?.x);
-  return Number.isFinite(x) ? x : null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function selectionCoordinate(selection) {
+  const timestamp = finiteSelectionNumber(selection.timestamp);
+  if (timestamp !== null) {
+    return { kind: "timestamp", value: timestamp, label: LABELS.point_selection_table_header_timestamp, unit: "s" };
+  }
+  const distance = finiteSelectionNumber(selection.distance);
+  if (distance !== null) {
+    return { kind: "distance", value: distance, label: LABELS.point_selection_table_header_distance, unit: "m" };
+  }
+  return null;
+}
+
+function selectionCoordinateHeader(selections) {
+  const kinds = new Set(selections.map((selection) => selectionCoordinate(selection)?.kind).filter(Boolean));
+  if (kinds.size === 1 && kinds.has("timestamp")) {
+    return LABELS.point_selection_table_header_timestamp;
+  }
+  if (kinds.size === 1 && kinds.has("distance")) {
+    return LABELS.point_selection_table_header_distance;
+  }
+  return LABELS.point_selection_table_header_coordinate;
+}
+
+function selectionCoordinateText(selection) {
+  const coordinate = selectionCoordinate(selection);
+  return coordinate ? `${formatPointNumber(coordinate.value)} ${coordinate.unit}` : "N/A";
+}
+
+function selectionCoordinateHover(selection) {
+  const coordinate = selectionCoordinate(selection);
+  if (!coordinate) {
+    return "";
+  }
+  return `<br>${escapeHtml(coordinate.label)}=${formatPointNumber(coordinate.value)} ${coordinate.unit}`;
 }
 
 function pointValueText(chartId, point) {
@@ -179,6 +224,7 @@ function pointValueText(chartId, point) {
 function existingPointSelectionForPoint(chartId, point) {
   const traceName = point?.data?.name || `trace ${Number(point?.curveNumber) + 1}`;
   const timestamp = pointTimestamp(point);
+  const distance = pointDistance(point);
   const x = Number(point?.x);
   const y = Number(point?.y);
   return state.pointSelections.find((selection) => {
@@ -188,6 +234,9 @@ function existingPointSelectionForPoint(chartId, point) {
     const sameVisiblePoint = numbersNearlyEqual(selection.x, x) && numbersNearlyEqual(selection.y, y);
     if (Number.isFinite(timestamp) && Number.isFinite(selection.timestamp)) {
       return numbersNearlyEqual(selection.timestamp, timestamp) && sameVisiblePoint;
+    }
+    if (Number.isFinite(distance) && Number.isFinite(selection.distance)) {
+      return numbersNearlyEqual(selection.distance, distance) && sameVisiblePoint;
     }
     return sameVisiblePoint;
   });
@@ -264,6 +313,7 @@ function addPointSelectionFromEvent(chartId, eventData) {
     markerColor: colorMeta.color,
     markerText: colorMeta.text,
     timestamp: pointTimestamp(point),
+    distance: pointDistance(point),
     value: pointValueText(chartId, point),
     x: Number(point.x),
     y: Number(point.y),
@@ -304,7 +354,7 @@ function selectionMarkerTrace(selection) {
     type: "scatter",
     name: `${LABELS.point_selection_label_prefix} ${selection.order}`,
     showlegend: false,
-    hovertemplate: `${escapeHtml(selection.traceName)}<br>timestamp=%{customdata.timestamp:.3f}<br>value=${escapeHtml(selection.value)}<extra></extra>`,
+    hovertemplate: `${escapeHtml(selection.traceName)}${selectionCoordinateHover(selection)}<br>value=${escapeHtml(selection.value)}<extra></extra>`,
     marker: {
       color: selection.markerColor,
       size: 10,
@@ -314,7 +364,7 @@ function selectionMarkerTrace(selection) {
     text: selection.markerText ? [selection.markerText] : [""],
     textposition: "middle center",
     textfont: { color: "#ffffff", size: 9, family: "Arial, sans-serif" },
-    customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }],
+    customdata: [{ selectionId: selection.id }],
     meta: { pointSelectionMarker: true, selectionId: selection.id },
     xaxis: selection.xaxis,
     yaxis: selection.yaxis,
@@ -337,7 +387,7 @@ function selectionHitTargetTrace(selection) {
       symbol: "circle",
       line: { width: 0 },
     },
-    customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }],
+    customdata: [{ selectionId: selection.id }],
     meta: { pointSelectionHitTarget: true, selectionId: selection.id },
     xaxis: selection.xaxis,
     yaxis: selection.yaxis,
@@ -457,17 +507,19 @@ export function groupedSelectionsByTimestamp(selections) {
     if (groupDiff) {
       return groupDiff;
     }
-    const leftTimestamp = Number(left.timestamp);
-    const rightTimestamp = Number(right.timestamp);
-    const leftHasTimestamp = left.timestamp !== null && Number.isFinite(leftTimestamp);
-    const rightHasTimestamp = right.timestamp !== null && Number.isFinite(rightTimestamp);
-    if (leftHasTimestamp && rightHasTimestamp) {
-      return leftTimestamp - rightTimestamp || left.order - right.order;
+    const leftTimestamp = left.timestamp === null || left.timestamp === undefined ? null : Number(left.timestamp);
+    const rightTimestamp = right.timestamp === null || right.timestamp === undefined ? null : Number(right.timestamp);
+    const leftDistance = left.distance === null || left.distance === undefined ? null : Number(left.distance);
+    const rightDistance = right.distance === null || right.distance === undefined ? null : Number(right.distance);
+    const leftCoordinate = Number.isFinite(leftTimestamp) ? leftTimestamp : Number.isFinite(leftDistance) ? leftDistance : null;
+    const rightCoordinate = Number.isFinite(rightTimestamp) ? rightTimestamp : Number.isFinite(rightDistance) ? rightDistance : null;
+    if (leftCoordinate !== null && rightCoordinate !== null) {
+      return leftCoordinate - rightCoordinate || left.order - right.order;
     }
-    if (leftHasTimestamp) {
+    if (leftCoordinate !== null) {
       return -1;
     }
-    if (rightHasTimestamp) {
+    if (rightCoordinate !== null) {
       return 1;
     }
     return left.order - right.order;
@@ -495,11 +547,12 @@ function renderPointSelectionOutput() {
   els.pointSelectionOutput.innerHTML = chartOrder.map((chartId) => {
     const chartSelections = groupedSelectionsByTimestamp(selections.filter((selection) => selection.chartId === chartId));
     const title = chartSelections[0]?.chartTitle || chartTitleById(chartId);
+    const coordinateHeader = selectionCoordinateHeader(chartSelections);
     const rows = chartSelections.map((selection) => `
       <tr data-selection-id="${escapeHtml(selection.id)}">
         <td>${escapeHtml(selection.traceName)}</td>
         <td><span class="selection-point-token" style="background:${escapeHtml(selection.markerColor)}">${escapeHtml(selection.markerText)}</span></td>
-        <td>${selection.timestamp === null ? "N/A" : formatPointNumber(selection.timestamp)}</td>
+        <td>${selectionCoordinateText(selection)}</td>
         <td>${escapeHtml(selection.value)}</td>
       </tr>
     `).join("");
@@ -508,7 +561,7 @@ function renderPointSelectionOutput() {
         <h3>${escapeHtml(title)}</h3>
         <table class="point-selection-table">
           <thead>
-            <tr><th>${LABELS.point_selection_table_header_trace}</th><th>${LABELS.point_selection_table_header_point}</th><th>${LABELS.point_selection_table_header_timestamp}</th><th>${LABELS.point_selection_table_header_value}</th></tr>
+            <tr><th>${LABELS.point_selection_table_header_trace}</th><th>${LABELS.point_selection_table_header_point}</th><th>${coordinateHeader}</th><th>${LABELS.point_selection_table_header_value}</th></tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
@@ -546,12 +599,11 @@ export const ExportPointSelection = {
   },
 
   exportPointTimestamp(point) {
-    const custom = Array.isArray(point?.data?.customdata) ? point.data.customdata[point.pointNumber] : undefined;
-    const customTimestamp = typeof custom === "object" && custom !== null ? custom.timestamp : custom;
-    const timestamp = Number(customTimestamp);
-    if (Number.isFinite(timestamp)) { return timestamp; }
-    const x = Number(point?.x);
-    return Number.isFinite(x) ? x : null;
+    return pointTimestamp(point);
+  },
+
+  exportPointDistance(point) {
+    return pointDistance(point);
   },
 
   exportPointValueText(chartId, point) {
@@ -591,6 +643,7 @@ export const ExportPointSelection = {
   existingExportPointSelectionForPoint(chartId, point, selections) {
     const traceName = point?.data?.name || "trace " + (Number(point?.curveNumber) + 1);
     const timestamp = this.exportPointTimestamp(point);
+    const distance = this.exportPointDistance(point);
     const x = Number(point?.x);
     const y = Number(point?.y);
     return selections.find((s) => {
@@ -598,6 +651,9 @@ export const ExportPointSelection = {
       const sameVisiblePoint = this.numbersClose(s.x, x) && this.numbersClose(s.y, y);
       if (Number.isFinite(timestamp) && Number.isFinite(Number(s.timestamp))) {
         return this.numbersClose(s.timestamp, timestamp) && sameVisiblePoint;
+      }
+      if (Number.isFinite(distance) && Number.isFinite(Number(s.distance))) {
+        return this.numbersClose(s.distance, distance) && sameVisiblePoint;
       }
       return sameVisiblePoint;
     }) || null;
@@ -626,11 +682,11 @@ export const ExportPointSelection = {
       textposition: "middle center",
       textfont: { color: "#ffffff", size: 9, family: "Arial, sans-serif" },
       marker: { color: selection.color, size: 9, symbol: "circle", line: { width: 0 } },
-      customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }],
+      customdata: [{ selectionId: selection.id }],
       meta: { pointSelectionMarker: true, selectionId: selection.id },
       xaxis: selection.xaxis, yaxis: selection.yaxis,
       showlegend: false,
-      hovertemplate: escapeHtml(selection.traceName) + "<br>timestamp=%{customdata.timestamp:.3f}<br>value=" + escapeHtml(String(selection.value)) + "<extra></extra>",
+      hovertemplate: escapeHtml(selection.traceName) + selectionCoordinateHover(selection) + "<br>value=" + escapeHtml(String(selection.value)) + "<extra></extra>",
     };
   },
 
@@ -640,7 +696,7 @@ export const ExportPointSelection = {
       mode: "markers", type: "scatter",
       name: "选点命中 " + selection.order,
       marker: { color: selection.color, size: 24, opacity: 0.04, symbol: "circle", line: { width: 0 } },
-      customdata: [{ selectionId: selection.id, timestamp: selection.timestamp }],
+      customdata: [{ selectionId: selection.id }],
       meta: { pointSelectionHitTarget: true, selectionId: selection.id },
       xaxis: selection.xaxis, yaxis: selection.yaxis,
       showlegend: false, hoverinfo: "none",
