@@ -38,7 +38,7 @@ def test_local_path_server_evaluates_vo_without_home_point(tmp_path):
     )
 
     assert light_report["inputs"]["entry_mode"] == "vo"
-    assert light_report["summary"]["matched_poses"] == 201
+    assert light_report["summary"]["matched_poses"] == 200
     full_report = get_report_slice("full_report")
     assert full_report["inputs"]["entry_mode"] == "vo"
 

@@ -15,12 +15,20 @@ def parse_imu_fixed(text: str, name: str = "imu.txt") -> Trajectory:
 
     不根据表头猜列名；表头只会被当作非数字说明行跳过。
     少于 21 列时拒绝，多余列允许存在但不参与评估。
+    最后一条非空、非注释的轨迹记录固定忽略。
     yaw/pitch/roll 固定为弧度。
     """
 
     from ..core.geometry import euler_yaw_pitch_roll_to_matrix
 
-    data = _read_fixed_numeric_table(text, len(IMU_FIXED_COLUMNS), name, "IMU", allow_extra_columns=True)
+    data = _read_fixed_numeric_table(
+        text,
+        len(IMU_FIXED_COLUMNS),
+        name,
+        "IMU",
+        allow_extra_columns=True,
+        ignore_last_record=True,
+    )
     status = _require_integer_column(data[:, 2], name, "status")
     flight_mode = _require_integer_column(data[:, 3], name, "flight_mode")
     position_reset_count = _require_integer_column(data[:, 13], name, "position_reset_count")
@@ -58,12 +66,20 @@ def parse_vloc_fixed(text: str, name: str = "vloc.txt") -> Trajectory:
     """按需求文档读取 VLOC 输出的前 13 列。
 
     不根据表头猜列名；少于 13 列时拒绝，多余列忽略。
+    最后一条非空、非注释的轨迹记录固定忽略。
     yaw/pitch/roll 固定为角度。
     """
 
     from ..core.geometry import euler_yaw_pitch_roll_to_matrix
 
-    data = _read_fixed_numeric_table(text, len(VLOC_FIXED_COLUMNS), name, "VLOC", allow_extra_columns=True)
+    data = _read_fixed_numeric_table(
+        text,
+        len(VLOC_FIXED_COLUMNS),
+        name,
+        "VLOC",
+        allow_extra_columns=True,
+        ignore_last_record=True,
+    )
     status = _require_integer_column(data[:, 1], name, "status")
     reset_count = _require_integer_column(data[:, 3], name, "reset_count")
     altitude_msl = np.abs(data[:, 6])
@@ -93,11 +109,19 @@ def parse_vo_fixed(text: str, name: str = "vo.txt") -> Trajectory:
 
     不根据表头猜列名；yaw/pitch/roll 固定为角度。
     少于 11 列时拒绝；11 列后的内容全部允许但不参与评估。
+    最后一条非空、非注释的轨迹记录固定忽略。
     """
 
     from ..core.geometry import euler_yaw_pitch_roll_to_matrix
 
-    data = _read_fixed_numeric_table(text, len(VO_FIXED_COLUMNS), name, "VO", allow_extra_columns=True)
+    data = _read_fixed_numeric_table(
+        text,
+        len(VO_FIXED_COLUMNS),
+        name,
+        "VO",
+        allow_extra_columns=True,
+        ignore_last_record=True,
+    )
     is_keyframe = _require_integer_column(data[:, 8], name, "is_keyframe")
     reset_count = _require_integer_column(data[:, 10], name, "reset_count")
     extras = {
@@ -138,15 +162,26 @@ def _read_fixed_numeric_table(
     fmt_name: str,
     *,
     allow_extra_columns: bool = False,
+    ignore_last_record: bool = False,
 ) -> np.ndarray:
     """读取固定列数字表。
 
     为了兼容文件首行写死的表头，非数字说明行只允许出现在第一条数据之前。
     真正的数据行至少要包含所需列；允许扩展列时只读取前 expected_cols 列。
+    轨迹文件启用 ignore_last_record 时，最后一条非空、非注释记录不会进入解析。
+    该记录可以是不完整数据，适用于忽略日志结束时尚未写完的末行。
     """
 
+    lines = text.splitlines()
+    if ignore_last_record:
+        for index in range(len(lines) - 1, -1, -1):
+            line = lines[index].strip()
+            if line and not line.startswith("#"):
+                del lines[index]
+                break
+
     rows: list[list[float]] = []
-    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+    for line_no, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue

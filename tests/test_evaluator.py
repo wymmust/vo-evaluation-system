@@ -119,6 +119,7 @@ def sample_imu_text() -> str:
     return """ts ts_fcc status flight_mode x y z yaw pitch roll vx vy vz position_reset_count altitude_reset_count heading_reset_count latitude longitude altitude altitude_msl height
 10.0 100.0 4194305 3 1 2 3 1.57079632679 0.1 -0.2 0.4 0.5 0.6 0 1 2 31.1 121.2 50 51 5
 10.1 100.1 268435457 3 2 3 4 1.67079632679 0.2 -0.3 0.5 0.6 0.7 0 1 2 31.2 121.3 51 52 6
+10.2 100.2 1 3 999 999 999 0 0 0 0 0 0 0 0 0 31.3 121.4 52 53 7
 """
 
 
@@ -126,6 +127,7 @@ def sample_vloc_text() -> str:
     return """ts status num_inliers reset_count x y z yaw pitch roll latitude longitude height
 10.0 2 42 0 11 12 13 90 2 -1 31.1 121.2 5
 10.1 3 43 1 12 13 14 91 3 -2 31.2 121.3 6
+10.2 2 44 1 999 999 999 92 4 -3 31.3 121.4 7
 """
 
 
@@ -133,6 +135,7 @@ def sample_vo_text() -> str:
     return """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
 10.0 50 21 22 23 90 2 -1 1 12.5 0
 10.1 51 22 23 24 91 3 -2 0 13.5 1
+10.2 52 999 999 999 92 4 -3 0 14.5 1
 """
 
 
@@ -336,6 +339,7 @@ def test_fixed_sf_parsers_use_documented_column_order_without_header_adaptation(
 def test_vo_fixed_accepts_legacy_14_column_format_without_using_depth_columns():
     legacy_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count depth_mean depth_min depth_max
 10.0 50 21 22 23 90 2 -1 1 12.5 0 4.1 0.2 8.9
+10.1 51 999 999 999 91 3 -2 0 13.5 1 4.2 0.3 9.0
 """
 
     vo = parse_vo_fixed(legacy_text, name="vo.txt")
@@ -370,6 +374,48 @@ def test_fixed_trajectory_parsers_accept_and_ignore_arbitrary_extra_columns():
     assert np.allclose(vloc.positions[0], [11, 12, 13])
     assert np.allclose(vo.positions[0], [21, 22, 23])
     assert np.allclose(vo.extras["time_cost"], [12.5, 13.5])
+
+
+@pytest.mark.parametrize(
+    ("parser", "text", "expected_stamps"),
+    [
+        (parse_imu_fixed, sample_imu_text(), [10.0, 10.1]),
+        (parse_vloc_fixed, sample_vloc_text(), [10.0, 10.1]),
+        (parse_vo_fixed, sample_vo_text(), [10.0, 10.1]),
+    ],
+)
+def test_fixed_trajectory_parsers_ignore_last_line(parser, text, expected_stamps):
+    lines = text.splitlines()
+    lines[-1] = "TRUNCATED LAST LINE"
+
+    trajectory = parser("\n".join(lines) + "\n")
+
+    assert np.allclose(trajectory.stamps, expected_stamps)
+
+
+@pytest.mark.parametrize(
+    ("parser", "text"),
+    [
+        (parse_imu_fixed, sample_imu_text()),
+        (parse_vloc_fixed, sample_vloc_text()),
+        (parse_vo_fixed, sample_vo_text()),
+    ],
+)
+def test_fixed_trajectory_parsers_ignore_last_record_before_trailing_comments(parser, text):
+    trajectory = parser(text + "\n# trailing comment\n\n")
+
+    assert np.allclose(trajectory.stamps, [10.0, 10.1])
+
+
+def test_fixed_trajectory_parser_still_rejects_invalid_middle_line():
+    text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
+10.0 50 21 22 23 90 2 -1 1 12.5 0
+BROKEN MIDDLE LINE
+TRUNCATED LAST LINE
+"""
+
+    with pytest.raises(ValueError, match="non-numeric values after data started"):
+        parse_vo_fixed(text, name="vo.txt")
 
 
 def test_fixed_parsers_do_not_keep_raw_numeric_tables_and_validate_integer_columns():
@@ -1110,7 +1156,7 @@ def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
 )
 def test_fixed_parser_rejects_fewer_than_required_columns(parser, text, minimum):
     with pytest.raises(ValueError, match=rf"at least {minimum} columns"):
-        parser(text)
+        parser(text + "IGNORED LAST LINE\n")
 
 
 def test_rpe_distance_mode_uses_evo_consecutive_estimate_path_pairs():

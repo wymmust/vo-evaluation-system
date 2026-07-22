@@ -66,6 +66,8 @@ python -m voeval sf_vo /path/to/data_dir /path/to/log_dir --dataset rk3588
 
 ## 固定输入格式
 
+`imu.txt`、`vloc.txt`、`vo.txt` 的最后一条非空、非注释轨迹记录不参与解析；该末条记录即使截断或包含脏字符，也不会影响前面的完整记录。
+
 ### VLOC 评估
 
 读取文件：
