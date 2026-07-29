@@ -7,19 +7,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from vo_eval.evaluator import (
+import vo_eval
+from vo_eval.data_loader import (
     Calibration,
-    EvaluationConfig,
     HomePoint,
     SfVlocBundle,
     SfVoBundle,
     SUPPORTED_EVALUATION_FORMATS,
     Trajectory,
-    build_associated_trajectories,
-    evaluate_trajectories,
-    evaluate_vloc_bundle,
-    evaluate_vo_bundle,
-    euler_yaw_pitch_roll_to_matrix,
     get_evaluation_format_spec,
     load_vloc_evaluation_bundle,
     load_vo_evaluation_bundle,
@@ -30,269 +25,26 @@ from vo_eval.evaluator import (
     parse_imu_fixed,
     parse_vloc_fixed,
     parse_vo_fixed,
-    report_to_excel,
-    report_to_json,
+)
+from vo_eval.processing import EvaluationConfig, evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle
+from vo_eval.__main__ import main as cli_main
+from vo_eval.report import report_to_excel, report_to_json
+from vo_eval.utils import (
+    euler_yaw_pitch_roll_to_matrix,
+    interpolate_reference_to_estimate,
+    sim3_alignment,
     yaw_from_rot,
 )
 
 
-def test_streamlit_dead_time_series_helpers_are_removed():
-    source = Path("app.py").read_text()
-    for name in ["make_gt_vo_time_series", "make_error_time_series", "render_figure_grid"]:
-        assert f"def {name}" not in source
-
-
-def test_streamlit_html_report_cards_hide_removed_summary_metrics():
-    from app import build_report_metric_cards
-
-    report = {
-        "summary": {
-            "gt_path_length_m": 1000.0,
-            "duration_s": 50.0,
-            "matched_poses": 100,
-            "original_matched_poses": 100,
-            "gt_pose_coverage_ratio": 1.0,
-            "est_pose_coverage_ratio": 1.0,
-            "endpoint_error_m": 12.0,
-            "endpoint_error_percent_of_path": 1.2,
-            "raw_path_scale_ratio_est_over_gt": 1.0,
-        },
-        "ate_position_m": {"rmse": 1.0, "p95": 2.0},
-        "ate_vertical_m": {"rmse": 0.5, "p95": 1.0},
-        "rpe_frame_delta": {"translation_m": {"rmse": 0.2, "p95": 0.4}, "delta_unit": "frames", "delta_frames": 1},
-        "alignment": {"scale": 1.0},
-        "association": {"method": "interpolate_gt", "matches": 100},
-        "divergence": {"diverged": True, "first_divergence_distance_m": 10.0, "first_divergence_error_m": 5.0},
-        "discontinuities": {"all_matches": {"break_count": 0}, "selected_segment": {"policy": "vo_timestamps"}},
-        "orientation_correction": {"selected": "none"},
-    }
-
-    labels = [card["label"] for card in build_report_metric_cards(report)]
-
-    assert not any("终点漂移" in label for label in labels)
-    assert not any("发散状态" in label for label in labels)
-    assert not any("时间同步" in label for label in labels)
-
-
-def test_streamlit_composite_angle_time_series_unwraps_180_degree_boundary():
-    from app import make_composite_pair_time_series
-
-    frame = pd.DataFrame(
-        {
-            "timestamp": [0, 1, 2],
-            "segment_id": [0, 0, 0],
-            "gt_roll_deg": [0, 1, 2],
-            "est_roll_aligned_deg": [179, -179, 178],
-        }
-    )
-    fig = make_composite_pair_time_series(
-        frame,
-        "Roll",
-        [("Roll", "gt_roll_deg", "est_roll_aligned_deg", "deg", True)],
-        left_name="Ground truth",
-        right_name="VO aligned",
-    )
-
-    assert list(fig.data[1].y) == [179, 181, 178]
-
-
-def test_streamlit_composite_angle_error_time_series_unwraps_180_degree_boundary():
-    from app import make_composite_error_time_series
-
-    frame = pd.DataFrame(
-        {
-            "timestamp": [0, 1, 2],
-            "segment_id": [0, 0, 0],
-            "roll_error_signed_deg": [179, -179, 178],
-        }
-    )
-    fig = make_composite_error_time_series(
-        frame,
-        "Roll error",
-        [("Roll error", "roll_error_signed_deg", "deg", True)],
-    )
-
-    assert list(fig.data[0].y) == [179, 181, 178]
-
-
-def test_streamlit_composite_charts_share_hover_spikes_across_subplots():
-    from app import make_composite_pair_time_series, make_composite_error_time_series, make_composite_single_time_series
-
-    frame = pd.DataFrame(
-        {
-            "timestamp": [0, 1, 2],
-            "nav_n_m": [0, 1, 2],
-            "vloc_n_m": [0.1, 1.1, 2.1],
-            "nav_e_m": [3, 4, 5],
-            "vloc_e_m": [3.1, 4.1, 5.1],
-            "position_error_n_m": [0.1, 0.2, 0.3],
-            "position_error_e_m": [0.4, 0.5, 0.6],
-            "vx": [1, 2, 3],
-            "vy": [4, 5, 6],
-        }
-    )
-    figures = [
-        make_composite_pair_time_series(
-            frame,
-            "NED",
-            [("N", "nav_n_m", "vloc_n_m", "m", False), ("E", "nav_e_m", "vloc_e_m", "m", False)],
-            left_name="nav",
-            right_name="vloc",
-        ),
-        make_composite_error_time_series(
-            frame,
-            "NED error",
-            [("N error", "position_error_n_m", "m", False), ("E error", "position_error_e_m", "m", False)],
-        ),
-        make_composite_single_time_series(
-            frame,
-            "Velocity",
-            [("vx", "vx", "m/s", False), ("vy", "vy", "m/s", False)],
-        ),
-    ]
-
-    for fig in figures:
-        assert fig.layout.hovermode == "x unified"
-        assert fig.layout.hoversubplots == "axis"
-        assert fig.layout.xaxis.showspikes is True
-        assert fig.layout.xaxis2.showspikes is True
-        assert fig.layout.xaxis.spikemode == "across"
-        assert fig.layout.xaxis2.spikemode == "across"
-
-
-def test_streamlit_chart_directory_is_wired_to_vloc_and_vo_visuals():
-    source = Path("app.py").read_text()
-    assert "VLOC_CHART_OPTIONS" in source
-    assert "VO_CHART_OPTIONS" in source
-    assert "show_vloc_chart_directory()" in source
-    assert "show_chart_directory(\"vo\", VO_CHART_OPTIONS)" in source
-    assert "show_visuals(report, entry_mode, selected_vloc_chart_ids, selected_vo_chart_ids)" in source
-    assert "show_vloc_visuals(report, selected_vloc_chart_ids)" in source
-    assert "图表目录" in source
-    for chart_id in [
-        "trajectory3d",
-        "trajectoryXY",
-        "errorDistance",
-        "heightComparison",
-        "navStatusModes",
-        "navVelocity",
-        "navResetCounts",
-        "vlocStatus",
-        "positionCompareComposite",
-        "attitudeCompareComposite",
-        "positionErrorComposite",
-        "attitudeErrorComposite",
-    ]:
-        assert chart_id in source
-    vo_options_source = source.split("VO_CHART_OPTIONS = [", 1)[1].split("]", 1)[0]
-    for chart_id in ["trajectoryXY", "segmentError", "speedError", "sim3ScaleTime", "heightComparison"]:
-        assert f'("{chart_id}",' not in vo_options_source
-    for chart_id in [
-        "trajectory3d",
-        "errorDistance",
-        "navStatusModes",
-        "navVelocity",
-        "navResetCounts",
-        "voStatus",
-        "positionCompareComposite",
-        "attitudeCompareComposite",
-        "positionErrorComposite",
-        "attitudeErrorComposite",
-        "rpeTranslationTime",
-        "rpeRotationTime",
-        "scaleFrameTime",
-    ]:
-        assert f'("{chart_id}",' in vo_options_source
-
-
-def test_streamlit_download_filenames_include_directory_and_entry_mode():
-    source = Path("app.py").read_text()
-    assert "def evaluation_export_filename(" in source
-    assert 'evaluation_export_filename(report, "evaluation_report", "html")' in source
-    assert 'evaluation_export_filename(report, "trajectory_exports", "xlsx")' in source
-    assert 'file_name="vo_evaluation_report.html"' not in source
-    assert 'file_name="vo_trajectory_exports.xlsx"' not in source
-
-
-def test_streamlit_download_filename_ignores_generic_data_and_log_dir_names():
-    from app import evaluation_export_filename
-
-    report = {"inputs": {"entry_mode": "vloc", "data_dir_name": "data_dir", "log_dir_name": "log_dir"}}
-    assert evaluation_export_filename(report, "evaluation_report", "html") == "vloc_evaluation_report.html"
-
-    report = {"inputs": {"entry_mode": "vo", "data_dir_name": "2839_traj", "log_dir_name": "2839_traj"}}
-    assert evaluation_export_filename(report, "trajectory_exports", "xlsx") == "2839_traj_vo_trajectory_exports.xlsx"
-
-
-def test_streamlit_trajectory_3d_marks_each_segment_start_and_end():
-    from app import make_trajectory_3d
-
-    frame = pd.DataFrame(
-        {
-            "segment_id": [0, 0, 1, 1],
-            "visual_segment_id": [0, 0, 1, 1],
-            "gt_x_m": [0.0, 1.0, 10.0, 11.0],
-            "gt_y_m": [0.0, 2.0, 10.0, 12.0],
-            "gt_z_m": [0.0, 3.0, 10.0, 13.0],
-            "est_x_aligned_m": [0.1, 1.1, 10.1, 11.1],
-            "est_y_aligned_m": [0.2, 2.2, 10.2, 12.2],
-            "est_z_aligned_m": [0.3, 3.3, 10.3, 13.3],
-        }
-    )
-    fig = make_trajectory_3d(frame)
-    traces = {trace.name: trace for trace in fig.data}
-
-    assert "GT start" not in traces
-    assert "GT end" not in traces
-    assert {"vo start", "vo end"}.issubset(traces)
-    assert list(traces["vo start"].x) == [0.1, 10.1]
-    assert list(traces["vo end"].x) == [1.1, 11.1]
-    assert list(traces["vo start"].text) == ["vo S1", "vo S2"]
-    assert list(traces["vo end"].text) == ["vo E1", "vo E2"]
-    assert traces["vo start"].marker.size == 5
-    assert traces["vo start"].marker.color == "#9333ea"
-    assert traces["vo start"].marker.line.width == 1
-    assert traces["vo start"].textfont.size == 10
-    assert traces["vo end"].marker.color == "#ef4444"
-
-
-def test_streamlit_vloc_trajectory_3d_marks_only_vloc_endpoints_with_small_markers():
-    from app import make_vloc_trajectory_3d
-
-    frame = pd.DataFrame(
-        {
-            "visual_segment_id": [0, 0, 1, 1],
-            "nav_n_m": [0.0, 1.0, 10.0, 11.0],
-            "nav_e_m": [0.0, 2.0, 10.0, 12.0],
-            "nav_d_m": [0.0, 3.0, 10.0, 13.0],
-            "vloc_n_m": [0.1, 1.1, 10.1, 11.1],
-            "vloc_e_m": [0.2, 2.2, 10.2, 12.2],
-            "vloc_d_m": [0.3, 3.3, 10.3, 13.3],
-        }
-    )
-    fig = make_vloc_trajectory_3d(frame)
-    traces = {trace.name: trace for trace in fig.data}
-
-    assert "nav start" not in traces
-    assert "nav end" not in traces
-    assert {"vloc start", "vloc end"}.issubset(traces)
-    assert list(traces["vloc start"].x) == [0.1, 10.1]
-    assert list(traces["vloc end"].x) == [1.1, 11.1]
-    assert list(traces["vloc start"].text) == ["vloc S1", "vloc S2"]
-    assert list(traces["vloc end"].text) == ["vloc E1", "vloc E2"]
-    assert traces["vloc start"].marker.size == 5
-    assert traces["vloc start"].marker.line.width == 1
-    assert traces["vloc start"].textfont.size == 10
-
-
 def test_vloc_detail_visual_segments_follow_discontinuity_diagnostics():
     bundle = sample_vloc_bundle_with_large_nav_gap()
-    report = evaluate_vloc_bundle(bundle, EvaluationConfig(discontinuity_step_m=10.0))
+    report = evaluate_vloc_bundle(bundle, EvaluationConfig())
     comparison = report["vloc_details"]["comparison"]
 
-    assert report["discontinuities"]["all_matches"]["break_count"] == 1
-    assert comparison["visual_segment_id"].tolist() == [0, 0, 1]
-    assert comparison["segment_id"].tolist() == [0, 0, 1]
+    assert report["discontinuities"]["all_matches"]["break_count"] == 0
+    assert comparison["visual_segment_id"].tolist() == [0, 0, 0]
+    assert comparison["segment_id"].tolist() == [0, 0, 0]
 
 
 def make_tum(rows=120):
@@ -323,7 +75,6 @@ def test_public_evaluation_formats_match_requirement_doc():
     assert sf_vo.required_files == (
         "data_dir/imu.txt",
         "log_dir/vo.txt",
-        "log_dir/home_point.txt",
         "log_dir/calib_raw.yaml",
     )
 
@@ -338,10 +89,10 @@ def test_public_evaluation_format_rejects_legacy_parser_formats():
             normalize_evaluation_format(fmt)
 
 
-def test_public_evaluation_format_normalizes_common_separators():
-    assert normalize_evaluation_format("SF-VLOC") == "sf_vloc"
-    assert normalize_evaluation_format("sf vo") == "sf_vo"
-    assert normalize_evaluation_format("Tum") == "tum"
+def test_public_evaluation_format_rejects_non_canonical_spellings():
+    for fmt in ["SF-VLOC", "sf vo", "Tum"]:
+        with pytest.raises(ValueError, match="Supported evaluation formats"):
+            normalize_evaluation_format(fmt)
 
 
 def sample_calib_text() -> str:
@@ -379,9 +130,9 @@ def sample_vloc_text() -> str:
 
 
 def sample_vo_text() -> str:
-    return """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count depth_mean depth_min depth_max
-10.0 50 21 22 23 90 2 -1 1 12.5 0 4.1 0.2 8.9
-10.1 51 22 23 24 91 3 -2 0 13.5 1 4.2 0.3 9.0
+    return """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
+10.0 50 21 22 23 90 2 -1 1 12.5 0
+10.1 51 22 23 24 91 3 -2 0 13.5 1
 """
 
 
@@ -424,7 +175,7 @@ def sample_vloc_bundle_with_large_nav_gap() -> SfVlocBundle:
     vloc_stamps = np.asarray([0.25, 0.75, 2.0, 3.75, 3.9], dtype=float)
     vloc_north = np.asarray([2.5, 7.5, 20.0, 37.5, 39.0], dtype=float)
     vloc_lat = np.asarray([_latitude_from_north_offset(home.latitude, value) for value in vloc_north], dtype=float)
-    vloc_positions = np.column_stack([vloc_north, np.zeros(len(vloc_stamps)), np.full(len(vloc_stamps), home.altitude_msl, dtype=float)])
+    vloc_positions = np.column_stack([vloc_north, np.zeros(len(vloc_stamps)), np.full(len(vloc_stamps), -home.altitude_msl, dtype=float)])
     vloc_rot = euler_yaw_pitch_roll_to_matrix(np.zeros(len(vloc_stamps)), np.zeros(len(vloc_stamps)), np.zeros(len(vloc_stamps)))
     vloc = Trajectory(
         "vloc.txt",
@@ -518,7 +269,6 @@ def sample_vo_bundle_with_reset_segments() -> SfVoBundle:
     return SfVoBundle(
         nav=nav,
         vo=vo,
-        home_point=home,
         calibration=calibration,
         data_dir=Path("/tmp/data_dir"),
         log_dir=Path("/tmp/log_dir"),
@@ -583,13 +333,17 @@ def test_fixed_sf_parsers_use_documented_column_order_without_header_adaptation(
     assert home.altitude_msl == 51.0
 
 
-def test_vo_fixed_rejects_legacy_11_column_format():
-    legacy_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
-10.0 50 21 22 23 90 2 -1 1 12.5 0
+def test_vo_fixed_accepts_legacy_14_column_format_without_using_depth_columns():
+    legacy_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count depth_mean depth_min depth_max
+10.0 50 21 22 23 90 2 -1 1 12.5 0 4.1 0.2 8.9
 """
 
-    with pytest.raises(ValueError, match="expects 14 columns"):
-        parse_vo_fixed(legacy_text, name="vo.txt")
+    vo = parse_vo_fixed(legacy_text, name="vo.txt")
+
+    assert vo.source_format == "sf_vo"
+    assert np.allclose(vo.positions[0], [21, 22, 23])
+    assert np.allclose(vo.extras["time_cost"], [12.5])
+    assert vo.extras["raw_numeric_table"].shape == (1, 11)
 
 
 def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
@@ -606,12 +360,16 @@ def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
 
 def test_vo_evaluation_bundle_loads_vo_directory_contract_without_using_vloc(tmp_path):
     data_dir, log_dir = write_sf_dirs(tmp_path)
+    (log_dir / "home_point.txt").unlink()
+
     bundle = load_vo_evaluation_bundle(data_dir, log_dir)
 
     assert bundle.nav.source_format == "sf_imu"
     assert bundle.vo.source_format == "sf_vo"
     assert np.allclose(bundle.vo.positions[0], [21, 22, 23])
     assert bundle.files["estimate"].name == "vo.txt"
+    assert "home_point" not in bundle.files
+    assert not hasattr(bundle, "home_point")
 
 
 def test_bundle_loader_reports_missing_required_file(tmp_path):
@@ -622,30 +380,29 @@ def test_bundle_loader_reports_missing_required_file(tmp_path):
         load_vloc_evaluation_bundle(data_dir, log_dir)
 
 
+def test_vloc_evaluation_bundle_still_requires_home_point(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    (log_dir / "home_point.txt").unlink()
+
+    with pytest.raises(FileNotFoundError, match="log_dir/home_point.txt"):
+        load_vloc_evaluation_bundle(data_dir, log_dir)
+
+
 def test_vloc_bundle_uses_fixed_interpolation_defaults_and_drops_invalid_frames():
     bundle = sample_vloc_bundle_with_large_nav_gap()
-    cfg = EvaluationConfig(
-        alignment="sim3",
-        orientation_correction="auto",
-        association_mode="nearest",
-        max_interpolation_gap_s=10.0,
-        allow_extrapolation=True,
-        time_offset_s=3.0,
-    )
-
-    report = evaluate_vloc_bundle(bundle, cfg)
+    report = evaluate_vloc_bundle(bundle, EvaluationConfig())
 
     assert report["inputs"]["entry_mode"] == "vloc"
-    assert report["config"]["alignment"] == "none"
-    assert report["config"]["orientation_correction"] == "none"
-    assert report["config"]["association_mode"] == "interpolate_gt"
-    assert report["config"]["max_interpolation_gap_s"] == 1.0
-    assert report["config"]["allow_extrapolation"] is False
-    assert report["config"]["time_offset_s"] == 0.0
+    assert report["inputs"]["fixed_rules"]["alignment"] == "none"
+    assert report["inputs"]["fixed_rules"]["association_mode"] == "interpolate_gt"
+    assert report["inputs"]["fixed_rules"]["max_interpolation_gap_s"] == 1.0
+    assert report["inputs"]["fixed_rules"]["time_offset_s"] == 0.0
+    assert "alignment" not in report["config"]
+    assert "association_mode" not in report["config"]
     assert report["summary"]["matched_poses"] == 3
     assert report["association"]["dropped_est_large_gt_gap"] == 1
     assert report["association"]["dropped_est_invalid_mode"] == 1
-    assert report["ate_position_m"]["rmse"] < 1e-3
+    assert report["alignment"]["base_mode"] == "none"
 
 
 def test_vloc_report_contains_nav_vloc_specific_detail_tables():
@@ -664,7 +421,7 @@ def test_vloc_report_contains_nav_vloc_specific_detail_tables():
 
     assert details["summary"]["trajectory_length_m"] > 0
     assert details["summary"]["horizontal_error_mean_m"] == pytest.approx(1.0, abs=0.02)
-    assert details["summary"]["vertical_error_max_m"] == pytest.approx(0.0, abs=1e-4)
+    assert details["summary"]["vertical_error_max_m"] == pytest.approx(100.0, abs=1e-3)
     assert {"flight_mode", "navi_mode", "rtk_yaw", "rtk_alti", "velocity_norm"}.issubset(nav_status.columns)
     assert {"vloc_mode", "num_inliers", "reset_count"}.issubset(vloc_status.columns)
     assert {"position_error_n_m", "position_error_e_m", "position_error_d_m"}.issubset(comparison.columns)
@@ -679,11 +436,14 @@ def test_vloc_excel_export_omits_sim3_sheets_because_vloc_has_metric_scale():
     sheets = report["trajectory_exports"]
     assert "sim3_gt_tum" not in sheets
     assert "sim3_vo_tum" not in sheets
+    assert "scale_frame_delta" not in report
+    assert "scale_per_frame" not in sheets
 
     workbook = report_to_excel(report)
     xlsx = pd.ExcelFile(io.BytesIO(workbook))
     assert "sim3_gt_tum" not in xlsx.sheet_names
     assert "sim3_vo_tum" not in xlsx.sheet_names
+    assert "scale_per_frame" not in xlsx.sheet_names
     assert {
         "input_gt_tum",
         "input_vo_tum",
@@ -694,29 +454,129 @@ def test_vloc_excel_export_omits_sim3_sheets_because_vloc_has_metric_scale():
     }.issubset(set(xlsx.sheet_names))
 
 
+def test_package_all_exports_vo_bundle_entrypoint():
+    assert "evaluate_vo_bundle" in vo_eval.__all__
+
+
+def test_cli_requires_explicit_mode_and_directories():
+    with pytest.raises(SystemExit):
+        cli_main([])
+
+
+def test_cli_p_option_previews_temp_html_report(tmp_path, monkeypatch):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    opened_urls: list[str] = []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("vo_eval.__main__.webbrowser.open", lambda url: opened_urls.append(url) or True)
+
+    exit_code = cli_main(
+        [
+            "--mode",
+            "sf_vloc",
+            "--data_dir",
+            str(data_dir),
+            "--log_dir",
+            str(log_dir),
+            "-p",
+        ]
+    )
+
+    assert exit_code == 0
+    assert not (tmp_path / "data_dir__log_dir_vloc_evaluation_report.html").exists()
+    assert len(opened_urls) == 1
+    output_path = Path(opened_urls[0].removeprefix("file://"))
+    assert output_path.exists()
+    assert output_path.parent != tmp_path
+    html = output_path.read_text(encoding="utf-8")
+    assert "VLOC 运行结果" in html
+    assert "图表目录" in html
+    assert "Plotly.newPlot" in html
+
+
+def test_cli_s_option_uses_default_html_filename(tmp_path, monkeypatch):
+    dataset_dir = tmp_path / "513"
+    dataset_dir.mkdir()
+    (dataset_dir / "imu.txt").write_text(sample_imu_text(), encoding="utf-8")
+    (dataset_dir / "vloc.txt").write_text(sample_vloc_text(), encoding="utf-8")
+    (dataset_dir / "home_point.txt").write_text("121.2 31.1 51.0\n", encoding="utf-8")
+    (dataset_dir / "calib_raw.yaml").write_text(sample_calib_text(), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = cli_main(
+        [
+            "--mode",
+            "sf_vloc",
+            "--data_dir",
+            str(dataset_dir),
+            "--log_dir",
+            str(dataset_dir),
+            "-s",
+        ]
+    )
+
+    assert exit_code == 0
+    output_path = tmp_path / "513_vloc_evaluation_report.html"
+    assert output_path.exists()
+    assert "VLOC 运行结果" in output_path.read_text(encoding="utf-8")
+
+
+def test_cli_s_option_writes_custom_html_output(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    output_path = tmp_path / "cli_report.html"
+
+    exit_code = cli_main(
+        [
+            "--mode",
+            "sf_vloc",
+            "--data_dir",
+            str(data_dir),
+            "--log_dir",
+            str(log_dir),
+            "-s",
+            "--html-output",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    html = output_path.read_text(encoding="utf-8")
+    assert "VLOC 运行结果" in html
+    assert "图表目录" in html
+
+
+def test_cli_html_output_requires_save_flag(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+
+    with pytest.raises(SystemExit):
+        cli_main(
+            [
+                "--mode",
+                "sf_vloc",
+                "--data_dir",
+                str(data_dir),
+                "--log_dir",
+                str(log_dir),
+                "-p",
+                "--html-output",
+                str(tmp_path / "report.html"),
+            ]
+        )
+
+
 def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
     bundle = sample_vo_bundle_with_reset_segments()
-    report = evaluate_vo_bundle(
-        bundle,
-        EvaluationConfig(
-            alignment="none",
-            orientation_correction="auto",
-            association_mode="nearest",
-            max_interpolation_gap_s=10.0,
-            allow_extrapolation=True,
-            time_offset_s=2.0,
-        ),
-    )
+    report = evaluate_vo_bundle(bundle, EvaluationConfig())
 
     assert report["inputs"]["entry_mode"] == "vo"
     assert report["inputs"]["workflow"] == "sf_vo"
-    assert report["config"]["alignment"] == "sim3"
-    assert report["config"]["orientation_correction"] == "none"
-    assert report["config"]["association_mode"] == "interpolate_gt"
-    assert report["config"]["max_interpolation_gap_s"] == 1.0
-    assert report["config"]["allow_extrapolation"] is False
-    assert report["config"]["time_offset_s"] == 0.0
-    assert report["config"]["continuous_segment_policy"] == "segments"
+    assert report["inputs"]["fixed_rules"]["alignment"] == "sim3"
+    assert report["inputs"]["fixed_rules"]["association_mode"] == "interpolate_gt"
+    assert report["inputs"]["fixed_rules"]["max_interpolation_gap_s"] == 1.0
+    assert report["inputs"]["fixed_rules"]["time_offset_s"] == 0.0
+    assert report["inputs"]["fixed_rules"]["continuous_segment_policy"] == "segments"
+    assert "alignment" not in report["config"]
+    assert "continuous_segment_policy" not in report["config"]
 
     assert report["association"]["dropped_est_invalid_segment"] == 50
     assert report["association"]["valid_est_after_segment_filter"] == 402
@@ -742,10 +602,10 @@ def test_fixed_parser_rejects_wrong_column_count():
         parse_vloc_fixed(bad_vloc, name="vloc.txt")
 
 
-def test_tum_zero_error_after_se3_alignment():
+def test_tum_zero_error_without_user_alignment_config():
     gt = load_trajectory_from_text(make_tum(), fmt="tum", name="gt")
     est = load_trajectory_from_text(make_tum(), fmt="tum", name="est")
-    report = evaluate_trajectories(gt, est, EvaluationConfig(segment_lengths_m=(10, 20, 50), max_interpolation_gap_s=0.3))
+    report = evaluate_trajectories(gt, est, EvaluationConfig())
     assert report["ate_position_m"]["rmse"] < 1e-6
     assert report["rpe_frame_delta"]["translation_m"]["rmse"] < 1e-9
     assert report["summary"]["coverage_ratio"] == 1.0
@@ -758,10 +618,8 @@ def test_sim3_recovers_scale_for_monocular_like_output():
     for t, p in zip(gt.stamps, est_positions):
         lines.append(f"{t:.3f} {p[0]:.6f} {p[1]:.6f} {p[2]:.6f} 0 0 0 1")
     est = load_trajectory_from_text("\n".join(lines), fmt="tum", name="est")
-    cfg = EvaluationConfig(alignment="sim3", segment_lengths_m=(10, 20, 50), max_interpolation_gap_s=0.3)
-    report = evaluate_trajectories(gt, est, cfg)
-    assert abs(report["alignment"]["scale"] - 2.0) < 1e-9
-    assert report["ate_position_m"]["rmse"] < 1e-6
+    alignment = sim3_alignment(gt.positions, est.positions)
+    assert abs(alignment["scale"] - 2.0) < 1e-9
 
 
 def test_load_trajectory_from_text_rejects_legacy_single_file_formats():
@@ -771,12 +629,18 @@ def test_load_trajectory_from_text_rejects_legacy_single_file_formats():
             load_trajectory_from_text(text, fmt=fmt, name=f"legacy_{fmt}")
 
 
-def test_numeric_tum_nanosecond_timestamps_are_normalized():
-    text = """1000000000 0 0 0 0 0 0 1
-1050000000 1 0 0 0 0 0 1
+def test_numeric_tum_timestamps_are_read_as_seconds():
+    text = """1.000 0 0 0 0 0 0 1
+1.050 1 0 0 0 0 0 1
 """
-    traj = load_trajectory_from_text(text, fmt="tum", name="tum_ns")
+    traj = load_trajectory_from_text(text, fmt="tum", name="tum_seconds")
     assert abs(traj.duration_s - 0.05) < 1e-12
+
+
+def test_numeric_tum_requires_exactly_eight_columns():
+    text = "1.000 0 0 0 0 0 0 1 99\n1.050 1 0 0 0 0 0 1 99\n"
+    with pytest.raises(ValueError, match="TUM format expects exactly 8 columns"):
+        load_trajectory_from_text(text, fmt="tum", name="tum_extra_column")
 
 
 def test_gt_is_interpolated_to_vo_timestamps_by_default():
@@ -791,26 +655,22 @@ def test_gt_is_interpolated_to_vo_timestamps_by_default():
 """
     gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
     est = load_trajectory_from_text(est_text, fmt="tum", name="est")
-    cfg = EvaluationConfig(alignment="none", segment_lengths_m=(0.1,), max_interpolation_gap_s=0.3)
-    report = evaluate_trajectories(gt, est, cfg)
+    report = evaluate_trajectories(gt, est, EvaluationConfig())
     assert report["association"]["method"] == "interpolate_gt"
     assert report["association"]["target"] == "estimate_timestamps"
     assert report["summary"]["matched_poses"] == 3
     assert report["ate_position_m"]["rmse"] < 1e-12
 
 
-def test_rpe_frame_mode_uses_configured_frame_delta_in_per_frame_sheet():
+def test_rpe_frame_mode_uses_evo_consecutive_frame_pairs_in_per_frame_sheet():
     gt = load_trajectory_from_text(make_tum(rows=8), fmt="tum", name="gt")
     est = load_trajectory_from_text(make_tum(rows=8), fmt="tum", name="est")
     report = evaluate_trajectories(
         gt,
         est,
         EvaluationConfig(
-            alignment="none",
             rpe_delta_value=3,
             rpe_delta_unit="frames",
-            segment_lengths_m=(1.0,),
-            max_interpolation_gap_s=0.3,
         ),
     )
 
@@ -818,15 +678,15 @@ def test_rpe_frame_mode_uses_configured_frame_delta_in_per_frame_sheet():
     assert rpe["delta_unit"] == "frames"
     assert rpe["delta_value"] == 3
     assert rpe["delta_frames"] == 3
-    assert rpe["count"] == 5
+    assert rpe["count"] == 2
 
     sheet = report["trajectory_exports"]["rpe_per_frame"]
     assert sheet["rpe_delta_unit"].tolist() == ["frames"] * len(sheet)
-    assert sheet["rpe_end_match_index"].tolist()[:2] == [3, 4]
-    assert sheet["rpe_available"].tolist() == [True, True, True, True, True, False, False, False]
+    assert sheet["rpe_end_match_index"].tolist() == [3, -1, -1, 6, -1, -1, -1, -1]
+    assert sheet["rpe_available"].tolist() == [True, False, False, True, False, False, False, False]
 
 
-def test_rpe_distance_mode_uses_gt_distance_window_and_best_error_candidate():
+def test_rpe_distance_mode_uses_evo_consecutive_estimate_path_pairs():
     stamps = np.arange(6, dtype=float)
     gt_pos = np.array(
         [
@@ -855,12 +715,9 @@ def test_rpe_distance_mode_uses_gt_distance_window_and_best_error_candidate():
         gt,
         est,
         EvaluationConfig(
-            alignment="none",
             rpe_delta_value=100.0,
             rpe_delta_unit="meters",
             rpe_distance_tolerance_ratio=0.05,
-            segment_lengths_m=(10.0,),
-            discontinuity_step_m=1000.0,
         ),
     )
 
@@ -868,16 +725,15 @@ def test_rpe_distance_mode_uses_gt_distance_window_and_best_error_candidate():
     assert rpe["delta_unit"] == "meters"
     assert rpe["delta_distance_m"] == 100.0
     assert rpe["distance_tolerance_ratio"] == 0.05
-    assert rpe["count"] == 4
+    assert rpe["count"] == 1
 
     sheet = report["trajectory_exports"]["rpe_per_frame"]
-    first = sheet.iloc[0]
-    assert bool(first["rpe_available"]) is True
-    assert first["rpe_end_match_index"] == 3
-    assert first["rpe_actual_distance_m"] == 104.0
-    assert first["rpe_candidate_count"] == 3
-    assert first["rpe_translation_m"] == 1.0
-    assert sheet["rpe_available"].tolist()[-2:] == [False, False]
+    assert sheet["rpe_available"].tolist() == [False, True, False, False, False, False]
+    active = sheet[sheet["rpe_available"]].iloc[0]
+    assert active["rpe_end_match_index"] == 5
+    assert active["rpe_actual_distance_m"] == 109.0
+    assert active["rpe_candidate_count"] == 1
+    assert active["rpe_translation_m"] == 10.0
 
 
 def test_scale_frame_mode_outputs_local_scale_per_start_timestamp():
@@ -891,17 +747,15 @@ def test_scale_frame_mode_outputs_local_scale_per_start_timestamp():
         "est",
         stamps,
         np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [10.0, 0.0, 0.0], [15.0, 0.0, 0.0], [20.0, 0.0, 0.0]]),
+        source_format="sf_vo",
     )
 
     report = evaluate_trajectories(
         gt,
         est,
         EvaluationConfig(
-            alignment="none",
             scale_delta_value=2,
             scale_delta_unit="frames",
-            segment_lengths_m=(1.0,),
-            max_interpolation_gap_s=1.1,
         ),
     )
 
@@ -930,18 +784,16 @@ def test_scale_distance_mode_uses_gt_distance_window_closest_to_target():
         "est",
         stamps,
         np.array([[0.0, 0.0, 0.0], [48.0, 0.0, 0.0], [50.0, 0.0, 0.0], [52.0, 0.0, 0.0], [102.5, 0.0, 0.0]]),
+        source_format="sf_vo",
     )
 
     report = evaluate_trajectories(
         gt,
         est,
         EvaluationConfig(
-            alignment="none",
             scale_delta_value=100.0,
             scale_delta_unit="meters",
             scale_distance_tolerance_ratio=0.05,
-            segment_lengths_m=(1.0,),
-            discontinuity_step_m=1000.0,
         ),
     )
 
@@ -960,13 +812,13 @@ def test_scale_distance_mode_uses_gt_distance_window_closest_to_target():
     assert first["local_sim3_scale"] == 2.0
 
 
-def test_build_associated_trajectories_linearly_interpolates_gt_position():
+def test_interpolate_reference_to_estimate_linearly_interpolates_gt_position():
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
     est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
-    gt_eval, est_eval, assoc = build_associated_trajectories(
+    gt_eval, est_eval, assoc = interpolate_reference_to_estimate(
         gt,
         est,
-        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+        max_interpolation_gap_s=20.0,
     )
     assert assoc["method"] == "interpolate_gt"
     assert assoc["position_method"] == "linear"
@@ -979,14 +831,14 @@ def test_build_associated_trajectories_linearly_interpolates_gt_position():
     assert abs(gt_eval.extras["interp_alpha"][0] - 0.5) < 1e-12
 
 
-def test_build_associated_trajectories_slerps_gt_rotation():
+def test_interpolate_reference_to_estimate_slerps_gt_rotation():
     gt_rot = euler_yaw_pitch_roll_to_matrix(np.array([0.0, np.pi / 2]), np.zeros(2), np.zeros(2))
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.zeros((2, 3)), gt_rot)
     est = Trajectory("est", np.array([5.0]), np.zeros((1, 3)))
-    gt_eval, _, assoc = build_associated_trajectories(
+    gt_eval, _, assoc = interpolate_reference_to_estimate(
         gt,
         est,
-        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+        max_interpolation_gap_s=20.0,
     )
     assert assoc["matches"] == 1
     assert assoc["rotation_method"] == "slerp"
@@ -1004,10 +856,10 @@ def test_interpolate_gt_does_not_extrapolate_by_default():
         np.array([9.0, 15.0, 21.0]),
         np.array([[9.0, 0.0, 0.0], [15.0, 0.0, 0.0], [21.0, 0.0, 0.0]]),
     )
-    gt_eval, est_eval, assoc = build_associated_trajectories(
+    gt_eval, est_eval, assoc = interpolate_reference_to_estimate(
         gt,
         est,
-        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+        max_interpolation_gap_s=20.0,
     )
     assert assoc["allow_extrapolation"] is False
     assert assoc["matches"] == 1
@@ -1020,10 +872,10 @@ def test_interpolate_gt_does_not_extrapolate_by_default():
 def test_interpolate_gt_respects_max_interpolation_gap():
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
     est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
-    gt_eval, est_eval, assoc = build_associated_trajectories(
+    gt_eval, est_eval, assoc = interpolate_reference_to_estimate(
         gt,
         est,
-        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=1.0),
+        max_interpolation_gap_s=1.0,
     )
     assert assoc["matches"] == 0
     assert assoc["large_interpolation_gap_count"] == 1
@@ -1031,29 +883,25 @@ def test_interpolate_gt_respects_max_interpolation_gap():
     assert len(gt_eval.positions) == 0
     assert len(est_eval.positions) == 0
 
-    gt_eval, est_eval, assoc = build_associated_trajectories(
+    gt_eval, est_eval, assoc = interpolate_reference_to_estimate(
         gt,
         est,
-        EvaluationConfig(association_mode="interpolate_gt", max_interpolation_gap_s=20.0),
+        max_interpolation_gap_s=20.0,
     )
     assert assoc["matches"] == 1
     assert assoc["large_interpolation_gap_count"] == 0
     assert len(gt_eval.positions) == len(est_eval.positions) == 1
 
 
-def test_nearest_association_keeps_tum_greedy_behavior_without_interpolation():
+def test_interpolate_reference_to_estimate_no_longer_supports_nearest_mode():
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
     est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
-    gt_eval, est_eval, assoc = build_associated_trajectories(
-        gt,
-        est,
-        EvaluationConfig(association_mode="nearest", max_time_diff_s=0.02),
-    )
-    assert assoc["mode"] == "nearest"
-    assert assoc["interpolated"] is False
-    assert assoc["matches"] == 0
-    assert len(gt_eval.positions) == 0
-    assert len(est_eval.positions) == 0
+    gt_eval, est_eval, assoc = interpolate_reference_to_estimate(gt, est, max_interpolation_gap_s=20.0)
+    assert assoc["mode"] == "interpolate_gt"
+    assert assoc["interpolated"] is True
+    assert assoc["matches"] == 1
+    assert np.allclose(gt_eval.positions[0], [5.0, 0.0, 0.0])
+    assert np.allclose(est_eval.positions[0], [5.0, 0.0, 0.0])
 
 
 def test_report_json_replaces_non_finite_values_with_null():
@@ -1072,12 +920,12 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
     est_positions = np.column_stack([np.arange(6, dtype=float), np.sin(np.arange(6, dtype=float)), np.ones(6, dtype=float)])
     raw_numeric = np.asarray(
         [
-            [0.0, 0.0, 0.000000, 1.0, 9, 0, 0, 0, 0],
-            [0.1, 1.0, 0.841471, 1.0, 9, 0, 0, 0, 0],
-            [0.2, 2.0, 0.909297, 1.0, 9, 1, 0, 0, 0],
-            [0.3, 3.0, 0.141120, 1.0, 9, 1, 0, 0, 0],
-            [0.4, 4.0, -0.756802, 1.0, 9, 2, 0, 0, 0],
-            [0.5, 5.0, -0.958924, 1.0, 9, 2, 0, 0, 0],
+            [0.0, 9, 0.0, 0.000000, 1.0, 0, 0, 10, 1, 0.1, 0],
+            [0.1, 9, 1.0, 0.841471, 1.0, 0, 0, 10, 1, 0.1, 0],
+            [0.2, 9, 2.0, 0.909297, 1.0, 0, 0, 10, 1, 0.1, 1],
+            [0.3, 9, 3.0, 0.141120, 1.0, 0, 0, 10, 1, 0.1, 1],
+            [0.4, 9, 4.0, -0.756802, 1.0, 0, 0, 10, 1, 0.1, 2],
+            [0.5, 9, 5.0, -0.958924, 1.0, 0, 0, 10, 1, 0.1, 2],
         ],
         dtype=float,
     )
@@ -1086,13 +934,13 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
         est_stamps,
         est_positions,
         rotations=None,
-        extras={"raw_numeric_table": raw_numeric},
+        extras={"raw_numeric_table": raw_numeric, "reset_count": raw_numeric[:, 10]},
         source_format="sf_vo",
     )
     report = evaluate_trajectories(
         gt,
         est,
-        EvaluationConfig(segment_lengths_m=(1.0,), max_interpolation_gap_s=0.2),
+        EvaluationConfig(),
     )
 
     sheets = report["trajectory_exports"]
@@ -1168,7 +1016,7 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
     assert "rpe_translation_m" in rpe_from_workbook.columns
 
 
-def test_auto_orientation_correction_selects_right_rz180():
+def test_orientation_correction_is_not_applied_in_fixed_evaluator():
     stamps = np.arange(40, dtype=float) * 0.1
     positions = np.column_stack([stamps, np.sin(stamps), 0.1 * stamps])
     gt_rot = euler_yaw_pitch_roll_to_matrix(0.2 * stamps, 0.1 * np.sin(stamps), 0.05 * np.cos(stamps))
@@ -1180,12 +1028,11 @@ def test_auto_orientation_correction_selects_right_rz180():
     report = evaluate_trajectories(
         gt,
         est,
-        EvaluationConfig(alignment="none", orientation_correction="auto", segment_lengths_m=(1.0,)),
+        EvaluationConfig(),
     )
 
-    assert report["orientation_correction"]["selected"] == "rz180_right"
-    assert report["ate_orientation_deg"]["rmse"] < 1e-9
-    assert report["rpe_frame_delta"]["rotation_deg"]["rmse"] < 1e-6
+    assert "orientation_correction" not in report
+    assert report["ate_orientation_deg"]["rmse"] > 100.0
 
 
 def test_per_pose_contains_position_and_ypr_series_for_visualization():
@@ -1208,7 +1055,7 @@ def test_per_pose_contains_position_and_ypr_series_for_visualization():
     report = evaluate_trajectories(
         gt,
         est,
-        EvaluationConfig(alignment="none", segment_lengths_m=(0.1,), max_interpolation_gap_s=0.2),
+        EvaluationConfig(),
     )
     per_pose = report["per_pose"]
 

@@ -2,17 +2,11 @@
 
 ## Commands
 
-### Run the Streamlit app
+### Run local server (required for evaluation)
 ```bash
-streamlit run app.py
+python web/server.py --host 127.0.0.1 --port 8766
 ```
-Opens on http://localhost:8501 by default.
-
-### Run static web version locally
-```bash
-cd static_web && python3 -m http.server 8765
-```
-Open http://localhost:8765 — must use HTTP, not file://.
+Open http://127.0.0.1:8765/ — the server provides both static files and evaluation API endpoints. Must run from repo root so that `vo_eval/` is importable.
 
 ### Run all tests
 ```bash
@@ -24,56 +18,37 @@ pytest
 pytest tests/test_evaluator.py -k "test_sim3_recovers_scale"
 ```
 
-### Sync static_web evaluator copy (automatic via git hook)
-```bash
-python scripts/sync_static_web.py   # manual sync if needed
-```
-Copies `vo_eval/evaluator.py` → `static_web/py/evaluator.py` for Pyodide browser deployment. A git pre-commit hook (`scripts/pre-commit-sync.sh`) runs this automatically when evaluator.py is changed, so the copy is always in sync.
-
 ## Architecture
 
-This is a VO (Visual Odometry) trajectory evaluation tool with two deployment modes: a Streamlit Python server (`app.py`) and a static web version (`static_web/`) that runs evaluation entirely in the browser via Pyodide.
+This is a VO (Visual Odometry) trajectory evaluation tool with a local-server-based web UI (`web/`). All evaluation runs in Python on the server side via HTTP API.
 
-### Three-tier separation
+### Layer separation
 
-**Algorithm layer** (`vo_eval/evaluator.py`): All computation lives here. This single file (~2500+ lines) handles:
-1. Input parsing — TUM, KITTI, CSV, EuRoC, SF, VLOC, XYZ formats into `Trajectory` dataclass
-2. Time synchronization — GT interpolation to VO timestamps (default), TUM greedy nearest-neighbor, or index matching
-3. Trajectory alignment — SE3, Sim3 (Umeyama), first-pose, or none; per-segment or global
-4. Orientation correction — auto-selects best convention fix (Rz180, ENU/NED, inverse, etc.)
-5. Metric computation — ATE, RPE, segment errors, speed bins, divergence, discontinuities, runtime stats
-6. Report output — structured dict with `per_pose` DataFrame, `segment_records`, `segment_errors`, `summary`, etc.
+**Data loading layer** (`vo_eval/data_loader.py`): Defines `Trajectory`, `EvaluationFormatSpec`, `HomePoint`, `Calibration`, `SfVlocBundle`, `SfVoBundle`, fixed SF/VO/VLOC columns, parsers, directory loaders, TUM readers, and input normalization. Also provides `load_vo_evaluation_bundle_from_text()` and `load_vloc_evaluation_bundle_from_text()` for file-upload API evaluation.
 
-**UI layer** (`app.py`, ~1660 lines): Streamlit sidebar collects config → calls `evaluate_trajectories()` → renders 15 metric cards + Plotly charts + downloadable HTML/JSON/CSV/Excel. Does NOT compute metrics — only displays them. Uses `importlib.reload()` on each run to pick up evaluator changes during Streamlit hot-reload.
+**Processing layer** (`vo_eval/processing.py`): Owns `EvaluationConfig`, `evaluate_vloc_bundle()`, `evaluate_vo_bundle()`, and `evaluate_trajectories()`. It controls the evaluation flow and assembles the report, but delegates low-level math to `utils.py` and export tables to `report.py`.
 
-**Static web layer** (`static_web/`): Pure client-side alternative. `app.js` builds UI and calls `static_web/py/browser_runner.py`, which wraps `vo_eval.evaluator` into a `evaluate_json()` function that takes text+config JSON and returns report JSON. Runs inside Pyodide with numpy/pandas bundled. `static_web/py/evaluator.py` is a copy of the core evaluator for Pyodide packaging.
+**Utility layer** (`vo_eval/utils.py`): Contains reusable numerical logic: NED/geodetic conversion, interpolation, quaternion/euler/rotation helpers, Sim3/Umeyama alignment, RPE pair selection, local scale estimation, discontinuity detection, and descriptive statistics.
+
+**Report layer** (`vo_eval/report.py`): Builds VLOC/VO detail tables and export artifacts, including JSON and Excel output.
+
+**Web UI layer** (`web/`): Local-server + browser UI. `js/main.js` is the ES module entry point that wires all UI modules; `js/state.js`, `js/constants.js`, `js/dom-refs.js`, `js/utils.js`, `js/labels.js` are foundational modules with no cross-dependencies. `server.py` is the HTTP server providing `/api/evaluate-paths`, `/api/evaluate-bundle`, `/api/report-slice`, and `/api/health` endpoints. `visualization/figure_specs.js` and `visualization/report_templates.js` use ES module `export` (no globalThis handshake). `cli/export_report_cli.js` is the Node.js CLI for offline HTML report generation. `css/style.css` provides base styles and CSS variables; `css/report-export.css` extends them for offline HTML reports.
 
 ### Key data structures
 
 - `Trajectory` dataclass: `stamps` (1D), `positions` (N×3), `rotations` (N×3×3 optional), `extras` dict for runtime fields
-- `EvaluationConfig` dataclass: All configurable parameters (alignment, association_mode, rpe_delta, segment_lengths, divergence thresholds, etc.)
+- `EvaluationConfig` dataclass: Supported evaluation parameters for the current VO/VLOC workflows, mainly RPE and local-scale interval settings plus fixed synchronization defaults.
 - Report dict: The output of `evaluate_trajectories()` with keys: `summary`, `ate_position_m`, `ate_vertical_m`, `rpe_frame_delta`, `segment_errors`, `segment_records`, `per_pose` (DataFrame), `divergence`, `discontinuities`, `association`, `alignment`, `orientation_correction`, `speed_bins`, `runtime`, `trajectory_exports`, `inputs`, `config`
 
 ### Evaluation pipeline order
 
-`evaluate_trajectories()` executes in this order:
-1. `prepare_evaluation_trajectories()` → `build_associated_trajectories()` (time sync)
-2. `select_orientation_correction()` + `apply_orientation_correction()` (if needed)
-3. `compute_alignment()` + `aggregate_alignment()` + `apply_alignment()` (coordinate transform)
-4. Error computation (ATE, RPE, segment, speed bins, divergence, discontinuities)
-5. `build_ate_report()`, `describe()`, summary aggregation
-6. `trajectory_exports` construction (TUM format sheets, per-frame ATE/RPE/scale DataFrames)
+`evaluate_trajectories()` in `vo_eval/processing.py` executes in this order:
+1. `prepare_evaluation_trajectories()` (GT interpolation to estimate timestamps)
+2. discontinuity diagnosis and optional continuous segment selection
+3. fixed VO/VLOC alignment policy (`VO = Sim3`, `VLOC = none`)
+4. ATE, per-frame RPE, and local scale calculations
+5. summary aggregation and `trajectory_exports` construction
 
 ### Metric-code synchronization
 
-`METRIC_CODE_MAP` at the top of `vo_eval/evaluator.py` is the authoritative index linking each metric to its report field and function names. When adding or renaming a metric, update `METRIC_CODE_MAP` AND the README "指标与 evaluator.py 代码总表" table simultaneously to prevent documentation/code divergence.
-
-### Evaluator deployment copy
-
-`static_web/py/evaluator.py` is a copy of `vo_eval/evaluator.py`, required because the browser (Pyodide) cannot import from the project Python package — it fetches files via HTTP and writes them into a virtual filesystem. After modifying `vo_eval/evaluator.py`, run `python scripts/sync_static_web.py` to update the copy. `static_web/py/browser_runner.py` is the thin Pyodide adapter that calls `evaluate_json()`.
-
-The `py/` directory (with its duplicate `evaluator.py` and `browser_runner.py`) was deleted — it had no references and was pure redundancy.
-
-### Streamlit config
-
-`.streamlit/config.toml`: upload size limit 200MB (`maxUploadSize = 200`), headless mode, port 8501.
+`METRIC_CODE_MAP` in `vo_eval/data_loader.py` is the authoritative index linking each metric to its report field and function names. When adding or renaming a metric, update `METRIC_CODE_MAP` and the README "指标与代码总表" table simultaneously to prevent documentation/code divergence.

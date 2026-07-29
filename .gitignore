@@ -16,7 +16,7 @@ reports/
 outputs/
 
 *.html
-!static_web/index.html
+!web/index.html
 *.bag
 *.zip
 *.tar
@@ -34,3 +34,9 @@ vo.txt
 *_GT.txt
 *Trajectory*.txt
 KITTI_*.txt
+
+.codebuddy
+.claude
+.specify
+specs/
+*.code-workspace

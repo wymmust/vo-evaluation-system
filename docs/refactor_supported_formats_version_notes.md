@@ -9,14 +9,14 @@
 - 文件格式固定：不再依赖旧版自动表头识别，减少字段猜错导致的坐标、姿态和时间戳错误。
 - VLOC 直接做 nav-vloc 对比：VLOC 有真实尺度，不做 Sim3 尺度对齐，不导出 Sim3 中间表。
 - VO 仍保留 Sim3/尺度分析：VO 可以无尺度或尺度不稳定，因此保留按连续段的 Sim3 对齐、RPE 和局部尺度图。
-- 静态网页离线化：Plotly、Pyodide、numpy、pandas 及依赖固定在 `static_web/vendor/`，页面运行时不再访问第三方 CDN。
+- 静态网页离线化：Plotly、Pyodide、numpy、pandas 及依赖固定在 `web/vendor/`，页面运行时不再访问第三方 CDN。
 
 ## 目录和文件约定
 
 评估时需要选择两个目录：
 
 - `data_dir`：固定读取 `imu.txt`，作为 ground truth / nav 参考。
-- `log_dir`：VLOC 模式读取 `vloc.txt`、`home_point.txt`、`calib_raw.yaml`；VO 模式读取 `vo.txt`、`home_point.txt`、`calib_raw.yaml`。
+- `log_dir`：VLOC 模式读取 `vloc.txt`、`home_point.txt`、`calib_raw.yaml`；VO 模式读取 `vo.txt`、`calib_raw.yaml`。
 
 浏览器不会暴露本地绝对路径，页面只显示目录名和文件数量。目录名不强制必须叫 `data_dir` / `log_dir`，但目录内部的文件名必须符合上述约定。
 
@@ -203,16 +203,16 @@ VLOC Excel 不包含 Sim3 工作簿；VO Excel 保留 Sim3 相关中间表。导
 
 - 上传数据只在当前浏览器内处理，不会发送到后端服务器。
 - 静态网页版本通过 Pyodide 在浏览器中运行 Python 评估逻辑。
-- `static_web/vendor/` 固定包含 Plotly、Pyodide、numpy、pandas 及必要依赖，运行时不再从第三方 CDN 拉取脚本。
+- `web/vendor/` 固定包含 Plotly、Pyodide、numpy、pandas 及必要依赖，运行时不再从第三方 CDN 拉取脚本。
 - `_headers` 中的 CSP 已移除第三方 CDN 白名单，脚本和数据连接限制在同源资源。
 - 仓库不应提交真实飞行日志、测试数据或导出报告。
 
 ## 部署方式
 
-静态网页部署时上传完整 `static_web/` 目录：
+静态网页部署时上传完整 `web/` 目录：
 
 ```text
-static_web/
+web/
   index.html
   app.js
   style.css
@@ -224,7 +224,7 @@ static_web/
 本地预览：
 
 ```bash
-cd static_web
+cd web
 python3 -m http.server 8765
 ```
 
@@ -234,6 +234,20 @@ python3 -m http.server 8765
 http://localhost:8765/
 ```
 
+如果要使用页面左侧的 `data_dir` / `log_dir` 本地路径输入框，请从仓库根目录启动本地路径服务：
+
+```bash
+python3 web/server.py --host 127.0.0.1 --port 8766
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:8766/
+```
+
+该模式由本机 Python 读取固定文件契约：`data_dir/imu.txt`；VO 的 `log_dir/vo.txt`、`log_dir/calib_raw.yaml`；VLOC 的 `log_dir/vloc.txt`、`log_dir/home_point.txt`、`log_dir/calib_raw.yaml`。
+
 不要直接双击 `index.html`，否则浏览器可能阻止本地资源读取。
 
 ## 验证命令
@@ -241,14 +255,14 @@ http://localhost:8765/
 推荐在提交前运行：
 
 ```bash
-node --check static_web/app.js
+node --check web/js/main.js
 python -m pytest -q
 ```
 
 静态资源访问验证：
 
 ```bash
-cd static_web
+cd web
 python3 -m http.server 8765
 ```
 
