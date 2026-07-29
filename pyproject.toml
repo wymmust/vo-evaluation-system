@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voeval"
+version = "0.1.0"
+description = "SF VO/VLOC trajectory evaluation tools"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "pandas",
+    "plotly",
+    "openpyxl",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+[project.scripts]
+voeval = "voeval.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["voeval*"]
+
+[tool.setuptools.package-data]
+voeval = [
+    "visualization/package.json",
+    "visualization/**/*.html",
+    "visualization/**/*.css",
+    "visualization/**/*.js",
+]

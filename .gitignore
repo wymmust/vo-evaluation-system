@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.egg-info/
 .DS_Store
 .netlify/
 .tmp_verify/
@@ -12,11 +13,11 @@ env/
 examples/
 data/
 datasets/
-reports/
+/reports/
 outputs/
 
 *.html
-!web/index.html
+!voeval/visualization/index.html
 *.bag
 *.zip
 *.tar

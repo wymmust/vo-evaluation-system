@@ -1,0 +1,31 @@
+// dom-refs.js — DOM 元素引用缓存
+// 避免重复 getElementById 调用，所有模块共享同一份 DOM 引用
+
+export const els = {
+  status: document.getElementById("runtimeStatus"),
+  message: document.getElementById("message"),
+  runButton: document.getElementById("runButton"),
+  metrics: document.getElementById("metrics"),
+  entryMode: document.getElementById("entryMode"),
+  dataset: document.getElementById("dataset"),
+  entryModeHint: document.getElementById("entryModeHint"),
+  summaryKicker: document.getElementById("summaryKicker"),
+  summaryTitle: document.getElementById("summaryTitle"),
+  visualKicker: document.getElementById("visualKicker"),
+  visualTitle: document.getElementById("visualTitle"),
+  dataDirPath: document.getElementById("dataDirPath"),
+  logDirPath: document.getElementById("logDirPath"),
+  vlocChartDirectorySection: document.getElementById("vlocChartDirectorySection"),
+  vlocChartList: document.getElementById("vlocChartList"),
+  vlocChartSelectAll: document.getElementById("vlocChartSelectAll"),
+  vlocChartClear: document.getElementById("vlocChartClear"),
+  voChartDirectorySection: document.getElementById("voChartDirectorySection"),
+  voChartList: document.getElementById("voChartList"),
+  voChartSelectAll: document.getElementById("voChartSelectAll"),
+  voChartClear: document.getElementById("voChartClear"),
+  pointSelectionOutputSection: document.getElementById("pointSelectionOutputSection"),
+  pointSelectionOutput: document.getElementById("pointSelectionOutput"),
+  clearAllPointSelections: document.getElementById("clearAllPointSelections"),
+  downloadJson: document.getElementById("downloadJson"),
+  downloadHtml: document.getElementById("downloadHtml"),
+};

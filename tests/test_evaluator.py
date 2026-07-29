@@ -1,40 +1,77 @@
 import json
 import math
-import io
+import tomllib
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-import vo_eval
-from vo_eval.data_loader import (
+import voeval
+from voeval import __main__ as voeval_main
+from voeval.io import (
     Calibration,
     HomePoint,
     SfVlocBundle,
     SfVoBundle,
-    SUPPORTED_EVALUATION_FORMATS,
     Trajectory,
-    get_evaluation_format_spec,
     load_vloc_evaluation_bundle,
     load_vo_evaluation_bundle,
-    load_trajectory_from_text,
-    normalize_evaluation_format,
     parse_home_point_fixed,
     parse_calib_raw_fixed,
     parse_imu_fixed,
     parse_vloc_fixed,
     parse_vo_fixed,
 )
-from vo_eval.processing import EvaluationConfig, evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle
-from vo_eval.__main__ import main as cli_main
-from vo_eval.report import report_to_excel, report_to_json
-from vo_eval.utils import (
+from voeval.core import EvaluationConfig
+from voeval.cli import main as cli_main
+from voeval.debug import configure_logging
+from voeval.reports import evaluate_trajectories, evaluate_vloc_bundle, evaluate_vo_bundle, report_to_json
+from voeval.core import (
     euler_yaw_pitch_roll_to_matrix,
     interpolate_reference_to_estimate,
     sim3_alignment,
     yaw_from_rot,
 )
+
+
+def test_package_exposes_voeval_console_script():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+
+    assert pyproject["project"]["scripts"]["voeval"] == "voeval.__main__:main"
+    package_data = pyproject["tool"]["setuptools"]["package-data"]["voeval"]
+    assert "visualization/package.json" in package_data
+    assert "visualization/**/*.html" in package_data
+    assert "visualization/**/*.css" in package_data
+    assert "visualization/**/*.js" in package_data
+
+
+def test_package_supports_python38_legacy_editable_install():
+    repo_root = Path(__file__).resolve().parents[1]
+    pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    setup_py = repo_root / "setup.py"
+
+    assert pyproject["project"]["requires-python"] == ">=3.8"
+    assert setup_py.exists()
+    setup_text = setup_py.read_text(encoding="utf-8")
+    assert "voeval=voeval.__main__:main" in setup_text
+    assert "python_requires=\">=3.8\"" in setup_text
+    assert "visualization" in setup_text
+    assert "package_data={\"voeval\": _package_data()}" in setup_text
+
+
+def test_runtime_modules_delay_annotation_evaluation_for_python38():
+    repo_root = Path(__file__).resolve().parents[1]
+    modern_annotation_markers = (" | None", " | Path", " | str", " | int", " | float", "list[", "dict[", "tuple[", "set[")
+    missing_future_import = []
+    for path in sorted((repo_root / "voeval").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if any(marker in text for marker in modern_annotation_markers):
+            if "from __future__ import annotations" not in text:
+                missing_future_import.append(path.relative_to(repo_root).as_posix())
+
+    assert missing_future_import == []
 
 
 def test_vloc_detail_visual_segments_follow_discontinuity_diagnostics():
@@ -56,43 +93,6 @@ def make_tum(rows=120):
         z = 50.0 + 0.01 * i
         lines.append(f"{t:.3f} {x:.6f} {y:.6f} {z:.6f} 0 0 0 1")
     return "\n".join(lines)
-
-
-def test_public_evaluation_formats_match_requirement_doc():
-    assert SUPPORTED_EVALUATION_FORMATS == ("sf_vloc", "sf_vo", "tum")
-
-    sf_vloc = get_evaluation_format_spec("sf_vloc")
-    assert sf_vloc.mode == "sf_vloc"
-    assert sf_vloc.required_files == (
-        "data_dir/imu.txt",
-        "log_dir/vloc.txt",
-        "log_dir/home_point.txt",
-        "log_dir/calib_raw.yaml",
-    )
-
-    sf_vo = get_evaluation_format_spec("sf_vo")
-    assert sf_vo.mode == "sf_vo"
-    assert sf_vo.required_files == (
-        "data_dir/imu.txt",
-        "log_dir/vo.txt",
-        "log_dir/calib_raw.yaml",
-    )
-
-    tum = get_evaluation_format_spec("tum")
-    assert tum.mode == "tum"
-    assert tum.required_files == ("ground_truth.tum", "estimate.tum")
-
-
-def test_public_evaluation_format_rejects_legacy_parser_formats():
-    for fmt in ["auto", "sf", "vloc", "csv", "kitti", "xyz"]:
-        with pytest.raises(ValueError, match="Supported evaluation formats"):
-            normalize_evaluation_format(fmt)
-
-
-def test_public_evaluation_format_rejects_non_canonical_spellings():
-    for fmt in ["SF-VLOC", "sf vo", "Tum"]:
-        with pytest.raises(ValueError, match="Supported evaluation formats"):
-            normalize_evaluation_format(fmt)
 
 
 def sample_calib_text() -> str:
@@ -119,6 +119,7 @@ def sample_imu_text() -> str:
     return """ts ts_fcc status flight_mode x y z yaw pitch roll vx vy vz position_reset_count altitude_reset_count heading_reset_count latitude longitude altitude altitude_msl height
 10.0 100.0 4194305 3 1 2 3 1.57079632679 0.1 -0.2 0.4 0.5 0.6 0 1 2 31.1 121.2 50 51 5
 10.1 100.1 268435457 3 2 3 4 1.67079632679 0.2 -0.3 0.5 0.6 0.7 0 1 2 31.2 121.3 51 52 6
+10.2 100.2 1 3 999 999 999 0 0 0 0 0 0 0 0 0 31.3 121.4 52 53 7
 """
 
 
@@ -126,6 +127,7 @@ def sample_vloc_text() -> str:
     return """ts status num_inliers reset_count x y z yaw pitch roll latitude longitude height
 10.0 2 42 0 11 12 13 90 2 -1 31.1 121.2 5
 10.1 3 43 1 12 13 14 91 3 -2 31.2 121.3 6
+10.2 2 44 1 999 999 999 92 4 -3 31.3 121.4 7
 """
 
 
@@ -133,6 +135,7 @@ def sample_vo_text() -> str:
     return """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
 10.0 50 21 22 23 90 2 -1 1 12.5 0
 10.1 51 22 23 24 91 3 -2 0 13.5 1
+10.2 52 999 999 999 92 4 -3 0 14.5 1
 """
 
 
@@ -188,6 +191,8 @@ def sample_vloc_bundle_with_large_nav_gap() -> SfVlocBundle:
             "reset_count": np.zeros(len(vloc_stamps), dtype=float),
             "latitude": vloc_lat,
             "longitude": np.full(len(vloc_stamps), home.longitude, dtype=float),
+            "altitude": np.abs(vloc_positions[:, 2]),
+            "altitude_msl": np.abs(vloc_positions[:, 2]),
             "height": np.asarray([5.0, 5.0, 5.0, 5.0, 5.0], dtype=float),
             "vloc_mode": np.asarray([2, 2, 2, 1, 2], dtype=float),
         },
@@ -206,7 +211,6 @@ def sample_vloc_bundle_with_large_nav_gap() -> SfVlocBundle:
         calibration=calibration,
         data_dir=Path("/tmp/data_dir"),
         log_dir=Path("/tmp/log_dir"),
-        files={},
     )
 
 
@@ -272,7 +276,6 @@ def sample_vo_bundle_with_reset_segments() -> SfVoBundle:
         calibration=calibration,
         data_dir=Path("/tmp/data_dir"),
         log_dir=Path("/tmp/log_dir"),
-        files={},
     )
 
 
@@ -336,6 +339,7 @@ def test_fixed_sf_parsers_use_documented_column_order_without_header_adaptation(
 def test_vo_fixed_accepts_legacy_14_column_format_without_using_depth_columns():
     legacy_text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count depth_mean depth_min depth_max
 10.0 50 21 22 23 90 2 -1 1 12.5 0 4.1 0.2 8.9
+10.1 51 999 999 999 91 3 -2 0 13.5 1 4.2 0.3 9.0
 """
 
     vo = parse_vo_fixed(legacy_text, name="vo.txt")
@@ -343,7 +347,107 @@ def test_vo_fixed_accepts_legacy_14_column_format_without_using_depth_columns():
     assert vo.source_format == "sf_vo"
     assert np.allclose(vo.positions[0], [21, 22, 23])
     assert np.allclose(vo.extras["time_cost"], [12.5])
-    assert vo.extras["raw_numeric_table"].shape == (1, 11)
+    assert "raw_numeric_table" not in vo.extras
+
+
+def test_fixed_trajectory_parsers_accept_and_ignore_arbitrary_extra_columns():
+    def append_extra_columns(text: str) -> str:
+        lines = []
+        for line in text.splitlines():
+            tokens = line.split()
+            if not tokens:
+                lines.append(line)
+                continue
+            try:
+                [float(token) for token in tokens]
+            except ValueError:
+                lines.append(line)
+            else:
+                lines.append(f"{line} 901 ignored_text 903")
+        return "\n".join(lines) + "\n"
+
+    imu = parse_imu_fixed(append_extra_columns(sample_imu_text()), name="imu.txt")
+    vloc = parse_vloc_fixed(append_extra_columns(sample_vloc_text()), name="vloc.txt")
+    vo = parse_vo_fixed(append_extra_columns(sample_vo_text()), name="vo.txt")
+
+    assert np.allclose(imu.positions[0], [1, 2, 3])
+    assert np.allclose(vloc.positions[0], [11, 12, 13])
+    assert np.allclose(vo.positions[0], [21, 22, 23])
+    assert np.allclose(vo.extras["time_cost"], [12.5, 13.5])
+
+
+@pytest.mark.parametrize(
+    ("parser", "text", "expected_stamps"),
+    [
+        (parse_imu_fixed, sample_imu_text(), [10.0, 10.1]),
+        (parse_vloc_fixed, sample_vloc_text(), [10.0, 10.1]),
+        (parse_vo_fixed, sample_vo_text(), [10.0, 10.1]),
+    ],
+)
+def test_fixed_trajectory_parsers_ignore_last_line(parser, text, expected_stamps):
+    lines = text.splitlines()
+    lines[-1] = "TRUNCATED LAST LINE"
+
+    trajectory = parser("\n".join(lines) + "\n")
+
+    assert np.allclose(trajectory.stamps, expected_stamps)
+
+
+@pytest.mark.parametrize(
+    ("parser", "text"),
+    [
+        (parse_imu_fixed, sample_imu_text()),
+        (parse_vloc_fixed, sample_vloc_text()),
+        (parse_vo_fixed, sample_vo_text()),
+    ],
+)
+def test_fixed_trajectory_parsers_ignore_last_record_before_trailing_comments(parser, text):
+    trajectory = parser(text + "\n# trailing comment\n\n")
+
+    assert np.allclose(trajectory.stamps, [10.0, 10.1])
+
+
+def test_fixed_trajectory_parser_still_rejects_invalid_middle_line():
+    text = """ts num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
+10.0 50 21 22 23 90 2 -1 1 12.5 0
+BROKEN MIDDLE LINE
+TRUNCATED LAST LINE
+"""
+
+    with pytest.raises(ValueError, match="non-numeric values after data started"):
+        parse_vo_fixed(text, name="vo.txt")
+
+
+def test_fixed_parsers_do_not_keep_raw_numeric_tables_and_validate_integer_columns():
+    imu = parse_imu_fixed(sample_imu_text(), name="imu.txt")
+    vloc = parse_vloc_fixed(sample_vloc_text(), name="vloc.txt")
+    vo = parse_vo_fixed(sample_vo_text(), name="vo.txt")
+
+    assert "raw_numeric_table" not in imu.extras
+    assert "raw_numeric_table" not in vloc.extras
+    assert "raw_numeric_table" not in vo.extras
+    assert np.allclose(vloc.extras["altitude"], np.abs(vloc.positions[:, 2]))
+    assert np.allclose(vloc.extras["altitude_msl"], np.abs(vloc.positions[:, 2]))
+    assert np.allclose(vloc.extras["height"], [5.0, 6.0])
+
+    bad_status = sample_vloc_text().replace("10.0 2 42", "10.0 2.5 42", 1)
+    with pytest.raises(ValueError, match="integer"):
+        parse_vloc_fixed(bad_status, name="vloc.txt")
+
+
+def test_trajectory_helpers_reject_mismatched_extra_lengths():
+    with pytest.raises(ValueError, match="extras"):
+        Trajectory("bad", [0, 1], [[0, 0, 0], [1, 0, 0]], extras={"bad": np.asarray([1, 2, 3])})
+
+
+def test_evaluation_config_normalizes_units_and_rejects_invalid_values():
+    cfg = EvaluationConfig(delta_value=100, delta_unit="m")
+    assert cfg.delta_unit == "meters"
+
+    with pytest.raises(ValueError, match="delta_value"):
+        EvaluationConfig(delta_value=0)
+    with pytest.raises(ValueError, match="delta_unit"):
+        EvaluationConfig(delta_unit="seconds")
 
 
 def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
@@ -355,21 +459,42 @@ def test_vloc_evaluation_bundle_loads_vloc_directory_contract(tmp_path):
     assert np.allclose(bundle.vloc.positions[0], [11, 12, 13])
     assert bundle.home_point.longitude == 121.2
     assert np.allclose(bundle.calibration.t_imu_body[:3, 3], [0.1, 0.2, 0.3])
-    assert bundle.files["estimate"].name == "vloc.txt"
 
 
 def test_vo_evaluation_bundle_loads_vo_directory_contract_without_using_vloc(tmp_path):
     data_dir, log_dir = write_sf_dirs(tmp_path)
     (log_dir / "home_point.txt").unlink()
 
-    bundle = load_vo_evaluation_bundle(data_dir, log_dir)
+    bundle = load_vo_evaluation_bundle(data_dir, log_dir, "vo.txt")
 
     assert bundle.nav.source_format == "sf_imu"
     assert bundle.vo.source_format == "sf_vo"
     assert np.allclose(bundle.vo.positions[0], [21, 22, 23])
-    assert bundle.files["estimate"].name == "vo.txt"
-    assert "home_point" not in bundle.files
     assert not hasattr(bundle, "home_point")
+
+
+def test_bundle_loaders_select_calibration_file_from_dataset(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    (log_dir / "bottom_calib_raw.yaml").write_text(sample_identity_calib_text(), encoding="utf-8")
+
+    default_vloc = load_vloc_evaluation_bundle(data_dir, log_dir)
+    rk3588_vloc = load_vloc_evaluation_bundle(data_dir, log_dir, dataset="rk3588")
+    default_vo = load_vo_evaluation_bundle(data_dir, log_dir, "vo.txt")
+    rk3588_vo = load_vo_evaluation_bundle(data_dir, log_dir, "vo.txt", dataset="rk3588")
+
+    assert np.allclose(default_vloc.calibration.t_imu_body[:3, 3], [0.1, 0.2, 0.3])
+    assert np.allclose(default_vo.calibration.t_imu_body[:3, 3], [0.1, 0.2, 0.3])
+    assert np.allclose(rk3588_vloc.calibration.t_imu_body, np.eye(4))
+    assert np.allclose(rk3588_vo.calibration.t_imu_body, np.eye(4))
+
+
+def test_bundle_loader_rejects_unknown_dataset_and_missing_selected_calibration(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+
+    with pytest.raises(ValueError, match="dataset must be one of: rk3399, rk3588"):
+        load_vloc_evaluation_bundle(data_dir, log_dir, dataset="unknown")
+    with pytest.raises(FileNotFoundError, match="log_dir/bottom_calib_raw.yaml"):
+        load_vloc_evaluation_bundle(data_dir, log_dir, dataset="rk3588")
 
 
 def test_bundle_loader_reports_missing_required_file(tmp_path):
@@ -393,16 +518,14 @@ def test_vloc_bundle_uses_fixed_interpolation_defaults_and_drops_invalid_frames(
     report = evaluate_vloc_bundle(bundle, EvaluationConfig())
 
     assert report["inputs"]["entry_mode"] == "vloc"
-    assert report["inputs"]["fixed_rules"]["alignment"] == "none"
-    assert report["inputs"]["fixed_rules"]["association_mode"] == "interpolate_gt"
-    assert report["inputs"]["fixed_rules"]["max_interpolation_gap_s"] == 1.0
-    assert report["inputs"]["fixed_rules"]["time_offset_s"] == 0.0
-    assert "alignment" not in report["config"]
-    assert "association_mode" not in report["config"]
+    assert "fixed_rules" not in report["inputs"]
+    assert "config" not in report
+    assert "method" not in report["association"]
+    assert "max_interpolation_gap_s" not in report["association"]
+    assert "time_offset_s" not in report["association"]
     assert report["summary"]["matched_poses"] == 3
-    assert report["association"]["dropped_est_large_gt_gap"] == 1
+    assert report["association"]["dropped_gt_gap_too_large"] == 1
     assert report["association"]["dropped_est_invalid_mode"] == 1
-    assert report["alignment"]["base_mode"] == "none"
 
 
 def test_vloc_report_contains_nav_vloc_specific_detail_tables():
@@ -421,7 +544,7 @@ def test_vloc_report_contains_nav_vloc_specific_detail_tables():
 
     assert details["summary"]["trajectory_length_m"] > 0
     assert details["summary"]["horizontal_error_mean_m"] == pytest.approx(1.0, abs=0.02)
-    assert details["summary"]["vertical_error_max_m"] == pytest.approx(100.0, abs=1e-3)
+    assert details["summary"]["vertical_error_max_m"] == pytest.approx(0.0, abs=1e-4)
     assert {"flight_mode", "navi_mode", "rtk_yaw", "rtk_alti", "velocity_norm"}.issubset(nav_status.columns)
     assert {"vloc_mode", "num_inliers", "reset_count"}.issubset(vloc_status.columns)
     assert {"position_error_n_m", "position_error_e_m", "position_error_d_m"}.issubset(comparison.columns)
@@ -429,33 +552,19 @@ def test_vloc_report_contains_nav_vloc_specific_detail_tables():
     assert np.allclose(comparison["position_error_e_m"].to_numpy(), 0.0, atol=1e-6)
 
 
-def test_vloc_excel_export_omits_sim3_sheets_because_vloc_has_metric_scale():
+def test_vloc_trajectory_exports_omit_sim3_sheets_because_vloc_has_metric_scale():
     bundle = sample_vloc_bundle_with_large_nav_gap()
     report = evaluate_vloc_bundle(bundle, EvaluationConfig())
 
-    sheets = report["trajectory_exports"]
-    assert "sim3_gt_tum" not in sheets
-    assert "sim3_vo_tum" not in sheets
+    exports = report["trajectory_exports"]
+    assert "sim3_gt_tum" not in exports
+    assert "sim3_vo_tum" not in exports
     assert "scale_frame_delta" not in report
-    assert "scale_per_frame" not in sheets
-
-    workbook = report_to_excel(report)
-    xlsx = pd.ExcelFile(io.BytesIO(workbook))
-    assert "sim3_gt_tum" not in xlsx.sheet_names
-    assert "sim3_vo_tum" not in xlsx.sheet_names
-    assert "scale_per_frame" not in xlsx.sheet_names
-    assert {
-        "input_gt_tum",
-        "input_vo_tum",
-        "filtered_vo_tum",
-        "interpolated_gt_tum",
-        "ate_per_frame",
-        "rpe_per_frame",
-    }.issubset(set(xlsx.sheet_names))
+    assert set(exports) == {"rpe_per_frame"}
 
 
 def test_package_all_exports_vo_bundle_entrypoint():
-    assert "evaluate_vo_bundle" in vo_eval.__all__
+    assert "evaluate_vo_bundle" in voeval.__all__
 
 
 def test_cli_requires_explicit_mode_and_directories():
@@ -463,20 +572,472 @@ def test_cli_requires_explicit_mode_and_directories():
         cli_main([])
 
 
+def test_module_main_dispatches_direct_sf_mode_to_cli(monkeypatch):
+    received: list[list[str]] = []
+
+    monkeypatch.setattr(voeval_main.cli, "main", lambda argv: received.append(list(argv)) or 0)
+
+    exit_code = voeval_main.main(["sf_vloc", "/data/path", "/log/path", "-v"])
+
+    assert exit_code == 0
+    assert received == [["sf_vloc", "/data/path", "/log/path", "-v"]]
+
+
+def test_module_main_rejects_legacy_flag_mode_entry(capsys):
+    exit_code = voeval_main.main(["--mode", "sf_vloc"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "unknown command: --mode" in captured.err
+
+
+def test_cli_accepts_positional_mode_and_directories(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir, dataset: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vloc_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vloc"},
+            "rpe_frame_delta": {"translation_m": {"rmse": 1.0, "mean": 0.5, "max": 2.0}, "count": 3},
+            "ate_position_m": {"rmse": 2.0, "mean": 1.0},
+            "alignment": {"base_mode": "none"},
+            "vloc_details": {"summary": {"trajectory_length_m": 100.0}},
+        },
+    )
+
+    exit_code = cli_main(["sf_vloc", str(tmp_path), str(tmp_path), "-v"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "========== VLOC 评估结果 ==========" in captured.out
+
+
+@pytest.mark.parametrize("mode", ["sf_vo", "sf_vloc"])
+def test_cli_forwards_selected_dataset_to_bundle_loader(tmp_path, monkeypatch, mode):
+    received: list[str] = []
+    monkeypatch.setattr(
+        "voeval.cli.load_vo_evaluation_bundle",
+        lambda data_dir, log_dir, vo_filename, dataset: received.append(dataset) or object(),
+    )
+    monkeypatch.setattr(
+        "voeval.cli.load_vloc_evaluation_bundle",
+        lambda data_dir, log_dir, dataset: received.append(dataset) or object(),
+    )
+    empty_report = {
+        "rpe_frame_delta": {},
+        "ate_position_m": {},
+        "discontinuities": {"selected_segment": {"segments": []}},
+        "vloc_details": {"summary": {}},
+    }
+    monkeypatch.setattr("voeval.cli.evaluate_vo_bundle", lambda bundle, config: empty_report)
+    monkeypatch.setattr("voeval.cli.evaluate_vloc_bundle", lambda bundle, config: empty_report)
+
+    exit_code = cli_main([mode, str(tmp_path), str(tmp_path), "--dataset", "rk3588"])
+
+    assert exit_code == 0
+    assert received == ["rk3588"]
+
+
+def test_cli_does_not_reconstruct_unquoted_directory_paths_with_spaces(tmp_path):
+    data_dir = tmp_path / "data dir"
+    log_dir = tmp_path / "log dir"
+    data_dir.mkdir()
+    log_dir.mkdir()
+
+    argv = ["sf_vloc", *str(data_dir).split(" "), *str(log_dir).split(" "), "-v"]
+    with pytest.raises(SystemExit):
+        cli_main(argv)
+
+
+def test_cli_prints_missing_metrics_without_format_crash(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir, dataset: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vloc_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vloc"},
+            "rpe_frame_delta": {"translation_m": {"rmse": math.nan, "mean": None, "max": "bad"}, "count": 0},
+            "ate_position_m": {"rmse": math.nan, "mean": None},
+            "alignment": {"base_mode": "none"},
+            "vloc_details": {
+                "summary": {
+                    "trajectory_length_m": math.nan,
+                    "mean_error_pos_xy": None,
+                    "mean_error_pos_z": "bad",
+                    "mean_error_euler": math.nan,
+                    "max_error_pos_xy": None,
+                    "max_error_pos_z": "bad",
+                    "max_error_euler": math.nan,
+                }
+            },
+        },
+    )
+
+    exit_code = cli_main(["sf_vloc", str(tmp_path), str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "RMSE: N/A m" in captured.out
+    assert "mean_error_pos_xy: N/A m" in captured.out
+    assert "max_error_euler: N/A deg" in captured.out
+
+
+def test_cli_vloc_outputs_common_summary_and_vloc_specific_metrics(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir, dataset: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vloc_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vloc"},
+            "rpe_frame_delta": {
+                "translation_m": {"rmse": 0.75, "mean": 0.5, "median": 0.45, "max": 1.2, "min": 0.1},
+                "count": 9,
+            },
+            "ate_position_m": {"rmse": 1.25, "mean": 0.9, "median": 0.8, "max": 2.2, "min": 0.2},
+            "alignment": {"base_mode": "none"},
+            "discontinuities": {"selected_segment": {"segments": [{"count": 5}, {"count": 4}]}},
+            "vloc_details": {
+                "summary": {
+                    "trajectory_length_m": 5645.292,
+                    "mean_error_pos_xy": 4.720043,
+                    "mean_error_pos_z": 1.639898,
+                    "mean_error_euler": 0.707676,
+                    "max_error_pos_xy": 11.641345,
+                    "max_error_pos_z": 7.929585,
+                    "max_error_euler": 3.963572,
+                }
+            },
+        },
+    )
+
+    exit_code = cli_main(["sf_vloc", str(tmp_path), str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "========== VLOC 评估结果 ==========" in captured.out
+    assert "RPE 平移误差" in captured.out
+    assert "Median: 0.4500 m" in captured.out
+    assert "Min:  0.1000 m" in captured.out
+    assert "Count: 9" in captured.out
+    assert "ATE 绝对轨迹误差" in captured.out
+    assert "Median: 0.8000 m" in captured.out
+    assert "Max:  2.2000 m" in captured.out
+    assert "Min:  0.2000 m" in captured.out
+    assert "Segment 数量: 2" in captured.out
+    assert "VLOC 专项指标" in captured.out
+    assert "trajectory_length_m: 5645.2920 m" in captured.out
+    assert "mean_error_pos_xy: 4.7200 m" in captured.out
+    assert "mean_error_pos_z: 1.6399 m" in captured.out
+    assert "mean_error_euler: 0.7077 deg" in captured.out
+    assert "max_error_pos_xy: 11.6413 m" in captured.out
+    assert "max_error_pos_z: 7.9296 m" in captured.out
+    assert "max_error_euler: 3.9636 deg" in captured.out
+    assert "Sim3 变换" not in captured.out
+
+
+def test_cli_vo_outputs_complete_statistics_and_each_segment_sim3(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename, dataset: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vo_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vo"},
+            "rpe_frame_delta": {
+                "translation_m": {"rmse": 3.8, "mean": 3.5, "median": 3.4, "max": 7.8, "min": 0.3},
+                "count": 55,
+            },
+            "ate_position_m": {"rmse": 19.2, "mean": 18.1, "median": 17.9, "max": 30.0, "min": 1.5},
+            "discontinuities": {"selected_segment": {"segments": [{"count": 30}, {"count": 25}]}},
+            "alignment": {
+                "base_mode": "sim3",
+                "segment_count": 2,
+                "segments": [
+                    {
+                        "segment_id": 0,
+                        "scale": 3.0,
+                        "rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        "translation": [1.0, 2.0, 3.0],
+                    },
+                    {
+                        "segment_id": 1,
+                        "scale": 4.0,
+                        "rotation": [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                        "translation": [4.0, 5.0, 6.0],
+                    },
+                ],
+            },
+        },
+    )
+
+    exit_code = cli_main(["sf_vo", str(tmp_path), str(tmp_path), "-d", "100", "-u", "m"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Median: 3.4000 m" in captured.out
+    assert "Min:  0.3000 m" in captured.out
+    assert "Count: 55" in captured.out
+    assert "Median: 17.9000 m" in captured.out
+    assert "Max:  30.0000 m" in captured.out
+    assert "Min:  1.5000 m" in captured.out
+    assert "Segment 数量: 2" in captured.out
+    assert "Sim3 变换:" in captured.out
+    assert "Segment 0:" in captured.out
+    assert "Scale: 3.0000" in captured.out
+    assert "[1.0000 0.0000 0.0000]" in captured.out
+    assert "Translation: [1.0000 2.0000 3.0000] m" in captured.out
+    assert "Segment 1:" in captured.out
+    assert "Scale: 4.0000" in captured.out
+    assert "Translation: [4.0000 5.0000 6.0000] m" in captured.out
+
+
+def test_cli_output_json_contains_only_vo_summary_metrics(tmp_path, monkeypatch, capsys):
+    requested_output_path = tmp_path / "vo_metrics"
+    output_path = tmp_path / "vo_metrics.json"
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename, dataset: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vo_bundle",
+        lambda bundle, config: {
+            "rpe_frame_delta": {
+                "translation_m": {"rmse": 3.8, "mean": 3.5, "median": 3.4, "max": 7.8, "min": 0.3, "p99": 9.0},
+                "count": 55,
+            },
+            "ate_position_m": {"rmse": 19.2, "mean": 18.1, "median": 17.9, "max": 30.0, "min": 1.5, "p99": 35.0},
+            "discontinuities": {"selected_segment": {"segments": [{"count": 55}]}},
+            "alignment": {
+                "base_mode": "sim3",
+                "segment_count": 1,
+                "segments": [
+                    {
+                        "segment_id": 0,
+                        "scale": 3.0,
+                        "rotation": np.eye(3),
+                        "translation": np.array([1.0, 2.0, 3.0]),
+                        "count": 55,
+                        "start_match_index": 0,
+                        "end_match_index": 55,
+                    }
+                ],
+            },
+            "per_pose": pd.DataFrame({"timestamp": np.arange(1000), "error_m": np.arange(1000)}),
+            "trajectory_exports": {"rpe_per_frame": pd.DataFrame({"value": np.arange(1000)})},
+        },
+    )
+
+    exit_code = cli_main(["sf_vo", str(tmp_path), str(tmp_path), "-d", "100", "-u", "m", "-o", str(requested_output_path)])
+
+    assert exit_code == 0
+    assert not requested_output_path.exists()
+    assert output_path.exists()
+    assert f"[voeval] wrote {output_path.resolve()}" in capsys.readouterr().out
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert set(payload) == {"mode", "rpe_translation_m", "ate_position_m", "segment_count", "sim3"}
+    assert payload["rpe_translation_m"] == {
+        "delta_value": 100.0,
+        "delta_unit": "m",
+        "rmse": 3.8,
+        "mean": 3.5,
+        "median": 3.4,
+        "max": 7.8,
+        "min": 0.3,
+        "count": 55,
+    }
+    assert payload["ate_position_m"] == {"rmse": 19.2, "mean": 18.1, "median": 17.9, "max": 30.0, "min": 1.5}
+    assert payload["segment_count"] == 1
+    assert payload["sim3"]["segments"][0]["translation"] == [1.0, 2.0, 3.0]
+    assert "per_pose" not in payload
+    assert "trajectory_exports" not in payload
+
+
+def test_cli_output_json_contains_only_vloc_summary_metrics(tmp_path, monkeypatch):
+    output_path = tmp_path / "vloc_metrics.json"
+    vloc_summary = {
+        "trajectory_length_m": 5645.2915,
+        "mean_error_pos_xy": 4.72,
+        "mean_error_pos_z": 1.6399,
+        "mean_error_euler": 0.7077,
+        "max_error_pos_xy": 11.6413,
+        "max_error_pos_z": 7.9296,
+        "max_error_euler": 3.9636,
+    }
+    monkeypatch.setattr("voeval.cli.load_vloc_evaluation_bundle", lambda data_dir, log_dir, dataset: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vloc_bundle",
+        lambda bundle, config: {
+            "rpe_frame_delta": {
+                "translation_m": {"rmse": 2.5, "mean": 2.2, "median": 2.0, "max": 5.0, "min": 0.1},
+                "count": 54,
+            },
+            "ate_position_m": {"rmse": 6.0, "mean": 5.2, "median": 5.0, "max": 12.0, "min": 0.2},
+            "discontinuities": {"selected_segment": {"segments": [{"count": 54}]}},
+            "vloc_details": {
+                "summary": vloc_summary,
+                "comparison": pd.DataFrame({"timestamp": np.arange(1000)}),
+            },
+            "per_pose": pd.DataFrame({"timestamp": np.arange(1000)}),
+        },
+    )
+
+    exit_code = cli_main(["sf_vloc", str(tmp_path), str(tmp_path), "-o", str(output_path)])
+
+    assert exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert set(payload) == {"mode", "rpe_translation_m", "ate_position_m", "segment_count", "vloc_metrics"}
+    assert payload["mode"] == "sf_vloc"
+    assert payload["segment_count"] == 1
+    assert payload["vloc_metrics"] == vloc_summary
+    assert "per_pose" not in payload
+    assert "vloc_details" not in payload
+
+
+def test_cli_debug_outputs_system_info_and_parser_config(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename, dataset: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vo_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vo"},
+            "rpe_frame_delta": {"translation_m": {"rmse": 1.0, "mean": 0.5, "max": 2.0}, "count": 3},
+            "ate_position_m": {"rmse": 2.0, "mean": 1.0},
+            "alignment": {"base_mode": "sim3", "scale": 3.0},
+        },
+    )
+
+    exit_code = cli_main(["sf_vo", str(tmp_path), str(tmp_path), "--debug"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "System info:" in captured.out
+    assert "\nPython " in captured.out
+    assert "Python:" not in captured.out
+    assert "Platform:" not in captured.out
+    assert "Executable:" not in captured.out
+    assert "main_parser config:" in captured.out
+    assert "'mode': 'sf_vo'" in captured.out
+    assert "'delta': 100.0" in captured.out
+    assert "'delta_unit': 'm'" in captured.out
+    assert "'ref_file':" in captured.out and "imu.txt" in captured.out
+    assert "'est_file':" in captured.out and "vo.txt" in captured.out
+    assert "'data_dir':" in captured.out
+    assert "'log_dir':" in captured.out
+    assert "'dataset': 'rk3399'" in captured.out
+    assert "'align':" not in captured.out
+    assert "'correct_scale':" not in captured.out
+    assert "'delta_tol':" not in captured.out
+    assert "'pose_relation':" not in captured.out
+    assert "'subcommand':" not in captured.out
+    assert "'t_max_diff':" not in captured.out
+    assert "'t_offset':" not in captured.out
+    assert "--------------------------------------------------------------------------------" in captured.out
+    assert "RPE 平移误差" in captured.out
+
+
+def test_cli_silent_suppresses_success_summary(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename, dataset: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vo_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vo"},
+            "rpe_frame_delta": {"translation_m": {"rmse": 1.0, "mean": 0.5, "max": 2.0}, "count": 3},
+            "ate_position_m": {"rmse": 2.0, "mean": 1.0},
+            "alignment": {"base_mode": "sim3", "scale": 3.0},
+        },
+    )
+
+    exit_code = cli_main(["sf_vo", str(tmp_path), str(tmp_path), "--silent"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "评估结果" not in captured.out
+    assert "RPE 平移误差" not in captured.out
+
+
+def test_cli_logfile_writes_debug_log(tmp_path, monkeypatch, capsys):
+    log_path = tmp_path / "voeval_debug.log"
+    monkeypatch.setattr("voeval.cli.load_vo_evaluation_bundle", lambda data_dir, log_dir, vo_filename, dataset: object())
+    monkeypatch.setattr(
+        "voeval.cli.evaluate_vo_bundle",
+        lambda bundle, config: {
+            "inputs": {"entry_mode": "vo"},
+            "rpe_frame_delta": {"translation_m": {"rmse": 1.0, "mean": 0.5, "max": 2.0}, "count": 3},
+            "ate_position_m": {"rmse": 2.0, "mean": 1.0},
+            "alignment": {"base_mode": "sim3", "scale": 3.0},
+        },
+    )
+
+    exit_code = cli_main(
+        [
+            "sf_vo",
+            str(tmp_path),
+            str(tmp_path),
+            "--logfile",
+            str(log_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "RPE 平移误差" in captured.out
+    assert log_path.exists()
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "main_parser config:" in log_text
+    assert "--------------------------------------------------------------------------------" in log_text
+    assert "RPE translation summary" in log_text
+
+
+def test_cli_logfile_includes_backend_debug_steps(tmp_path):
+    data_dir, log_dir = write_sf_dirs(tmp_path)
+    log_path = tmp_path / "voeval_backend_debug.log"
+
+    exit_code = cli_main(
+        [
+            "sf_vloc",
+            str(data_dir),
+            str(log_dir),
+            "--logfile",
+            str(log_path),
+        ]
+    )
+
+    assert exit_code == 0
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "Loaded " in log_text
+    assert " stamps and poses from:" in log_text
+    assert "Synchronizing trajectories..." in log_text
+    assert "Found " in log_text
+    assert " possible matching timestamps between..." in log_text
+    assert "VLOC mode filter" in log_text
+    assert "Trajectory evaluation summary" in log_text
+
+
+def test_debug_log_uses_evo_like_alignment_and_rpe_messages(tmp_path):
+    log_path = tmp_path / "voeval_evo_like_debug.log"
+    configure_logging(logfile=log_path)
+
+    report = evaluate_vo_bundle(
+        sample_vo_bundle_with_reset_segments(),
+        EvaluationConfig(delta_value=100, delta_unit="frames"),
+    )
+
+    assert report["rpe_frame_delta"]["count"] > 0
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "Aligning using Umeyama's method... (with scale correction)" in log_text
+    assert "Rotation of alignment:" in log_text
+    assert "Translation of alignment:" in log_text
+    assert "Scale correction:" in log_text
+    assert "Found " in log_text
+    assert " pairs with delta 100 (frames) among " in log_text
+    assert " using consecutive pairs." in log_text
+    assert "Compared " in log_text
+    assert " relative pose pairs, delta = 100 (frames) with consecutive pairs." in log_text
+    assert "Calculating RPE for translation part pose relation..." in log_text
+
+
 def test_cli_p_option_previews_temp_html_report(tmp_path, monkeypatch):
     data_dir, log_dir = write_sf_dirs(tmp_path)
     opened_urls: list[str] = []
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("vo_eval.__main__.webbrowser.open", lambda url: opened_urls.append(url) or True)
+    monkeypatch.setattr("voeval.reports.preview.webbrowser.open", lambda url: opened_urls.append(url) or True)
 
     exit_code = cli_main(
         [
-            "--mode",
             "sf_vloc",
-            "--data_dir",
             str(data_dir),
-            "--log_dir",
             str(log_dir),
             "-p",
         ]
@@ -505,11 +1066,8 @@ def test_cli_s_option_uses_default_html_filename(tmp_path, monkeypatch):
 
     exit_code = cli_main(
         [
-            "--mode",
             "sf_vloc",
-            "--data_dir",
             str(dataset_dir),
-            "--log_dir",
             str(dataset_dir),
             "-s",
         ]
@@ -527,11 +1085,8 @@ def test_cli_s_option_writes_custom_html_output(tmp_path):
 
     exit_code = cli_main(
         [
-            "--mode",
             "sf_vloc",
-            "--data_dir",
             str(data_dir),
-            "--log_dir",
             str(log_dir),
             "-s",
             "--html-output",
@@ -551,11 +1106,8 @@ def test_cli_html_output_requires_save_flag(tmp_path):
     with pytest.raises(SystemExit):
         cli_main(
             [
-                "--mode",
                 "sf_vloc",
-                "--data_dir",
                 str(data_dir),
-                "--log_dir",
                 str(log_dir),
                 "-p",
                 "--html-output",
@@ -570,13 +1122,11 @@ def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
 
     assert report["inputs"]["entry_mode"] == "vo"
     assert report["inputs"]["workflow"] == "sf_vo"
-    assert report["inputs"]["fixed_rules"]["alignment"] == "sim3"
-    assert report["inputs"]["fixed_rules"]["association_mode"] == "interpolate_gt"
-    assert report["inputs"]["fixed_rules"]["max_interpolation_gap_s"] == 1.0
-    assert report["inputs"]["fixed_rules"]["time_offset_s"] == 0.0
-    assert report["inputs"]["fixed_rules"]["continuous_segment_policy"] == "segments"
-    assert "alignment" not in report["config"]
-    assert "continuous_segment_policy" not in report["config"]
+    assert "fixed_rules" not in report["inputs"]
+    assert "config" not in report
+    assert "method" not in report["association"]
+    assert "max_interpolation_gap_s" not in report["association"]
+    assert "time_offset_s" not in report["association"]
 
     assert report["association"]["dropped_est_invalid_segment"] == 50
     assert report["association"]["valid_est_after_segment_filter"] == 402
@@ -596,94 +1146,17 @@ def test_vo_bundle_filters_reset_segments_and_uses_fixed_sim3_workflow():
     assert {"num_inliers", "is_keyframe", "time_cost", "reset_count"}.issubset(details["vo_status"].columns)
 
 
-def test_fixed_parser_rejects_wrong_column_count():
-    bad_vloc = "10.0 2 42 0 11 12 13 90 2 -1 31.1 121.2\n"
-    with pytest.raises(ValueError, match="13 columns"):
-        parse_vloc_fixed(bad_vloc, name="vloc.txt")
-
-
-def test_tum_zero_error_without_user_alignment_config():
-    gt = load_trajectory_from_text(make_tum(), fmt="tum", name="gt")
-    est = load_trajectory_from_text(make_tum(), fmt="tum", name="est")
-    report = evaluate_trajectories(gt, est, EvaluationConfig())
-    assert report["ate_position_m"]["rmse"] < 1e-6
-    assert report["rpe_frame_delta"]["translation_m"]["rmse"] < 1e-9
-    assert report["summary"]["coverage_ratio"] == 1.0
-
-
-def test_sim3_recovers_scale_for_monocular_like_output():
-    gt = load_trajectory_from_text(make_tum(), fmt="tum", name="gt")
-    est_positions = gt.positions * 0.5 + np.array([10.0, -3.0, 2.0])
-    lines = []
-    for t, p in zip(gt.stamps, est_positions):
-        lines.append(f"{t:.3f} {p[0]:.6f} {p[1]:.6f} {p[2]:.6f} 0 0 0 1")
-    est = load_trajectory_from_text("\n".join(lines), fmt="tum", name="est")
-    alignment = sim3_alignment(gt.positions, est.positions)
-    assert abs(alignment["scale"] - 2.0) < 1e-9
-
-
-def test_load_trajectory_from_text_rejects_legacy_single_file_formats():
-    text = "0 0 0 0 0 0 0 1\n1 1 0 0 0 0 0 1\n"
-    for fmt in ["auto", "sf", "vloc", "csv", "kitti", "xyz"]:
-        with pytest.raises(ValueError, match="Unsupported trajectory format"):
-            load_trajectory_from_text(text, fmt=fmt, name=f"legacy_{fmt}")
-
-
-def test_numeric_tum_timestamps_are_read_as_seconds():
-    text = """1.000 0 0 0 0 0 0 1
-1.050 1 0 0 0 0 0 1
-"""
-    traj = load_trajectory_from_text(text, fmt="tum", name="tum_seconds")
-    assert abs(traj.duration_s - 0.05) < 1e-12
-
-
-def test_numeric_tum_requires_exactly_eight_columns():
-    text = "1.000 0 0 0 0 0 0 1 99\n1.050 1 0 0 0 0 0 1 99\n"
-    with pytest.raises(ValueError, match="TUM format expects exactly 8 columns"):
-        load_trajectory_from_text(text, fmt="tum", name="tum_extra_column")
-
-
-def test_gt_is_interpolated_to_vo_timestamps_by_default():
-    gt_text = """0.1 0.1 0 0 0 0 0 1
-0.3 0.3 0 0 0 0 0 1
-0.5 0.5 0 0 0 0 0 1
-0.7 0.7 0 0 0 0 0 1
-"""
-    est_text = """0.2 0.2 0 0 0 0 0 1
-0.4 0.4 0 0 0 0 0 1
-0.6 0.6 0 0 0 0 0 1
-"""
-    gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
-    est = load_trajectory_from_text(est_text, fmt="tum", name="est")
-    report = evaluate_trajectories(gt, est, EvaluationConfig())
-    assert report["association"]["method"] == "interpolate_gt"
-    assert report["association"]["target"] == "estimate_timestamps"
-    assert report["summary"]["matched_poses"] == 3
-    assert report["ate_position_m"]["rmse"] < 1e-12
-
-
-def test_rpe_frame_mode_uses_evo_consecutive_frame_pairs_in_per_frame_sheet():
-    gt = load_trajectory_from_text(make_tum(rows=8), fmt="tum", name="gt")
-    est = load_trajectory_from_text(make_tum(rows=8), fmt="tum", name="est")
-    report = evaluate_trajectories(
-        gt,
-        est,
-        EvaluationConfig(
-            rpe_delta_value=3,
-            rpe_delta_unit="frames",
-        ),
-    )
-
-    rpe = report["rpe_frame_delta"]
-    assert rpe["delta_unit"] == "frames"
-    assert rpe["delta_value"] == 3
-    assert rpe["delta_frames"] == 3
-    assert rpe["count"] == 2
-
-    sheet = report["trajectory_exports"]["rpe_per_frame"]
-    assert sheet["rpe_delta_unit"].tolist() == ["frames"] * len(sheet)
-    assert sheet["rpe_end_match_index"].tolist() == [3, -1, -1, 6, -1, -1, -1, -1]
-    assert sheet["rpe_available"].tolist() == [True, False, False, True, False, False, False, False]
+@pytest.mark.parametrize(
+    ("parser", "text", "minimum"),
+    [
+        (parse_imu_fixed, "0 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18\n", 21),
+        (parse_vloc_fixed, "10 2 42 0 11 12 13 90 2 -1 31.1 121.2\n", 13),
+        (parse_vo_fixed, "10 42 21 22 23 90 2 -1 1 12.5\n", 11),
+    ],
+)
+def test_fixed_parser_rejects_fewer_than_required_columns(parser, text, minimum):
+    with pytest.raises(ValueError, match=rf"at least {minimum} columns"):
+        parser(text + "IGNORED LAST LINE\n")
 
 
 def test_rpe_distance_mode_uses_evo_consecutive_estimate_path_pairs():
@@ -715,15 +1188,15 @@ def test_rpe_distance_mode_uses_evo_consecutive_estimate_path_pairs():
         gt,
         est,
         EvaluationConfig(
-            rpe_delta_value=100.0,
-            rpe_delta_unit="meters",
-            rpe_distance_tolerance_ratio=0.05,
+            delta_value=100.0,
+            delta_unit="meters",
         ),
     )
 
     rpe = report["rpe_frame_delta"]
     assert rpe["delta_unit"] == "meters"
     assert rpe["delta_distance_m"] == 100.0
+    assert rpe["distance_tolerance_percent"] == 5.0
     assert rpe["distance_tolerance_ratio"] == 0.05
     assert rpe["count"] == 1
 
@@ -754,8 +1227,8 @@ def test_scale_frame_mode_outputs_local_scale_per_start_timestamp():
         gt,
         est,
         EvaluationConfig(
-            scale_delta_value=2,
-            scale_delta_unit="frames",
+            delta_value=2,
+            delta_unit="frames",
         ),
     )
 
@@ -791,15 +1264,15 @@ def test_scale_distance_mode_uses_gt_distance_window_closest_to_target():
         gt,
         est,
         EvaluationConfig(
-            scale_delta_value=100.0,
-            scale_delta_unit="meters",
-            scale_distance_tolerance_ratio=0.05,
+            delta_value=100.0,
+            delta_unit="meters",
         ),
     )
 
     scale_info = report["scale_frame_delta"]
     assert scale_info["delta_unit"] == "meters"
     assert scale_info["delta_distance_m"] == 100.0
+    assert scale_info["distance_tolerance_percent"] == 5.0
     assert scale_info["distance_tolerance_ratio"] == 0.05
 
     sheet = report["trajectory_exports"]["scale_per_frame"]
@@ -820,8 +1293,6 @@ def test_interpolate_reference_to_estimate_linearly_interpolates_gt_position():
         est,
         max_interpolation_gap_s=20.0,
     )
-    assert assoc["method"] == "interpolate_gt"
-    assert assoc["position_method"] == "linear"
     assert assoc["matches"] == 1
     assert np.allclose(gt_eval.positions[0], [5.0, 0.0, 0.0])
     assert np.allclose(gt_eval.stamps, est_eval.stamps)
@@ -841,7 +1312,6 @@ def test_interpolate_reference_to_estimate_slerps_gt_rotation():
         max_interpolation_gap_s=20.0,
     )
     assert assoc["matches"] == 1
-    assert assoc["rotation_method"] == "slerp"
     assert abs(yaw_from_rot(gt_eval.rotations)[0] - np.pi / 4) < 1e-9
 
 
@@ -861,7 +1331,6 @@ def test_interpolate_gt_does_not_extrapolate_by_default():
         est,
         max_interpolation_gap_s=20.0,
     )
-    assert assoc["allow_extrapolation"] is False
     assert assoc["matches"] == 1
     assert assoc["dropped_before_reference_range"] == 1
     assert assoc["dropped_after_reference_range"] == 1
@@ -878,7 +1347,7 @@ def test_interpolate_gt_respects_max_interpolation_gap():
         max_interpolation_gap_s=1.0,
     )
     assert assoc["matches"] == 0
-    assert assoc["large_interpolation_gap_count"] == 1
+    assert assoc["dropped_gt_gap_too_large"] == 1
     assert assoc["dropped"] == 1
     assert len(gt_eval.positions) == 0
     assert len(est_eval.positions) == 0
@@ -889,16 +1358,14 @@ def test_interpolate_gt_respects_max_interpolation_gap():
         max_interpolation_gap_s=20.0,
     )
     assert assoc["matches"] == 1
-    assert assoc["large_interpolation_gap_count"] == 0
+    assert assoc["dropped_gt_gap_too_large"] == 0
     assert len(gt_eval.positions) == len(est_eval.positions) == 1
 
 
-def test_interpolate_reference_to_estimate_no_longer_supports_nearest_mode():
+def test_interpolate_reference_to_estimate_uses_interpolated_reference_pose():
     gt = Trajectory("gt", np.array([0.0, 10.0]), np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]))
     est = Trajectory("est", np.array([5.0]), np.array([[5.0, 0.0, 0.0]]))
     gt_eval, est_eval, assoc = interpolate_reference_to_estimate(gt, est, max_interpolation_gap_s=20.0)
-    assert assoc["mode"] == "interpolate_gt"
-    assert assoc["interpolated"] is True
     assert assoc["matches"] == 1
     assert np.allclose(gt_eval.positions[0], [5.0, 0.0, 0.0])
     assert np.allclose(est_eval.positions[0], [5.0, 0.0, 0.0])
@@ -910,31 +1377,19 @@ def test_report_json_replaces_non_finite_values_with_null():
     assert parsed == {"values": [1.0, None, None, None, None]}
 
 
-def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
-    gt_text = "\n".join(
-        f"{i * 0.1:.1f} {i:.3f} {np.sin(i):.6f} 1.000 0 0 0 1"
-        for i in range(6)
-    )
-    gt = load_trajectory_from_text(gt_text, fmt="tum", name="gt")
+def test_trajectory_exports_only_keep_visualization_data_tables():
+    gt_stamps = np.arange(6, dtype=float) * 0.1
+    gt_positions = np.column_stack([gt_stamps, np.sin(gt_stamps), np.ones(6, dtype=float)])
+    gt_rot = np.broadcast_to(np.eye(3), (6, 3, 3)).copy()
+    gt = Trajectory("gt", gt_stamps, gt_positions, gt_rot)
     est_stamps = np.arange(6, dtype=float) * 0.1
     est_positions = np.column_stack([np.arange(6, dtype=float), np.sin(np.arange(6, dtype=float)), np.ones(6, dtype=float)])
-    raw_numeric = np.asarray(
-        [
-            [0.0, 9, 0.0, 0.000000, 1.0, 0, 0, 10, 1, 0.1, 0],
-            [0.1, 9, 1.0, 0.841471, 1.0, 0, 0, 10, 1, 0.1, 0],
-            [0.2, 9, 2.0, 0.909297, 1.0, 0, 0, 10, 1, 0.1, 1],
-            [0.3, 9, 3.0, 0.141120, 1.0, 0, 0, 10, 1, 0.1, 1],
-            [0.4, 9, 4.0, -0.756802, 1.0, 0, 0, 10, 1, 0.1, 2],
-            [0.5, 9, 5.0, -0.958924, 1.0, 0, 0, 10, 1, 0.1, 2],
-        ],
-        dtype=float,
-    )
     est = Trajectory(
         "vo",
         est_stamps,
         est_positions,
         rotations=None,
-        extras={"raw_numeric_table": raw_numeric, "reset_count": raw_numeric[:, 10]},
+        extras={"reset_count": np.asarray([0, 0, 1, 1, 2, 2], dtype=int)},
         source_format="sf_vo",
     )
     report = evaluate_trajectories(
@@ -943,54 +1398,10 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
         EvaluationConfig(),
     )
 
-    sheets = report["trajectory_exports"]
-    assert list(sheets) == [
-        "input_gt_tum",
-        "input_vo_tum",
-        "filtered_vo_tum",
-        "interpolated_gt_tum",
-        "sim3_gt_tum",
-        "sim3_vo_tum",
-        "ate_per_frame",
-        "rpe_per_frame",
-        "scale_per_frame",
-    ]
-    for frame in [sheets[name] for name in list(sheets)[:6]]:
-        assert list(frame.columns[:8]) == ["timestamp", "tx", "ty", "tz", "qx", "qy", "qz", "qw"]
+    exports = report["trajectory_exports"]
+    assert set(exports) == {"rpe_per_frame", "scale_per_frame"}
 
-    assert sheets["input_vo_tum"]["tum_file"].tolist() == [
-        "vo_tum_01",
-        "vo_tum_01",
-        "vo_tum_02",
-        "vo_tum_02",
-        "vo_tum_03",
-        "vo_tum_03",
-    ]
-    sim3_columns = [
-        "sim3_scale",
-        "sim3_rotation_r00",
-        "sim3_rotation_r01",
-        "sim3_rotation_r02",
-        "sim3_rotation_r10",
-        "sim3_rotation_r11",
-        "sim3_rotation_r12",
-        "sim3_rotation_r20",
-        "sim3_rotation_r21",
-        "sim3_rotation_r22",
-        "sim3_translation_x",
-        "sim3_translation_y",
-        "sim3_translation_z",
-    ]
-    for sheet_name in ["sim3_gt_tum", "sim3_vo_tum"]:
-        for column in sim3_columns:
-            assert column in sheets[sheet_name].columns
-        assert np.isfinite(sheets[sheet_name][sim3_columns].to_numpy(dtype=float)).all()
-    ate_sheet = sheets["ate_per_frame"]
-    assert {"timestamp", "segment_id", "ate_position_m", "ate_horizontal_m", "ate_vertical_abs_m"}.issubset(ate_sheet.columns)
-    assert len(ate_sheet) == report["summary"]["matched_poses"]
-    assert np.allclose(ate_sheet["ate_position_m"].to_numpy(), report["per_pose"]["error_m"].to_numpy())
-
-    rpe_sheet = sheets["rpe_per_frame"]
+    rpe_sheet = exports["rpe_per_frame"]
     assert {
         "timestamp",
         "segment_id",
@@ -1003,17 +1414,8 @@ def test_excel_export_contains_six_tum_sheets_and_vo_jump_groups():
     assert len(rpe_sheet) == report["summary"]["matched_poses"]
     assert rpe_sheet["rpe_available"].tolist()[:-1] == [True] * (len(rpe_sheet) - 1)
     assert rpe_sheet["rpe_available"].tolist()[-1] is False
-
-    workbook = report_to_excel(report)
-    xlsx = pd.ExcelFile(io.BytesIO(workbook))
-    assert xlsx.sheet_names == list(sheets)
-    sim3_vo_from_workbook = pd.read_excel(xlsx, sheet_name="sim3_vo_tum")
-    for column in sim3_columns:
-        assert column in sim3_vo_from_workbook.columns
-    ate_from_workbook = pd.read_excel(xlsx, sheet_name="ate_per_frame")
-    rpe_from_workbook = pd.read_excel(xlsx, sheet_name="rpe_per_frame")
-    assert "ate_position_m" in ate_from_workbook.columns
-    assert "rpe_translation_m" in rpe_from_workbook.columns
+    assert "rpe_translation_m" in rpe_sheet.columns
+    assert "local_sim3_scale" in exports["scale_per_frame"].columns
 
 
 def test_orientation_correction_is_not_applied_in_fixed_evaluator():

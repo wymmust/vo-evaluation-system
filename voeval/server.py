@@ -1,0 +1,182 @@
+"""Local web server with direct data_dir/log_dir path evaluation.
+
+Run from the repository root:
+
+    python -m voeval server
+
+The plain static page cannot read absolute local paths because browsers block
+that access. This server keeps the same browser UI, but reads the fixed input
+files on the local Python side when the user fills data_dir/log_dir path boxes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import json
+import sys
+import webbrowser
+from http import HTTPStatus
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+PACKAGE_ROOT = Path(__file__).resolve().parent
+STATIC_ROOT = PACKAGE_ROOT / "visualization"
+
+from .core import EvaluationConfig
+from .io import DEFAULT_DATASET, load_vloc_evaluation_bundle, load_vo_evaluation_bundle
+from .reports import evaluate_vloc_bundle, evaluate_vo_bundle
+from .reports.export import _jsonable_report, report_to_json
+
+LAST_REPORT: dict | None = None  # stored as _jsonable_report dict (JSON-safe)
+VO_CONFIG_INPUT_KEYS = {"delta_value", "delta_unit"}
+
+
+def evaluate_paths_payload(payload: dict) -> dict:
+    """Evaluate one data_dir/log_dir request and return the light report."""
+
+    global LAST_REPORT
+    entry_mode = str(payload.get("entryMode") or payload.get("entry_mode") or "").strip()
+    data_dir = Path(str(payload.get("dataDirPath") or payload.get("data_dir") or "")).expanduser()
+    log_dir = Path(str(payload.get("logDirPath") or payload.get("log_dir") or "")).expanduser()
+    dataset = str(payload.get("dataset") or DEFAULT_DATASET).strip().lower()
+    config_data = payload.get("config") or {}
+    if entry_mode not in {"vo", "vloc"}:
+        raise ValueError("entryMode must be 'vo' or 'vloc'")
+    if not data_dir.is_dir():
+        raise FileNotFoundError(f"data_dir not found: {data_dir}")
+    if not log_dir.is_dir():
+        raise FileNotFoundError(f"log_dir not found: {log_dir}")
+
+    config = _evaluation_config_from_payload(entry_mode, config_data)
+    if entry_mode == "vo":
+        bundle = load_vo_evaluation_bundle(data_dir, log_dir, "vo.txt", dataset=dataset)
+        report = evaluate_vo_bundle(bundle, config)
+    else:
+        bundle = load_vloc_evaluation_bundle(data_dir, log_dir, dataset=dataset)
+        report = evaluate_vloc_bundle(bundle, config)
+    LAST_REPORT = _jsonable_report(report)
+    return _light_report(report)
+
+
+def _evaluation_config_from_payload(entry_mode: str, config_data: object) -> EvaluationConfig:
+    """Build config only from user-visible inputs.
+
+    VLOC has no user-configurable evaluation parameters in the UI. VO only
+    exposes RPE interval and scale-plot interval, so hidden/default workflow
+    rules from older payloads are ignored at the server boundary.
+    """
+
+    if entry_mode != "vo" or not isinstance(config_data, dict):
+        return EvaluationConfig()
+    return EvaluationConfig(**{key: config_data[key] for key in VO_CONFIG_INPUT_KEYS if key in config_data})
+
+
+def get_report_slice(slice_name: str) -> object:
+    """Return a full report slice after a local-path evaluation."""
+
+    if LAST_REPORT is None:
+        raise RuntimeError("No report has been evaluated yet")
+    if slice_name == "full_report":
+        return LAST_REPORT
+    raise ValueError(f"Unknown report slice: {slice_name}")
+
+
+def _light_report(report: dict) -> dict:
+    """Return the initial light payload used by the browser UI."""
+
+    skip_keys = {"per_pose", "trajectory_exports"}
+    light = {key: value for key, value in report.items() if key not in skip_keys}
+    entry_mode = (report.get("inputs") or {}).get("entry_mode")
+    trajectory_exports = report.get("trajectory_exports") or {}
+    rpe_per_frame = trajectory_exports.get("rpe_per_frame")
+    scale_per_frame = trajectory_exports.get("scale_per_frame")
+    if rpe_per_frame is not None:
+        light.setdefault("trajectory_exports", {})["rpe_per_frame"] = rpe_per_frame
+    if entry_mode == "vo" and scale_per_frame is not None:
+        light.setdefault("trajectory_exports", {})["scale_per_frame"] = scale_per_frame
+    return json.loads(report_to_json(light))
+
+
+class LocalEvaluationHandler(SimpleHTTPRequestHandler):
+    """Serve web UI and local path evaluation APIs."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(STATIC_ROOT), **kwargs)
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path).path
+        if parsed == "/api/evaluate-paths":
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                report = evaluate_paths_payload(payload)
+                self._send_json({"ok": True, "report": report})
+            except Exception as exc:  # pragma: no cover - exercised through browser/manual server use
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        else:
+            self.send_error(HTTPStatus.NOT_FOUND)
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path == "/favicon.ico":
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.end_headers()
+            return
+        if parsed.path == "/api/health":
+            self._send_json({"ok": True})
+            return
+        if parsed.path == "/api/report-slice":
+            try:
+                slice_name = (parse_qs(parsed.query).get("slice") or ["full_report"])[0]
+                self._send_json({"ok": True, "data": get_report_slice(slice_name)})
+            except Exception as exc:  # pragma: no cover - exercised through browser/manual server use
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        super().do_GET()
+
+    def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m voeval server",
+        description="Serve web UI with local data_dir/log_dir path evaluation.",
+    )
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--no-open", action="store_true", help="Do not auto-open browser on start")
+    args = parser.parse_args(argv)
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), LocalEvaluationHandler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            next_port = args.port + 1
+            print(f"端口 {args.port} 已被占用，通常是上一次 server 还在运行。", file=sys.stderr)
+            print("解决方法：换一个端口重新启动，例如：", file=sys.stderr)
+            print(f"  python -m voeval server --port {next_port}", file=sys.stderr)
+            return 1
+        raise
+    url = f"http://{args.host}:{args.port}/"
+    print(f"Serving VO evaluation web UI on {url}")
+    print("Local path evaluation API is enabled for this machine.")
+    if not args.no_open:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

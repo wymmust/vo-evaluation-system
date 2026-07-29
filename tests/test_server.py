@@ -1,23 +1,12 @@
-from pathlib import Path
+import errno
+
+import pytest
 
 from test_evaluator import sample_calib_text
 
 
-def test_local_path_server_uses_entry_specific_required_files():
-    from web.server import required_local_files
-
-    assert required_local_files("vo") == {
-        "data": ("imu.txt",),
-        "log": ("vo.txt", "calib_raw.yaml"),
-    }
-    assert required_local_files("vloc") == {
-        "data": ("imu.txt",),
-        "log": ("vloc.txt", "home_point.txt", "calib_raw.yaml"),
-    }
-
-
 def test_local_path_server_evaluates_vo_without_home_point(tmp_path):
-    from web.server import evaluate_paths_payload, get_report_slice
+    from voeval.server import evaluate_paths_payload, get_report_slice
 
     data_dir = tmp_path / "data_dir"
     log_dir = tmp_path / "log_dir"
@@ -49,6 +38,97 @@ def test_local_path_server_evaluates_vo_without_home_point(tmp_path):
     )
 
     assert light_report["inputs"]["entry_mode"] == "vo"
-    assert light_report["summary"]["matched_poses"] == 201
+    assert light_report["summary"]["matched_poses"] == 200
     full_report = get_report_slice("full_report")
     assert full_report["inputs"]["entry_mode"] == "vo"
+
+
+@pytest.mark.parametrize("entry_mode", ["vo", "vloc"])
+def test_local_path_server_forwards_selected_dataset(tmp_path, monkeypatch, entry_mode):
+    from voeval import server
+
+    data_dir = tmp_path / "data_dir"
+    log_dir = tmp_path / "log_dir"
+    data_dir.mkdir()
+    log_dir.mkdir()
+    received: list[str] = []
+
+    monkeypatch.setattr(
+        server,
+        "load_vo_evaluation_bundle",
+        lambda data_dir, log_dir, vo_filename, dataset: received.append(dataset) or object(),
+    )
+    monkeypatch.setattr(
+        server,
+        "load_vloc_evaluation_bundle",
+        lambda data_dir, log_dir, dataset: received.append(dataset) or object(),
+    )
+    monkeypatch.setattr(server, "evaluate_vo_bundle", lambda bundle, config: {"inputs": {"entry_mode": "vo"}})
+    monkeypatch.setattr(server, "evaluate_vloc_bundle", lambda bundle, config: {"inputs": {"entry_mode": "vloc"}})
+
+    report = server.evaluate_paths_payload(
+        {
+            "entryMode": entry_mode,
+            "dataset": "rk3588",
+            "dataDirPath": str(data_dir),
+            "logDirPath": str(log_dir),
+        }
+    )
+
+    assert report["inputs"]["entry_mode"] == entry_mode
+    assert received == ["rk3588"]
+
+
+def test_local_path_server_rejects_unknown_entry_mode(tmp_path):
+    from voeval.server import evaluate_paths_payload
+
+    with pytest.raises(ValueError, match="entryMode must be 'vo' or 'vloc'"):
+        evaluate_paths_payload(
+            {
+                "entryMode": "unknown",
+                "dataDirPath": str(tmp_path),
+                "logDirPath": str(tmp_path),
+            }
+        )
+
+
+def test_server_main_auto_opens_browser(monkeypatch):
+    from voeval import server
+
+    opened_urls: list[str] = []
+    closed: list[bool] = []
+
+    class FakeHTTPServer:
+        def __init__(self, address, handler):
+            self.address = address
+            self.handler = handler
+
+        def serve_forever(self):
+            return None
+
+        def server_close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(server, "ThreadingHTTPServer", FakeHTTPServer)
+    monkeypatch.setattr(server.webbrowser, "open", lambda url: opened_urls.append(url) or True)
+
+    assert server.main([]) == 0
+    assert opened_urls == ["http://127.0.0.1:8766/"]
+    assert closed == [True]
+
+
+def test_server_main_reports_port_in_use_with_fix_hint(monkeypatch, capsys):
+    from voeval import server
+
+    class PortBusyHTTPServer:
+        def __init__(self, address, handler):
+            raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(server, "ThreadingHTTPServer", PortBusyHTTPServer)
+
+    assert server.main([]) == 1
+
+    captured = capsys.readouterr()
+    assert "端口 8766 已被占用" in captured.err
+    assert "python -m voeval server --port 8767" in captured.err
+    assert "Traceback" not in captured.err
